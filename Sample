@@ -178,3 +178,62 @@ public List<FinancialInstitution> searchInstitutions(
         );
     }
 }
+package jp.co.mycompany.servicing.model;
+
+public class PhoneNumber {
+    private String type;  // mobile, landline, fax
+    private String contactType; // home, office, businessHours, others
+    private String number1;
+    private String number2;
+    private String number3;
+
+    // Default Constructor
+    public PhoneNumber() {}
+
+    // Parameterized Constructor
+    public PhoneNumber(String type, String contactType, String number1, String number2, String number3) {
+        this.type = type;
+        this.contactType = contactType;
+        this.number1 = number1;
+        this.number2 = number2;
+        this.number3 = number3;
+    }
+
+    // Getters and Setters
+    public String getType() { return type; }
+    public void setType(String type) { this.type = type; }
+
+    public String getContactType() { return contactType; }
+    public void setContactType(String contactType) { this.contactType = contactType; }
+
+    public String getNumber1() { return number1; }
+    public void setNumber1(String number1) { this.number1 = number1; }
+
+    public String getNumber2() { return number2; }
+    public void setNumber2(String number2) { this.number2 = number2; }
+
+    public String getNumber3() { return number3; }
+    public void setNumber3(String number3) { this.number3 = number3; }
+}
+package jp.co.mycompany.servicing.model;
+
+public class ErrorDetail {
+    private String field;
+    private String issue;
+
+    // Default Constructor
+    public ErrorDetail() {}
+
+    // Parameterized Constructor
+    public ErrorDetail(String field, String issue) {
+        this.field = field;
+        this.issue = issue;
+    }
+
+    // Getters and Setters
+    public String getField() { return field; }
+    public void setField(String field) { this.field = field; }
+
+    public String getIssue() { return issue; }
+    public void setIssue(String issue) { this.issue = issue; }
+}
