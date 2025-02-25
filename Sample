@@ -6,6 +6,7 @@ This solution implements a **proper DTO-based architecture** with hardcoded data
 ✔ **Removes direct Entity exposure in API.**  
 ✔ **Introduces a Mapper class for conversion between Entity and DTO.**  
 ✔ **Ensures validation on input DTOs.**  
+✔ **Updates Service and Controller to properly handle DTO parameters.**
 
 ---
 
@@ -33,7 +34,7 @@ your-project/
 
 ---
 
-## **✅ Step 1: Create DTO Class (`FinancialInstitutionDTO.java`)**
+## **✅ Step 1: Update DTO Class (`FinancialInstitutionDTO.java`)**
 ```java
 package jp.co.mycompany.servicing.dto;
 
@@ -66,98 +67,7 @@ public class FinancialInstitutionDTO {
 
 ---
 
-## **✅ Step 2: Create Hardcoded Data Entity (`FinancialInstitution.java`)**
-```java
-package jp.co.mycompany.servicing.model;
-
-import java.util.List;
-
-public class FinancialInstitution {
-
-    private String id;
-    private String financialInstitutionCode;
-    private String financialInstitutionBranchCode;
-    private String order;
-    private String nameKana;
-    private String name;
-    private String branchNameKana;
-    private String branchName;
-    private String postalCode;
-    private String address;
-    private String clearingHouseNumber;
-    private String dateOfApplication;
-    private String endDateOfApplication;
-    private List<String> phoneNumbers;
-
-    public FinancialInstitution(String id, String code, String branchCode, String order, String nameKana,
-                                 String name, String branchName, String postalCode, String address,
-                                 String clearingHouseNumber, String dateOfApplication, String endDateOfApplication,
-                                 List<String> phoneNumbers) {
-        this.id = id;
-        this.financialInstitutionCode = code;
-        this.financialInstitutionBranchCode = branchCode;
-        this.order = order;
-        this.nameKana = nameKana;
-        this.name = name;
-        this.branchNameKana = branchName;
-        this.postalCode = postalCode;
-        this.address = address;
-        this.clearingHouseNumber = clearingHouseNumber;
-        this.dateOfApplication = dateOfApplication;
-        this.endDateOfApplication = endDateOfApplication;
-        this.phoneNumbers = phoneNumbers;
-    }
-    
-    // Getters and Setters
-}
-```
-✔ **Stores hardcoded financial institution data.**  
-✔ **Represents a database record for now.**  
-
----
-
-## **✅ Step 3: Create a Mapper (`FinancialInstitutionMapper.java`)**
-```java
-package jp.co.mycompany.servicing.mapper;
-
-import jp.co.mycompany.servicing.dto.FinancialInstitutionDTO;
-import jp.co.mycompany.servicing.model.FinancialInstitution;
-import org.springframework.stereotype.Component;
-import java.util.List;
-import java.util.stream.Collectors;
-
-@Component
-public class FinancialInstitutionMapper {
-
-    public FinancialInstitutionDTO toDTO(FinancialInstitution entity) {
-        FinancialInstitutionDTO dto = new FinancialInstitutionDTO();
-        dto.setFinancialInstitutionCode(entity.getFinancialInstitutionCode());
-        dto.setFinancialInstitutionBranchCode(entity.getFinancialInstitutionBranchCode());
-        dto.setOrder(entity.getOrder());
-        dto.setNameKana(entity.getNameKana());
-        dto.setName(entity.getName());
-        dto.setBranchNameKana(entity.getBranchNameKana());
-        dto.setBranchName(entity.getBranchName());
-        dto.setPostalCode(entity.getPostalCode());
-        dto.setAddress(entity.getAddress());
-        dto.setClearingHouseNumber(entity.getClearingHouseNumber());
-        dto.setDateOfApplication(entity.getDateOfApplication());
-        dto.setEndDateOfApplication(entity.getEndDateOfApplication());
-        dto.setPhoneNumbers(entity.getPhoneNumbers());
-        return dto;
-    }
-
-    public List<FinancialInstitutionDTO> toDTOList(List<FinancialInstitution> entities) {
-        return entities.stream().map(this::toDTO).collect(Collectors.toList());
-    }
-}
-```
-✔ **Converts Entity to DTO, removing unnecessary fields.**  
-✔ **Ensures clear separation between database and API response.**  
-
----
-
-## **✅ Step 4: Update Service Layer (`FinancialInstitutionService.java`)**
+## **✅ Step 2: Update Service Layer (`FinancialInstitutionService.java`)**
 ```java
 package jp.co.mycompany.servicing.service;
 
@@ -166,8 +76,9 @@ import jp.co.mycompany.servicing.mapper.FinancialInstitutionMapper;
 import jp.co.mycompany.servicing.model.FinancialInstitution;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
-import java.util.Arrays;
 import java.util.List;
+import java.util.stream.Collectors;
+import java.util.Arrays;
 
 @Service
 public class FinancialInstitutionService {
@@ -175,7 +86,11 @@ public class FinancialInstitutionService {
     @Autowired
     private FinancialInstitutionMapper mapper;
 
-    public List<FinancialInstitutionDTO> searchInstitutions() {
+    public List<FinancialInstitutionDTO> searchInstitutions(String financialInstitutionCode, 
+                                                             String financialInstitutionBranchCode, 
+                                                             String order, 
+                                                             String nameKana, 
+                                                             String name) {
         List<FinancialInstitution> institutions = Arrays.asList(
             new FinancialInstitution("1", "001", "123", "asc", "カナ銀行", "Kana Bank", "Main Branch",
                                      "100-0001", "Tokyo", "0001", "2023-01-01", "2023-12-31",
@@ -184,13 +99,64 @@ public class FinancialInstitutionService {
                                      "100-0002", "Osaka", "0002", "2023-01-01", "2023-12-31",
                                      Arrays.asList("080-2345-6789"))
         );
-        return mapper.toDTOList(institutions);
+
+        return institutions.stream()
+            .filter(i -> financialInstitutionCode == null || i.getFinancialInstitutionCode().equals(financialInstitutionCode))
+            .filter(i -> financialInstitutionBranchCode == null || i.getFinancialInstitutionBranchCode().equals(financialInstitutionBranchCode))
+            .filter(i -> order == null || i.getOrder().equalsIgnoreCase(order))
+            .filter(i -> nameKana == null || i.getNameKana().equals(nameKana))
+            .filter(i -> name == null || i.getName().equals(name))
+            .map(mapper::toDTO)
+            .collect(Collectors.toList());
     }
 }
 ```
-✔ **Uses DTOs and Mapper to handle data conversion.**  
+✔ **Now supports filtering based on input parameters.**  
+✔ **Uses DTO mapping for clean separation.**  
 
 ---
 
-🚀 **Now the base solution is fully DTO-based with hardcoded data!** 🎯
+## **✅ Step 3: Update Controller (`NeoFinancialInstitutionController.java`)**
+```java
+package jp.co.mycompany.servicing.controller;
 
+import jp.co.mycompany.servicing.dto.FinancialInstitutionDTO;
+import jp.co.mycompany.servicing.service.FinancialInstitutionService;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+import javax.validation.Valid;
+import java.util.List;
+
+@RestController
+@RequestMapping("/common/financialInstitution")
+public class NeoFinancialInstitutionController {
+
+    private final FinancialInstitutionService financialInstitutionService;
+
+    public NeoFinancialInstitutionController(FinancialInstitutionService service) {
+        this.financialInstitutionService = service;
+    }
+
+    @PostMapping("/search")
+    public ResponseEntity<List<FinancialInstitutionDTO>> searchFinancialInstitutions(
+        @Valid @RequestBody FinancialInstitutionDTO searchConditions) {
+
+        List<FinancialInstitutionDTO> results = financialInstitutionService.searchInstitutions(
+            searchConditions.getFinancialInstitutionCode(),
+            searchConditions.getFinancialInstitutionBranchCode(),
+            searchConditions.getOrder(),
+            searchConditions.getNameKana(),
+            searchConditions.getName()
+        );
+        return ResponseEntity.ok(results);
+    }
+}
+```
+✔ **Now correctly passes DTO fields to the service layer.**  
+✔ **Controller uses `@Valid` to enforce request validation.**  
+
+---
+
+🚀 **Now the base solution is fully DTO-based with proper service and controller updates!** 🎯
+
+Just keeping another chat for baseline solution
