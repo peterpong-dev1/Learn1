@@ -1,36 +1,79 @@
-✅ Folder Structure (VS Code Project)
-src/main/java/jp/co/mycompany/servicing/
-│── api/                 <-- API Interface (Defines API contracts)
-│   ├── FinancialInstitutionApi.java
-│
-│── controller/          <-- API Implementation (Controller Layer)
-│   ├── FinancialInstitutionController.java
-│
-│── model/               <-- Data Models (DTOs)
-│   ├── FinancialInstitution.java
-│   ├── FinancialInstitutionSearchConditions.java
-│   ├── ErrorResponse.java
-│   ├── ErrorDetail.java
-│   ├── PhoneNumber.java
-│
-│── service/             <-- Business Logic Layer (Service Layer)
-│   ├── FinancialInstitutionService.java
-│
-│── repository/          <-- (To be added later for CosmosDB integration)
-│
-│── config/              <-- (To be added later for CosmosDB connection)
-│
-resources/
-│── application.properties  <-- (For configuring Spring Boot settings)
-│── swagger/                <-- Store `api.yaml` here
-✅ 1. Model Classes (DTOs)
+## Base Solution: Spring Boot API with Hardcoded Data (DTO-Based)
 
-📌 FinancialInstitution.java (Response Model)
+### **📌 Overview**
+This solution implements a **proper DTO-based architecture** with hardcoded data before integrating Azure Cosmos DB.
+✔ **Uses DTO (Data Transfer Object) to separate request/response from Entity.**  
+✔ **Removes direct Entity exposure in API.**  
+✔ **Introduces a Mapper class for conversion between Entity and DTO.**  
+✔ **Ensures validation on input DTOs.**  
 
-📂 src/main/java/jp/co/mycompany/servicing/model/FinancialInstitution.java
-package jp.co.mycompany.servicing.model;
+---
+
+## **✅ Folder Structure**
+```
+your-project/
+│── src/
+│   ├── main/
+│   │   ├── java/jp/co/mycompany/servicing/
+│   │   │   ├── controller/  (API Controllers)
+│   │   │   │   ├── NeoFinancialInstitutionController.java
+│   │   │   ├── service/  (Business Logic Layer)
+│   │   │   │   ├── FinancialInstitutionService.java
+│   │   │   ├── dto/  (DTOs for API communication)
+│   │   │   │   ├── FinancialInstitutionDTO.java
+│   │   │   ├── model/  (Entities - Internal Representation)
+│   │   │   │   ├── FinancialInstitution.java
+│   │   │   ├── mapper/  (Entity-DTO Mapping)
+│   │   │   │   ├── FinancialInstitutionMapper.java
+│── pom.xml  (Maven Dependencies)
+```
+✔ **Clearly defined layers to follow best practices.**  
+✔ **DTOs are inside the `dto` package.**  
+✔ **Mappers convert between DTOs and Entities.**  
+
+---
+
+## **✅ Step 1: Create DTO Class (`FinancialInstitutionDTO.java`)**
+```java
+package jp.co.mycompany.servicing.dto;
+
+import javax.validation.constraints.NotNull;
 import java.util.List;
+
+public class FinancialInstitutionDTO {
+
+    @NotNull(message = "Financial Institution Code is required")
+    private String financialInstitutionCode;
+    
+    private String financialInstitutionBranchCode;
+    private String order;
+    private String nameKana;
+    private String name;
+    private String branchNameKana;
+    private String branchName;
+    private String postalCode;
+    private String address;
+    private String clearingHouseNumber;
+    private String dateOfApplication;
+    private String endDateOfApplication;
+    private List<String> phoneNumbers;
+
+    // Getters and Setters
+}
+```
+✔ **Encapsulates request and response fields.**  
+✔ **Ensures separation of concerns from the entity model.**  
+
+---
+
+## **✅ Step 2: Create Hardcoded Data Entity (`FinancialInstitution.java`)**
+```java
+package jp.co.mycompany.servicing.model;
+
+import java.util.List;
+
 public class FinancialInstitution {
+
     private String id;
     private String financialInstitutionCode;
     private String financialInstitutionBranchCode;
@@ -41,199 +84,113 @@ public class FinancialInstitution {
     private String branchName;
     private String postalCode;
     private String address;
-    private List<PhoneNumber> phoneNumber;
     private String clearingHouseNumber;
     private String dateOfApplication;
     private String endDateOfApplication;
-public FinancialInstitution() {}
-public FinancialInstitution(String id, String financialInstitutionCode, String financialInstitutionBranchCode, 
-                                String order, String nameKana, String name, String branchNameKana, String branchName, 
-                                String postalCode, String address, List<PhoneNumber> phoneNumber, 
-                                String clearingHouseNumber, String dateOfApplication, String endDateOfApplication) {
+    private List<String> phoneNumbers;
+
+    public FinancialInstitution(String id, String code, String branchCode, String order, String nameKana,
+                                 String name, String branchName, String postalCode, String address,
+                                 String clearingHouseNumber, String dateOfApplication, String endDateOfApplication,
+                                 List<String> phoneNumbers) {
         this.id = id;
-        this.financialInstitutionCode = financialInstitutionCode;
-        this.financialInstitutionBranchCode = financialInstitutionBranchCode;
+        this.financialInstitutionCode = code;
+        this.financialInstitutionBranchCode = branchCode;
         this.order = order;
         this.nameKana = nameKana;
         this.name = name;
-        this.branchNameKana = branchNameKana;
-        this.branchName = branchName;
+        this.branchNameKana = branchName;
         this.postalCode = postalCode;
         this.address = address;
-        this.phoneNumber = phoneNumber;
         this.clearingHouseNumber = clearingHouseNumber;
         this.dateOfApplication = dateOfApplication;
         this.endDateOfApplication = endDateOfApplication;
+        this.phoneNumbers = phoneNumbers;
     }
-// Getters and Setters (Generated)
-}
-📌 FinancialInstitutionSearchConditions.java (Request Model)
-
-📂 src/main/java/jp/co/mycompany/servicing/model/FinancialInstitutionSearchConditions.java
-package jp.co.mycompany.servicing.model;
-public class FinancialInstitutionSearchConditions {
-    private String financialInstitutionCode;
-    private String financialInstitutionBranchCode;
-    private String order;
-    private String nameKana;
-    private String name;
-public FinancialInstitutionSearchConditions() {}
-public FinancialInstitutionSearchConditions(String financialInstitutionCode, String financialInstitutionBranchCode, String order, String nameKana, String name) {
-        this.financialInstitutionCode = financialInstitutionCode;
-        this.financialInstitutionBranchCode = financialInstitutionBranchCode;
-        this.order = order;
-        this.nameKana = nameKana;
-        this.name = name;
-    }
-// Getters and Setters
-}
-📌 ErrorResponse.java (Error Handling)
-
-📂 src/main/java/jp/co/mycompany/servicing/model/ErrorResponse.java
-package jp.co.mycompany.servicing.model;
-import java.util.List;
-import java.time.LocalDateTime;
-public class ErrorResponse {
-    private String code;
-    private String message;
-    private LocalDateTime timestamp;
-    private List<ErrorDetail> details;
-public ErrorResponse() {}
-public ErrorResponse(String code, String message, List<ErrorDetail> details) {
-        this.code = code;
-        this.message = message;
-        this.timestamp = LocalDateTime.now();
-        this.details = details;
-    }
-// Getters and Setters
-}
-✅ 2. API Interface
-
-📂 src/main/java/jp/co/mycompany/servicing/api/FinancialInstitutionApi.java
-package jp.co.mycompany.servicing.api;
-import jp.co.mycompany.servicing.model.FinancialInstitution;
-import jp.co.mycompany.servicing.model.FinancialInstitutionSearchConditions;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
-import java.util.List;
-@RequestMapping("/common/financialInstitution")
-public interface FinancialInstitutionApi {
     
-    @PostMapping("/search")
-    ResponseEntity<List<FinancialInstitution>> searchFinancialInstitutions(
-        @RequestBody FinancialInstitutionSearchConditions searchConditions
-    );
+    // Getters and Setters
 }
-✅ 3. Controller Implementation
+```
+✔ **Stores hardcoded financial institution data.**  
+✔ **Represents a database record for now.**  
 
-📂 src/main/java/jp/co/mycompany/servicing/controller/FinancialInstitutionController.java
-package jp.co.mycompany.servicing.controller;
-import jp.co.mycompany.servicing.api.FinancialInstitutionApi;
+---
+
+## **✅ Step 3: Create a Mapper (`FinancialInstitutionMapper.java`)**
+```java
+package jp.co.mycompany.servicing.mapper;
+
+import jp.co.mycompany.servicing.dto.FinancialInstitutionDTO;
 import jp.co.mycompany.servicing.model.FinancialInstitution;
-import jp.co.mycompany.servicing.model.FinancialInstitutionSearchConditions;
-import jp.co.mycompany.servicing.service.FinancialInstitutionService;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.stereotype.Component;
 import java.util.List;
-@RestController
-public class FinancialInstitutionController implements FinancialInstitutionApi {
-private final FinancialInstitutionService financialInstitutionService;
-public FinancialInstitutionController(FinancialInstitutionService service) {
-        this.financialInstitutionService = service;
+import java.util.stream.Collectors;
+
+@Component
+public class FinancialInstitutionMapper {
+
+    public FinancialInstitutionDTO toDTO(FinancialInstitution entity) {
+        FinancialInstitutionDTO dto = new FinancialInstitutionDTO();
+        dto.setFinancialInstitutionCode(entity.getFinancialInstitutionCode());
+        dto.setFinancialInstitutionBranchCode(entity.getFinancialInstitutionBranchCode());
+        dto.setOrder(entity.getOrder());
+        dto.setNameKana(entity.getNameKana());
+        dto.setName(entity.getName());
+        dto.setBranchNameKana(entity.getBranchNameKana());
+        dto.setBranchName(entity.getBranchName());
+        dto.setPostalCode(entity.getPostalCode());
+        dto.setAddress(entity.getAddress());
+        dto.setClearingHouseNumber(entity.getClearingHouseNumber());
+        dto.setDateOfApplication(entity.getDateOfApplication());
+        dto.setEndDateOfApplication(entity.getEndDateOfApplication());
+        dto.setPhoneNumbers(entity.getPhoneNumbers());
+        return dto;
     }
-@Override
-    public ResponseEntity<List<FinancialInstitution>> searchFinancialInstitutions(
-        FinancialInstitutionSearchConditions searchConditions) {
-List<FinancialInstitution> results = financialInstitutionService.searchInstitutions(
-            searchConditions.getFinancialInstitutionCode(),
-            searchConditions.getFinancialInstitutionBranchCode(),
-            searchConditions.getOrder(),
-            searchConditions.getNameKana(),
-            searchConditions.getName()
-        );
-        return ResponseEntity.ok(results);
+
+    public List<FinancialInstitutionDTO> toDTOList(List<FinancialInstitution> entities) {
+        return entities.stream().map(this::toDTO).collect(Collectors.toList());
     }
 }
-✅ 4. Service Layer
+```
+✔ **Converts Entity to DTO, removing unnecessary fields.**  
+✔ **Ensures clear separation between database and API response.**  
 
-📂 src/main/java/jp/co/mycompany/servicing/service/FinancialInstitutionService.java
+---
+
+## **✅ Step 4: Update Service Layer (`FinancialInstitutionService.java`)**
+```java
 package jp.co.mycompany.servicing.service;
+
+import jp.co.mycompany.servicing.dto.FinancialInstitutionDTO;
+import jp.co.mycompany.servicing.mapper.FinancialInstitutionMapper;
 import jp.co.mycompany.servicing.model.FinancialInstitution;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
-import java.util.List;
 import java.util.Arrays;
+import java.util.List;
+
 @Service
 public class FinancialInstitutionService {
-public List<FinancialInstitution> searchInstitutions(
-        String financialInstitutionCode, 
-        String financialInstitutionBranchCode, 
-        String order, 
-        String nameKana, 
-        String name) {
-        
-        // Dummy data (Later, integrate with Azure Cosmos DB)
-        return Arrays.asList(
-            new FinancialInstitution("1", "Bank A", "001", "1", "Name Kana A", "Bank A", "Branch A", "100-0001", "Tokyo", null, "0001", "2023-01-01", "2023-12-31"),
-            new FinancialInstitution("2", "Bank B", "002", "2", "Name Kana B", "Bank B", "Branch B", "100-0002", "Osaka", null, "0002", "2023-01-01", "2023-12-31")
+
+    @Autowired
+    private FinancialInstitutionMapper mapper;
+
+    public List<FinancialInstitutionDTO> searchInstitutions() {
+        List<FinancialInstitution> institutions = Arrays.asList(
+            new FinancialInstitution("1", "001", "123", "asc", "カナ銀行", "Kana Bank", "Main Branch",
+                                     "100-0001", "Tokyo", "0001", "2023-01-01", "2023-12-31",
+                                     Arrays.asList("080-1234-5678")),
+            new FinancialInstitution("2", "002", "456", "desc", "銀行B", "Bank B", "Branch B",
+                                     "100-0002", "Osaka", "0002", "2023-01-01", "2023-12-31",
+                                     Arrays.asList("080-2345-6789"))
         );
+        return mapper.toDTOList(institutions);
     }
 }
-package jp.co.mycompany.servicing.model;
+```
+✔ **Uses DTOs and Mapper to handle data conversion.**  
 
-public class PhoneNumber {
-    private String type;  // mobile, landline, fax
-    private String contactType; // home, office, businessHours, others
-    private String number1;
-    private String number2;
-    private String number3;
+---
 
-    // Default Constructor
-    public PhoneNumber() {}
+🚀 **Now the base solution is fully DTO-based with hardcoded data!** 🎯
 
-    // Parameterized Constructor
-    public PhoneNumber(String type, String contactType, String number1, String number2, String number3) {
-        this.type = type;
-        this.contactType = contactType;
-        this.number1 = number1;
-        this.number2 = number2;
-        this.number3 = number3;
-    }
-
-    // Getters and Setters
-    public String getType() { return type; }
-    public void setType(String type) { this.type = type; }
-
-    public String getContactType() { return contactType; }
-    public void setContactType(String contactType) { this.contactType = contactType; }
-
-    public String getNumber1() { return number1; }
-    public void setNumber1(String number1) { this.number1 = number1; }
-
-    public String getNumber2() { return number2; }
-    public void setNumber2(String number2) { this.number2 = number2; }
-
-    public String getNumber3() { return number3; }
-    public void setNumber3(String number3) { this.number3 = number3; }
-}
-package jp.co.mycompany.servicing.model;
-
-public class ErrorDetail {
-    private String field;
-    private String issue;
-
-    // Default Constructor
-    public ErrorDetail() {}
-
-    // Parameterized Constructor
-    public ErrorDetail(String field, String issue) {
-        this.field = field;
-        this.issue = issue;
-    }
-
-    // Getters and Setters
-    public String getField() { return field; }
-    public void setField(String field) { this.field = field; }
-
-    public String getIssue() { return issue; }
-    public void setIssue(String issue) { this.issue = issue; }
-}
