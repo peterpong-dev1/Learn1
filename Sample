@@ -1,73 +1,8 @@
-📌 Why Are Field Names Hardcoded in Queries?
-
-You’re right to question this! In the repository, the field names like "financialInstitutionCode", "financialInstitutionBranchCode", and "name" are hardcoded, which makes the code less flexible and harder to maintain.
-
-✅ How to Make Queries Configurable?
-
-Instead of hardcoding field names in CosmosQuery, we should move them to queries.properties and dynamically read them.
-
-🔹 Step 1: Update queries.properties to Store Field Names
-
-Modify queries.properties to define the field names dynamically:
-
-field.financialInstitutionCode=financialInstitutionCode
-field.financialInstitutionBranchCode=financialInstitutionBranchCode
-field.name=name
-
-✔ No hardcoded field names in Java
-✔ Easier to update field mappings
-
-🔹 Step 2: Update QueryConfig.java to Read Field Names
-
-Modify QueryConfig.java to load field names from queries.properties:
-
-package jp.co.mycompany.servicing.config;
-
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.core.io.Resource;
-
-import javax.annotation.PostConstruct;
-import java.io.InputStreamReader;
-import java.nio.charset.StandardCharsets;
-import java.util.Properties;
-
-@Configuration
-public class QueryConfig {
-
-    @Value("${query.file.path}")
-    private Resource queriesResource;
-
-    private final Properties queries = new Properties();
-
-    @PostConstruct
-    public void loadQueries() throws Exception {
-        try (InputStreamReader reader = new InputStreamReader(queriesResource.getInputStream(), StandardCharsets.UTF_8)) {
-            queries.load(reader);
-        }
-    }
-
-    public String getQuery(String key) {
-        return queries.getProperty(key);
-    }
-
-    public String getField(String key) {
-        return queries.getProperty("field." + key);  // ✅ Fetches field names dynamically
-    }
-}
-
-✔ Now field names are dynamically fetched using queryConfig.getField("financialInstitutionCode")
-
-🔹 Step 3: Update FinancialInstitutionRepository.java to Use Dynamic Field Names
-
-Modify repository methods to use queryConfig.getField() instead of hardcoding field names.
-
 package jp.co.mycompany.servicing.repository;
 
 import com.azure.spring.data.cosmos.core.CosmosTemplate;
-import com.azure.spring.data.cosmos.core.query.CosmosQuery;
-import com.azure.spring.data.cosmos.core.query.Criteria;
-import com.azure.spring.data.cosmos.core.query.CriteriaType;
+import com.azure.cosmos.models.SqlQuerySpec;
+import com.azure.cosmos.models.CosmosQueryRequestOptions;
 import jp.co.mycompany.servicing.config.QueryConfig;
 import jp.co.mycompany.servicing.config.CosmosProperties;
 import jp.co.mycompany.servicing.model.FinancialInstitution;
@@ -75,6 +10,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
+import java.util.ArrayList;
 
 @Repository
 public class FinancialInstitutionRepository {
@@ -86,59 +22,65 @@ public class FinancialInstitutionRepository {
     private CosmosTemplate cosmosTemplate;
 
     @Autowired
-    private CosmosProperties cosmosProperties; // ✅ Inject CosmosProperties to get container name
+    private CosmosProperties cosmosProperties;
+
+    private static final CosmosQueryRequestOptions QUERY_OPTIONS = new CosmosQueryRequestOptions();
 
     /**
      * Fetch all branches for a given financial institution.
      */
     public List<FinancialInstitution> findByFinancialInstitutionCode(String financialInstitutionCode) {
-        String fieldName = queryConfig.getField("financialInstitutionCode"); // ✅ Fetch dynamically
+        String query = queryConfig.getQuery("fetchAllBranchesQuery");
+        SqlQuerySpec querySpec = new SqlQuerySpec(query);
+        querySpec.setParameters(List.of(new com.azure.cosmos.models.SqlParameter("@code", financialInstitutionCode)));
 
-        CosmosQuery cosmosQuery = new CosmosQuery(Criteria.getInstance(CriteriaType.IS_EQUAL, fieldName, financialInstitutionCode));
-
-        return cosmosTemplate.find(cosmosQuery, FinancialInstitution.class, cosmosProperties.getContainer());
+        return cosmosTemplate.getCosmosContainer(cosmosProperties.getContainer())
+                .queryItems(querySpec, QUERY_OPTIONS, FinancialInstitution.class)
+                .stream()
+                .toList();
     }
 
     /**
      * Fetch a single branch for a financial institution based on branch code.
      */
     public List<FinancialInstitution> findByFinancialInstitutionCodeAndBranch(String financialInstitutionCode, String financialInstitutionBranchCode) {
-        String fieldCode = queryConfig.getField("financialInstitutionCode"); // ✅ Fetch dynamically
-        String fieldBranchCode = queryConfig.getField("financialInstitutionBranchCode"); // ✅ Fetch dynamically
+        String query = queryConfig.getQuery("fetchOneQuery");
+        SqlQuerySpec querySpec = new SqlQuerySpec(query);
+        querySpec.setParameters(List.of(
+                new com.azure.cosmos.models.SqlParameter("@code", financialInstitutionCode),
+                new com.azure.cosmos.models.SqlParameter("@branch", financialInstitutionBranchCode)
+        ));
 
-        CosmosQuery cosmosQuery = new CosmosQuery(Criteria.getInstance(CriteriaType.AND)
-            .subCriteria(Criteria.getInstance(CriteriaType.IS_EQUAL, fieldCode, financialInstitutionCode))
-            .subCriteria(Criteria.getInstance(CriteriaType.IS_EQUAL, fieldBranchCode, financialInstitutionBranchCode))
-        );
-
-        return cosmosTemplate.find(cosmosQuery, FinancialInstitution.class, cosmosProperties.getContainer());
+        return cosmosTemplate.getCosmosContainer(cosmosProperties.getContainer())
+                .queryItems(querySpec, QUERY_OPTIONS, FinancialInstitution.class)
+                .stream()
+                .toList();
     }
 
     /**
      * Fetch all branches for a given financial institution by its name.
      */
     public List<FinancialInstitution> findByName(String name) {
-        String fieldName = queryConfig.getField("name"); // ✅ Fetch dynamically
+        String query = queryConfig.getQuery("fetchByNameQuery");
+        SqlQuerySpec querySpec = new SqlQuerySpec(query);
+        querySpec.setParameters(List.of(new com.azure.cosmos.models.SqlParameter("@name", name)));
 
-        CosmosQuery cosmosQuery = new CosmosQuery(Criteria.getInstance(CriteriaType.IS_EQUAL, fieldName, name));
-
-        return cosmosTemplate.find(cosmosQuery, FinancialInstitution.class, cosmosProperties.getContainer());
+        return cosmosTemplate.getCosmosContainer(cosmosProperties.getContainer())
+                .queryItems(querySpec, QUERY_OPTIONS, FinancialInstitution.class)
+                .stream()
+                .toList();
     }
 
     /**
      * Fetch all financial institutions.
      */
     public List<FinancialInstitution> findAll() {
-        return cosmosTemplate.findAll(FinancialInstitution.class, cosmosProperties.getContainer());
+        String query = queryConfig.getQuery("defaultQuery");
+        SqlQuerySpec querySpec = new SqlQuerySpec(query);
+
+        return cosmosTemplate.getCosmosContainer(cosmosProperties.getContainer())
+                .queryItems(querySpec, QUERY_OPTIONS, FinancialInstitution.class)
+                .stream()
+                .toList();
     }
 }
-
-🚀 Final Fix Summary
-
-✅ No Hardcoded Field Names in Java
-✅ Field Names are Now Dynamically Fetched from queries.properties
-✅ Now Fully Configurable and Scalable
-
-🔥 Next Steps
-	•	Try running this updated repository and confirm if it works as expected.
-	•	Let me know if you need further improvements or optimizations! 🚀🔥
