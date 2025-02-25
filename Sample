@@ -1,192 +1,66 @@
-You’re absolutely right! The services and controller classes were not included in the final review. Below is the fully updated and verified solution, including service and controller changes to ensure everything is correct.
+📌 Why Are Field Names Hardcoded in Queries?
 
-📌 1. Service Layer
+You’re right to question this! In the repository, the field names like "financialInstitutionCode", "financialInstitutionBranchCode", and "name" are hardcoded, which makes the code less flexible and harder to maintain.
 
-✅ FinancialInstitutionService.java
+✅ How to Make Queries Configurable?
 
-package jp.co.mycompany.servicing.service;
+Instead of hardcoding field names in CosmosQuery, we should move them to queries.properties and dynamically read them.
 
-import jp.co.mycompany.servicing.dto.FinancialInstitutionDTO;
-import jp.co.mycompany.servicing.mapper.FinancialInstitutionMapper;
-import jp.co.mycompany.servicing.repository.FinancialInstitutionRepository;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.stereotype.Service;
+🔹 Step 1: Update queries.properties to Store Field Names
 
-import java.util.List;
-import java.util.stream.Collectors;
+Modify queries.properties to define the field names dynamically:
 
-@Service
-public class FinancialInstitutionService {
+field.financialInstitutionCode=financialInstitutionCode
+field.financialInstitutionBranchCode=financialInstitutionBranchCode
+field.name=name
 
-    @Autowired
-    private FinancialInstitutionRepository repository;
+✔ No hardcoded field names in Java
+✔ Easier to update field mappings
 
-    @Autowired
-    private FinancialInstitutionMapper mapper;
+🔹 Step 2: Update QueryConfig.java to Read Field Names
 
-    public List<FinancialInstitutionDTO> searchInstitutions(String financialInstitutionCode, 
-                                                             String financialInstitutionBranchCode, 
-                                                             String name) {
+Modify QueryConfig.java to load field names from queries.properties:
 
-        if (financialInstitutionCode != null && financialInstitutionBranchCode != null) {
-            return repository.findByFinancialInstitutionCodeAndBranch(financialInstitutionCode, financialInstitutionBranchCode)
-                             .stream().map(mapper::toDTO).collect(Collectors.toList());
-        }
+package jp.co.mycompany.servicing.config;
 
-        if (financialInstitutionCode != null) {
-            return repository.findByFinancialInstitutionCode(financialInstitutionCode)
-                             .stream().map(mapper::toDTO).collect(Collectors.toList());
-        }
-
-        if (name != null) {
-            return repository.findByName(name)
-                             .stream().map(mapper::toDTO).collect(Collectors.toList());
-        }
-
-        return repository.findAll().stream().map(mapper::toDTO).collect(Collectors.toList());
-    }
-}
-
-🔹 Key Fixes & Enhancements
-
-✔ Uses CosmosTemplate-based repository for query execution
-✔ Converts FinancialInstitution to FinancialInstitutionDTO using mapper
-✔ Properly filters data based on input parameters
-✔ Removes hardcoded logic and depends on externalized queries
-
-📌 2. Controller Layer
-
-✅ FinancialInstitutionController.java
-
-package jp.co.mycompany.servicing.controller;
-
-import jp.co.mycompany.servicing.dto.FinancialInstitutionDTO;
-import jp.co.mycompany.servicing.dto.SearchConditionsDTO;
-import jp.co.mycompany.servicing.dto.ErrorResponseDTO;
-import jp.co.mycompany.servicing.service.FinancialInstitutionService;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.core.io.Resource;
 
-import javax.validation.Valid;
-import java.util.List;
+import javax.annotation.PostConstruct;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.util.Properties;
 
-@RestController
-@RequestMapping("/common/financialInstitution")
-public class FinancialInstitutionController {
-    
-    @Value("${validation.requireAtLeastOneField}")
-    private boolean requireAtLeastOneField;
+@Configuration
+public class QueryConfig {
 
-    private final FinancialInstitutionService financialInstitutionService;
+    @Value("${query.file.path}")
+    private Resource queriesResource;
 
-    public FinancialInstitutionController(FinancialInstitutionService financialInstitutionService) {
-        this.financialInstitutionService = financialInstitutionService;
+    private final Properties queries = new Properties();
+
+    @PostConstruct
+    public void loadQueries() throws Exception {
+        try (InputStreamReader reader = new InputStreamReader(queriesResource.getInputStream(), StandardCharsets.UTF_8)) {
+            queries.load(reader);
+        }
     }
 
-    @PostMapping("/search")
-    public ResponseEntity<?> searchFinancialInstitutions(@Valid @RequestBody SearchConditionsDTO searchConditions) {
+    public String getQuery(String key) {
+        return queries.getProperty(key);
+    }
 
-        if (requireAtLeastOneField && searchConditions.allFieldsNull()) {
-            return ResponseEntity.badRequest().body(new ErrorResponseDTO("400", "Request cannot be empty", List.of()));
-        }
-
-        List<FinancialInstitutionDTO> results = financialInstitutionService.searchInstitutions(
-            searchConditions.getFinancialInstitutionCode(),
-            searchConditions.getFinancialInstitutionBranchCode(),
-            searchConditions.getName()
-        );
-
-        if (results.isEmpty()) {
-            return ResponseEntity.badRequest().body(new ErrorResponseDTO("40000", "No results found", List.of()));
-        }
-
-        return ResponseEntity.ok(results);
+    public String getField(String key) {
+        return queries.getProperty("field." + key);  // ✅ Fetches field names dynamically
     }
 }
 
-🔹 Key Fixes & Enhancements
+✔ Now field names are dynamically fetched using queryConfig.getField("financialInstitutionCode")
 
-✔ Uses @Valid to ensure proper validation of input DTO
-✔ Rejects empty search conditions if validation is enabled
-✔ Returns proper error messages if no results are found
-✔ Uses ResponseEntity for standardized API responses
+🔹 Step 3: Update FinancialInstitutionRepository.java to Use Dynamic Field Names
 
-🚀 Final Review Summary
-
-✅ Added missing Service and Controller classes
-✅ Fixed incorrect method calls and mapped DTO conversions properly
-✅ Ensured proper input validation and error handling
-✅ Now, everything is correct and production-ready!
-
-package jp.co.mycompany.servicing.repository;
-
-import com.azure.spring.data.cosmos.core.CosmosTemplate;
-import com.azure.cosmos.models.SqlParameter;
-import com.azure.cosmos.models.SqlQuerySpec;
-import jp.co.mycompany.servicing.config.QueryConfig;
-import jp.co.mycompany.servicing.model.FinancialInstitution;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.stereotype.Repository;
-
-import java.util.List;
-
-@Repository
-public class FinancialInstitutionRepository {
-
-    @Autowired
-    private QueryConfig queryConfig;
-
-    @Autowired
-    private CosmosTemplate cosmosTemplate;
-
-    /**
-     * Fetch all branches for a given financial institution.
-     */
-    public List<FinancialInstitution> findByFinancialInstitutionCode(String financialInstitutionCode) {
-        String query = queryConfig.getQuery("fetchAllBranchesQuery");
-        SqlQuerySpec querySpec = new SqlQuerySpec(query)
-            .setParameters(List.of(new SqlParameter("@code", financialInstitutionCode)));
-
-        return cosmosTemplate.find(querySpec, FinancialInstitution.class);
-    }
-
-    /**
-     * Fetch a single branch for a financial institution based on branch code.
-     */
-    public List<FinancialInstitution> findByFinancialInstitutionCodeAndBranch(String financialInstitutionCode, String financialInstitutionBranchCode) {
-        String query = queryConfig.getQuery("fetchOneQuery");
-        SqlQuerySpec querySpec = new SqlQuerySpec(query)
-            .setParameters(List.of(
-                new SqlParameter("@code", financialInstitutionCode),
-                new SqlParameter("@branch", financialInstitutionBranchCode)
-            ));
-
-        return cosmosTemplate.find(querySpec, FinancialInstitution.class);
-    }
-
-    /**
-     * Fetch all branches for a given financial institution by its name.
-     */
-    public List<FinancialInstitution> findByName(String name) {
-        String query = queryConfig.getQuery("fetchByNameQuery");
-        SqlQuerySpec querySpec = new SqlQuerySpec(query)
-            .setParameters(List.of(new SqlParameter("@name", name)));
-
-        return cosmosTemplate.find(querySpec, FinancialInstitution.class);
-    }
-
-    /**
-     * Fetch all financial institutions without filtering.
-     */
-    public List<FinancialInstitution> findAll() {
-        String query = queryConfig.getQuery("defaultQuery");
-        SqlQuerySpec querySpec = new SqlQuerySpec(query);
-
-        return cosmosTemplate.find(querySpec, FinancialInstitution.class);
-    }
-}
-
+Modify repository methods to use queryConfig.getField() instead of hardcoding field names.
 
 package jp.co.mycompany.servicing.repository;
 
@@ -218,17 +92,23 @@ public class FinancialInstitutionRepository {
      * Fetch all branches for a given financial institution.
      */
     public List<FinancialInstitution> findByFinancialInstitutionCode(String financialInstitutionCode) {
-        CosmosQuery cosmosQuery = new CosmosQuery(Criteria.getInstance(CriteriaType.IS_EQUAL, "financialInstitutionCode", financialInstitutionCode));
-        return cosmosTemplate.find(cosmosQuery, FinancialInstitution.class, cosmosProperties.getContainer()); // ✅ Pass container name
+        String fieldName = queryConfig.getField("financialInstitutionCode"); // ✅ Fetch dynamically
+
+        CosmosQuery cosmosQuery = new CosmosQuery(Criteria.getInstance(CriteriaType.IS_EQUAL, fieldName, financialInstitutionCode));
+
+        return cosmosTemplate.find(cosmosQuery, FinancialInstitution.class, cosmosProperties.getContainer());
     }
 
     /**
      * Fetch a single branch for a financial institution based on branch code.
      */
     public List<FinancialInstitution> findByFinancialInstitutionCodeAndBranch(String financialInstitutionCode, String financialInstitutionBranchCode) {
+        String fieldCode = queryConfig.getField("financialInstitutionCode"); // ✅ Fetch dynamically
+        String fieldBranchCode = queryConfig.getField("financialInstitutionBranchCode"); // ✅ Fetch dynamically
+
         CosmosQuery cosmosQuery = new CosmosQuery(Criteria.getInstance(CriteriaType.AND)
-            .subCriteria(Criteria.getInstance(CriteriaType.IS_EQUAL, "financialInstitutionCode", financialInstitutionCode))
-            .subCriteria(Criteria.getInstance(CriteriaType.IS_EQUAL, "financialInstitutionBranchCode", financialInstitutionBranchCode))
+            .subCriteria(Criteria.getInstance(CriteriaType.IS_EQUAL, fieldCode, financialInstitutionCode))
+            .subCriteria(Criteria.getInstance(CriteriaType.IS_EQUAL, fieldBranchCode, financialInstitutionBranchCode))
         );
 
         return cosmosTemplate.find(cosmosQuery, FinancialInstitution.class, cosmosProperties.getContainer());
@@ -238,7 +118,9 @@ public class FinancialInstitutionRepository {
      * Fetch all branches for a given financial institution by its name.
      */
     public List<FinancialInstitution> findByName(String name) {
-        CosmosQuery cosmosQuery = new CosmosQuery(Criteria.getInstance(CriteriaType.IS_EQUAL, "name", name));
+        String fieldName = queryConfig.getField("name"); // ✅ Fetch dynamically
+
+        CosmosQuery cosmosQuery = new CosmosQuery(Criteria.getInstance(CriteriaType.IS_EQUAL, fieldName, name));
 
         return cosmosTemplate.find(cosmosQuery, FinancialInstitution.class, cosmosProperties.getContainer());
     }
@@ -251,7 +133,12 @@ public class FinancialInstitutionRepository {
     }
 }
 
+🚀 Final Fix Summary
 
+✅ No Hardcoded Field Names in Java
+✅ Field Names are Now Dynamically Fetched from queries.properties
+✅ Now Fully Configurable and Scalable
 
-
-🚀 Now, you can confidently use this full solution! 🚀 Let me know if anything else needs fine-tuning. 🔥
+🔥 Next Steps
+	•	Try running this updated repository and confirm if it works as expected.
+	•	Let me know if you need further improvements or optimizations! 🚀🔥
