@@ -119,4 +119,78 @@ public class FinancialInstitutionController {
 ✅ Ensured proper input validation and error handling
 ✅ Now, everything is correct and production-ready!
 
+package jp.co.mycompany.servicing.repository;
+
+import com.azure.spring.data.cosmos.core.CosmosTemplate;
+import com.azure.cosmos.models.SqlParameter;
+import com.azure.cosmos.models.SqlQuerySpec;
+import jp.co.mycompany.servicing.config.QueryConfig;
+import jp.co.mycompany.servicing.model.FinancialInstitution;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Repository;
+
+import java.util.List;
+
+@Repository
+public class FinancialInstitutionRepository {
+
+    @Autowired
+    private QueryConfig queryConfig;
+
+    @Autowired
+    private CosmosTemplate cosmosTemplate;
+
+    /**
+     * Fetch all branches for a given financial institution.
+     */
+    public List<FinancialInstitution> findByFinancialInstitutionCode(String financialInstitutionCode) {
+        String query = queryConfig.getQuery("fetchAllBranchesQuery");
+        SqlQuerySpec querySpec = new SqlQuerySpec(query)
+            .setParameters(List.of(new SqlParameter("@code", financialInstitutionCode)));
+
+        return cosmosTemplate.find(querySpec, FinancialInstitution.class);
+    }
+
+    /**
+     * Fetch a single branch for a financial institution based on branch code.
+     */
+    public List<FinancialInstitution> findByFinancialInstitutionCodeAndBranch(String financialInstitutionCode, String financialInstitutionBranchCode) {
+        String query = queryConfig.getQuery("fetchOneQuery");
+        SqlQuerySpec querySpec = new SqlQuerySpec(query)
+            .setParameters(List.of(
+                new SqlParameter("@code", financialInstitutionCode),
+                new SqlParameter("@branch", financialInstitutionBranchCode)
+            ));
+
+        return cosmosTemplate.find(querySpec, FinancialInstitution.class);
+    }
+
+    /**
+     * Fetch all branches for a given financial institution by its name.
+     */
+    public List<FinancialInstitution> findByName(String name) {
+        String query = queryConfig.getQuery("fetchByNameQuery");
+        SqlQuerySpec querySpec = new SqlQuerySpec(query)
+            .setParameters(List.of(new SqlParameter("@name", name)));
+
+        return cosmosTemplate.find(querySpec, FinancialInstitution.class);
+    }
+
+    /**
+     * Fetch all financial institutions without filtering.
+     */
+    public List<FinancialInstitution> findAll() {
+        String query = queryConfig.getQuery("defaultQuery");
+        SqlQuerySpec querySpec = new SqlQuerySpec(query);
+
+        return cosmosTemplate.find(querySpec, FinancialInstitution.class);
+    }
+}
+
+
+
+
+
+
+
 🚀 Now, you can confidently use this full solution! 🚀 Let me know if anything else needs fine-tuning. 🔥
