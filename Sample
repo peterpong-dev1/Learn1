@@ -1,11 +1,33 @@
-@PostMapping("/search")
-public ResponseEntity<?> searchFinancialInstitutions(@Valid @RequestBody SearchConditionsDTO searchConditions) {
-    try {
-        List<FinancialInstitutionDTO> results = financialInstitutionService.searchInstitutions(searchConditions);
-        return ResponseEntity.ok(results);
-    } catch (CosmosException ex) {
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Cosmos DB Error: " + ex.getMessage());
-    } catch (Exception ex) {
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Unexpected Error: " + ex.getMessage());
+package jp.co.mycompany.servicing.exception;
+
+import com.azure.cosmos.models.CosmosException;
+import jp.co.mycompany.servicing.dto.ErrorResponseDTO;
+import jp.co.mycompany.servicing.dto.ErrorDetailsDTO;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+import java.util.List;
+
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+
+    // Handles Azure Cosmos DB errors
+    @ExceptionHandler(CosmosException.class)
+    public ResponseEntity<ErrorResponseDTO> handleCosmosException(CosmosException ex) {
+        List<ErrorDetailsDTO> details = List.of(new ErrorDetailsDTO("CosmosDB", ex.getMessage()));
+
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(new ErrorResponseDTO("500", "CosmosDB Error", details));
+    }
+
+    // Handles generic exceptions (e.g., NullPointerException, IllegalArgumentException)
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<ErrorResponseDTO> handleGenericException(Exception ex) {
+        List<ErrorDetailsDTO> details = List.of(new ErrorDetailsDTO("Unexpected", ex.getMessage()));
+
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(new ErrorResponseDTO("500", "Unexpected Error", details));
     }
 }
