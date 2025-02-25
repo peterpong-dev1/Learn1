@@ -1,86 +1,11 @@
-package jp.co.mycompany.servicing.repository;
-
-import com.azure.spring.data.cosmos.core.CosmosTemplate;
-import com.azure.cosmos.models.SqlQuerySpec;
-import com.azure.cosmos.models.CosmosQueryRequestOptions;
-import jp.co.mycompany.servicing.config.QueryConfig;
-import jp.co.mycompany.servicing.config.CosmosProperties;
-import jp.co.mycompany.servicing.model.FinancialInstitution;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.stereotype.Repository;
-
-import java.util.List;
-import java.util.ArrayList;
-
-@Repository
-public class FinancialInstitutionRepository {
-
-    @Autowired
-    private QueryConfig queryConfig;
-
-    @Autowired
-    private CosmosTemplate cosmosTemplate;
-
-    @Autowired
-    private CosmosProperties cosmosProperties;
-
-    private static final CosmosQueryRequestOptions QUERY_OPTIONS = new CosmosQueryRequestOptions();
-
-    /**
-     * Fetch all branches for a given financial institution.
-     */
-    public List<FinancialInstitution> findByFinancialInstitutionCode(String financialInstitutionCode) {
-        String query = queryConfig.getQuery("fetchAllBranchesQuery");
-        SqlQuerySpec querySpec = new SqlQuerySpec(query);
-        querySpec.setParameters(List.of(new com.azure.cosmos.models.SqlParameter("@code", financialInstitutionCode)));
-
-        return cosmosTemplate.getCosmosContainer(cosmosProperties.getContainer())
-                .queryItems(querySpec, QUERY_OPTIONS, FinancialInstitution.class)
-                .stream()
-                .toList();
-    }
-
-    /**
-     * Fetch a single branch for a financial institution based on branch code.
-     */
-    public List<FinancialInstitution> findByFinancialInstitutionCodeAndBranch(String financialInstitutionCode, String financialInstitutionBranchCode) {
-        String query = queryConfig.getQuery("fetchOneQuery");
-        SqlQuerySpec querySpec = new SqlQuerySpec(query);
-        querySpec.setParameters(List.of(
-                new com.azure.cosmos.models.SqlParameter("@code", financialInstitutionCode),
-                new com.azure.cosmos.models.SqlParameter("@branch", financialInstitutionBranchCode)
-        ));
-
-        return cosmosTemplate.getCosmosContainer(cosmosProperties.getContainer())
-                .queryItems(querySpec, QUERY_OPTIONS, FinancialInstitution.class)
-                .stream()
-                .toList();
-    }
-
-    /**
-     * Fetch all branches for a given financial institution by its name.
-     */
-    public List<FinancialInstitution> findByName(String name) {
-        String query = queryConfig.getQuery("fetchByNameQuery");
-        SqlQuerySpec querySpec = new SqlQuerySpec(query);
-        querySpec.setParameters(List.of(new com.azure.cosmos.models.SqlParameter("@name", name)));
-
-        return cosmosTemplate.getCosmosContainer(cosmosProperties.getContainer())
-                .queryItems(querySpec, QUERY_OPTIONS, FinancialInstitution.class)
-                .stream()
-                .toList();
-    }
-
-    /**
-     * Fetch all financial institutions.
-     */
-    public List<FinancialInstitution> findAll() {
-        String query = queryConfig.getQuery("defaultQuery");
-        SqlQuerySpec querySpec = new SqlQuerySpec(query);
-
-        return cosmosTemplate.getCosmosContainer(cosmosProperties.getContainer())
-                .queryItems(querySpec, QUERY_OPTIONS, FinancialInstitution.class)
-                .stream()
-                .toList();
+@PostMapping("/search")
+public ResponseEntity<?> searchFinancialInstitutions(@Valid @RequestBody SearchConditionsDTO searchConditions) {
+    try {
+        List<FinancialInstitutionDTO> results = financialInstitutionService.searchInstitutions(searchConditions);
+        return ResponseEntity.ok(results);
+    } catch (CosmosException ex) {
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Cosmos DB Error: " + ex.getMessage());
+    } catch (Exception ex) {
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Unexpected Error: " + ex.getMessage());
     }
 }
