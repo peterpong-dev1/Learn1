@@ -1,33 +1,147 @@
-package jp.co.mycompany.servicing.exception;
+Yes! You can implement dynamic queries while using the Azure Cosmos SDK with SQL queries stored in properties files. The key idea is to load queries dynamically from the properties file and construct them dynamically at runtime.
 
-import com.azure.cosmos.models.CosmosException;
-import jp.co.mycompany.servicing.dto.ErrorResponseDTO;
-import jp.co.mycompany.servicing.dto.ErrorDetailsDTO;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.ExceptionHandler;
-import org.springframework.web.bind.annotation.RestControllerAdvice;
+🔥 Approach: Using Cosmos SDK with Dynamic SQL Queries
 
-import java.util.List;
+Instead of writing static queries, we will build dynamic queries at runtime based on user input.
 
-@RestControllerAdvice
-public class GlobalExceptionHandler {
+1️⃣ Store SQL Queries in queries.properties
 
-    // Handles Azure Cosmos DB errors
-    @ExceptionHandler(CosmosException.class)
-    public ResponseEntity<ErrorResponseDTO> handleCosmosException(CosmosException ex) {
-        List<ErrorDetailsDTO> details = List.of(new ErrorDetailsDTO("CosmosDB", ex.getMessage()));
+Define the base query and conditional query parts.
 
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(new ErrorResponseDTO("500", "CosmosDB Error", details));
+baseQuery=SELECT * FROM c WHERE 1=1
+filterByParam1= AND c.param1 = @param1
+filterByParam2= AND c.param2 = @param2
+filterByParam3= AND c.param3 = @param3
+filterByParam4= AND c.param4 = @param4
+filterByParam5= AND c.param5 = @param5
+
+	•	baseQuery is always included.
+	•	Other filters are conditionally added if the corresponding parameters are provided.
+
+2️⃣ Load Queries from Properties File
+
+Create a QueryConfig.java class to read queries dynamically.
+
+@Configuration
+public class QueryConfig {
+    private final Properties queries = new Properties();
+
+    @PostConstruct
+    public void loadQueries() throws IOException {
+        ClassPathResource resource = new ClassPathResource("queries.properties");
+        queries.load(resource.getInputStream());
     }
 
-    // Handles generic exceptions (e.g., NullPointerException, IllegalArgumentException)
-    @ExceptionHandler(Exception.class)
-    public ResponseEntity<ErrorResponseDTO> handleGenericException(Exception ex) {
-        List<ErrorDetailsDTO> details = List.of(new ErrorDetailsDTO("Unexpected", ex.getMessage()));
-
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(new ErrorResponseDTO("500", "Unexpected Error", details));
+    public String getQuery(String key) {
+        return queries.getProperty(key);
     }
 }
+
+	•	Loads SQL queries at application startup.
+	•	Allows easy modifications without redeploying code.
+
+3️⃣ Implement Dynamic Query Execution in Repository
+
+We will use Cosmos SDK to build queries dynamically.
+
+@Repository
+public class MyEntityCosmosRepository {
+
+    @Autowired
+    private CosmosAsyncContainer cosmosContainer;
+
+    @Autowired
+    private QueryConfig queryConfig;
+
+    public List<MyEntity> searchWithDynamicQuery(SearchConditionsDTO searchConditions) {
+        StringBuilder queryBuilder = new StringBuilder(queryConfig.getQuery("baseQuery"));
+        Map<String, Object> params = new HashMap<>();
+
+        if (StringUtils.hasText(searchConditions.getParam1())) {
+            queryBuilder.append(queryConfig.getQuery("filterByParam1"));
+            params.put("@param1", searchConditions.getParam1());
+        }
+        if (StringUtils.hasText(searchConditions.getParam2())) {
+            queryBuilder.append(queryConfig.getQuery("filterByParam2"));
+            params.put("@param2", searchConditions.getParam2());
+        }
+        if (StringUtils.hasText(searchConditions.getParam3())) {
+            queryBuilder.append(queryConfig.getQuery("filterByParam3"));
+            params.put("@param3", searchConditions.getParam3());
+        }
+        if (StringUtils.hasText(searchConditions.getParam4())) {
+            queryBuilder.append(queryConfig.getQuery("filterByParam4"));
+            params.put("@param4", searchConditions.getParam4());
+        }
+        if (StringUtils.hasText(searchConditions.getParam5())) {
+            queryBuilder.append(queryConfig.getQuery("filterByParam5"));
+            params.put("@param5", searchConditions.getParam5());
+        }
+
+        SqlQuerySpec querySpec = new SqlQuerySpec(queryBuilder.toString(), params);
+        return cosmosContainer.queryItems(querySpec, new CosmosQueryRequestOptions(), MyEntity.class)
+                .stream().collect(Collectors.toList());
+    }
+}
+
+💡 Key Features:
+
+✅ Loads queries from queries.properties dynamically.
+✅ Constructs SQL query dynamically based on provided parameters.
+✅ Uses SqlQuerySpec for parameterized execution (prevents SQL Injection).
+✅ Leverages Cosmos SDK (queryItems) for efficient querying.
+
+4️⃣ Service Layer
+
+@Service
+public class MyEntityService {
+
+    @Autowired
+    private MyEntityCosmosRepository customRepository;
+
+    public List<MyEntity> searchEntities(SearchConditionsDTO searchConditions) {
+        if (searchConditions.allFieldsNull()) {
+            throw new BadRequestException("At least one search parameter is required.");
+        }
+        return customRepository.searchWithDynamicQuery(searchConditions);
+    }
+}
+
+5️⃣ Controller Layer
+
+@RestController
+@RequestMapping("/search")
+public class MyEntityController {
+
+    @Autowired
+    private MyEntityService service;
+
+    @PostMapping
+    public ResponseEntity<?> search(@RequestBody SearchConditionsDTO searchConditions) {
+        List<MyEntity> results = service.searchEntities(searchConditions);
+
+        if (results.isEmpty()) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(new ErrorResponseDTO("404", "No results found"));
+        }
+
+        return ResponseEntity.ok(results);
+    }
+}
+
+🚀 Why This is a Real-World Production Approach
+
+✅ Query externalization → SQL queries are stored in properties, making it easy to update without redeployment.
+✅ Dynamic SQL Query Generation → Queries adjust dynamically based on user input.
+✅ Secure and Efficient → Uses parameterized queries with SqlQuerySpec to prevent SQL Injection.
+✅ Cosmos SDK Optimized → Uses queryItems() method with proper RU (Request Unit) efficiency.
+✅ Scalable → Handles 1 to 5 optional parameters dynamically.
+
+🔥 Next Steps
+
+Would you like me to help with:
+1️⃣ Unit testing this approach?
+2️⃣ Performance tuning (indexing, RU optimization)?
+3️⃣ Adding pagination for large datasets?
+
+Let me know! 🚀
