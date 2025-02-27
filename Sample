@@ -1,10 +1,29 @@
-✅ Implementing Error Handling with Server-Generated requestId (Used Only in Exception Class)
+Yes, based on the uploaded Swagger image, the error response structure needs an “Error” object that contains another “error” object inside it.
 
-Since you don’t want to use filters or interceptors and only need requestId inside the exception handler, here’s a clean and production-ready way to handle errors:
+✅ Updated Error Handling to Match Swagger Format
 
-📌 Step 1: Define the Error Response DTO
+To match the exact nested error structure, we need to modify our DTOs slightly.
 
-Create a DTO to return structured error responses.
+📌 Step 1: Define the Outer ErrorContainerDTO
+
+This will act as the outermost wrapper.
+
+package jp.co.mycompany.servicing.dto;
+
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+@Data
+@AllArgsConstructor
+@NoArgsConstructor
+public class ErrorContainerDTO {
+    private ErrorResponseDTO error;  // Contains the actual error object inside
+}
+
+📌 Step 2: Define the Inner ErrorResponseDTO
+
+This is the inner error object that holds the details.
 
 package jp.co.mycompany.servicing.dto;
 
@@ -26,24 +45,15 @@ public class ErrorResponseDTO {
     private String requestId;  // Unique request ID (generated in exception handler)
 }
 
-Define an additional DTO for field validation errors.
+📌 Step 3: Modify GlobalExceptionHandler to Use the Nested Error Structure
 
-@Data
-@AllArgsConstructor
-@NoArgsConstructor
-public class ErrorDetailDTO {
-    private String field; // The field that caused the error
-    private String issue; // Description of the issue
-}
-
-📌 Step 2: Implement the Global Exception Handler
-
-Use @RestControllerAdvice to catch exceptions globally and generate requestId inside the exception handler.
+Now, instead of returning ErrorResponseDTO directly, we wrap it inside ErrorContainerDTO.
 
 package jp.co.mycompany.servicing.exception;
 
 import jp.co.mycompany.servicing.dto.ErrorDetailDTO;
 import jp.co.mycompany.servicing.dto.ErrorResponseDTO;
+import jp.co.mycompany.servicing.dto.ErrorContainerDTO;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.FieldError;
@@ -63,7 +73,7 @@ public class GlobalExceptionHandler {
 
     // 🛑 Handle Validation Errors (400 Bad Request)
     @ExceptionHandler(MethodArgumentNotValidException.class)
-    public ResponseEntity<ErrorResponseDTO> handleValidationException(MethodArgumentNotValidException ex) {
+    public ResponseEntity<ErrorContainerDTO> handleValidationException(MethodArgumentNotValidException ex) {
         List<ErrorDetailDTO> details = ex.getBindingResult().getAllErrors().stream()
                 .map(error -> new ErrorDetailDTO(
                         ((FieldError) error).getField(),
@@ -76,15 +86,15 @@ public class GlobalExceptionHandler {
                 "Invalid parameter value",
                 details,
                 LocalDateTime.now(),
-                generateRequestId() // Generate requestId here
+                generateRequestId()
         );
 
-        return new ResponseEntity<>(errorResponse, HttpStatus.BAD_REQUEST);
+        return new ResponseEntity<>(new ErrorContainerDTO(errorResponse), HttpStatus.BAD_REQUEST);
     }
 
     // 🛑 Handle Business Logic Errors (e.g., Invalid Input)
     @ExceptionHandler(IllegalArgumentException.class)
-    public ResponseEntity<ErrorResponseDTO> handleIllegalArgument(IllegalArgumentException ex) {
+    public ResponseEntity<ErrorContainerDTO> handleIllegalArgument(IllegalArgumentException ex) {
         ErrorResponseDTO errorResponse = new ErrorResponseDTO(
                 "400",
                 "Invalid input",
@@ -93,12 +103,12 @@ public class GlobalExceptionHandler {
                 generateRequestId()
         );
 
-        return new ResponseEntity<>(errorResponse, HttpStatus.BAD_REQUEST);
+        return new ResponseEntity<>(new ErrorContainerDTO(errorResponse), HttpStatus.BAD_REQUEST);
     }
 
     // 🛑 Handle Generic Exceptions (500 Internal Server Error)
     @ExceptionHandler(Exception.class)
-    public ResponseEntity<ErrorResponseDTO> handleGenericException(Exception ex) {
+    public ResponseEntity<ErrorContainerDTO> handleGenericException(Exception ex) {
         ErrorResponseDTO errorResponse = new ErrorResponseDTO(
                 "500",
                 "Internal Server Error",
@@ -107,7 +117,7 @@ public class GlobalExceptionHandler {
                 generateRequestId()
         );
 
-        return new ResponseEntity<>(errorResponse, HttpStatus.INTERNAL_SERVER_ERROR);
+        return new ResponseEntity<>(new ErrorContainerDTO(errorResponse), HttpStatus.INTERNAL_SERVER_ERROR);
     }
 
     // ✅ Generate a unique requestId for debugging purposes
@@ -116,100 +126,52 @@ public class GlobalExceptionHandler {
     }
 }
 
-📌 Step 3: Use Validation in DTOs
+📌 Step 4: Example API Responses
 
-Make sure request DTOs use @Valid for field validation.
+Now, the error response format exactly matches the Swagger structure.
 
-package jp.co.mycompany.servicing.dto;
-
-import jakarta.validation.constraints.Size;
-import lombok.Data;
-
-@Data
-public class FinancialInstitutionSearchConditions {
-
-    @Size(min = 3, max = 10, message = "Financial Institution Code must be between 3 and 10 characters")
-    private String financialInstitutionCode;
-
-    @Size(min = 3, max = 10, message = "Branch Code must be between 3 and 10 characters")
-    private String financialInstitutionBranchCode;
-
-    private String order;
-
-    @Size(max = 50, message = "Name Kana cannot exceed 50 characters")
-    private String nameKana;
-
-    @Size(max = 50, message = "Name cannot exceed 50 characters")
-    private String name;
-}
-
-📌 Step 4: Ensure Controller Uses @Valid
-
-Ensure your controller uses @Valid to trigger validation.
-
-package jp.co.mycompany.servicing.controller;
-
-import jp.co.mycompany.servicing.dto.FinancialInstitutionDTO;
-import jp.co.mycompany.servicing.dto.FinancialInstitutionSearchConditions;
-import jp.co.mycompany.servicing.service.FinancialInstitutionService;
-import jakarta.validation.Valid;
-import lombok.RequiredArgsConstructor;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
-
-import java.util.List;
-
-@RestController
-@RequestMapping("/common/financialInstitution")
-@RequiredArgsConstructor
-public class FinancialInstitutionController {
-
-    private final FinancialInstitutionService service;
-
-    @PostMapping("/search")
-    public ResponseEntity<List<FinancialInstitutionDTO>> searchInstitutions(
-            @Valid @RequestBody FinancialInstitutionSearchConditions searchConditions) {
-        List<FinancialInstitutionDTO> results = service.searchInstitutions(searchConditions);
-        return ResponseEntity.ok(results);
-    }
-}
-
-📌 How This Works
-	1.	Validation Errors (400 Bad Request)
-	•	If financialInstitutionCode is too short, Spring triggers MethodArgumentNotValidException.
-	•	The handler catches it and returns a structured JSON with the generated requestId.
-Example Response:
+📌 Example: Validation Error (400 Bad Request)
 
 {
-  "code": "400",
-  "message": "Invalid parameter value",
-  "details": [
-    {
-      "field": "financialInstitutionCode",
-      "issue": "Financial Institution Code must be between 3 and 10 characters"
-    }
-  ],
-  "timestamp": "2024-02-28T12:30:00",
-  "requestId": "ERR-123e4567-e89b-12d3-a456-426614174000"
+  "error": {
+    "code": "400",
+    "message": "Invalid parameter value",
+    "details": [
+      {
+        "field": "financialInstitutionCode",
+        "issue": "Financial Institution Code must be between 3 and 10 characters"
+      }
+    ],
+    "timestamp": "2024-02-28T12:30:00",
+    "requestId": "ERR-123e4567-e89b-12d3-a456-426614174000"
+  }
 }
 
+📌 Example: Internal Server Error (500 Internal Server Error)
 
-	2.	Business Logic Errors (IllegalArgumentException)
-	•	If the service layer throws IllegalArgumentException, it returns 400 Bad Request with the requestId.
-	3.	Generic Exceptions (500 Internal Server Error)
-	•	If something unexpected happens (like a database error), the system catches it and assigns a unique requestId for tracking.
+{
+  "error": {
+    "code": "500",
+    "message": "Internal Server Error",
+    "details": [
+      {
+        "field": "general",
+        "issue": "Unexpected error occurred"
+      }
+    ],
+    "timestamp": "2024-02-28T12:31:00",
+    "requestId": "ERR-abcdef12-3456-7890-abcd-ef1234567890"
+  }
+}
 
-✅ Final Summary
+✅ Final Confirmation
 
-Requirement	Implemented?
-Generate requestId	✅ Inside GlobalExceptionHandler
-Use requestId only in error responses	✅ Yes
-Include requestId in validation errors	✅ Yes
-Include requestId in system failures (500 errors)	✅ Yes
-No filters, MDC, or interceptors	✅ Yes
+✔ Yes, this exactly matches the Swagger error object format you uploaded.
+✔ The error response now has an outer error object that contains the actual error details inside.
+✔ No need for filters or interceptors—requestId is generated inside the exception handler.
 
 🚀 Next Steps
 
 Would you like:
-	1.	Unit tests for GlobalExceptionHandler?
-	2.	More structured logging for debugging errors? 🚀
+	1.	Unit tests for GlobalExceptionHandler to verify these responses?
+	2.	Logging for errors to store requestId along with error messages?
