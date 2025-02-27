@@ -1,147 +1,215 @@
-Yes! You can implement dynamic queries while using the Azure Cosmos SDK with SQL queries stored in properties files. The key idea is to load queries dynamically from the properties file and construct them dynamically at runtime.
+✅ Implementing Error Handling with Server-Generated requestId (Used Only in Exception Class)
 
-🔥 Approach: Using Cosmos SDK with Dynamic SQL Queries
+Since you don’t want to use filters or interceptors and only need requestId inside the exception handler, here’s a clean and production-ready way to handle errors:
 
-Instead of writing static queries, we will build dynamic queries at runtime based on user input.
+📌 Step 1: Define the Error Response DTO
 
-1️⃣ Store SQL Queries in queries.properties
+Create a DTO to return structured error responses.
 
-Define the base query and conditional query parts.
+package jp.co.mycompany.servicing.dto;
 
-baseQuery=SELECT * FROM c WHERE 1=1
-filterByParam1= AND c.param1 = @param1
-filterByParam2= AND c.param2 = @param2
-filterByParam3= AND c.param3 = @param3
-filterByParam4= AND c.param4 = @param4
-filterByParam5= AND c.param5 = @param5
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
-	•	baseQuery is always included.
-	•	Other filters are conditionally added if the corresponding parameters are provided.
+import java.time.LocalDateTime;
+import java.util.List;
 
-2️⃣ Load Queries from Properties File
+@Data
+@AllArgsConstructor
+@NoArgsConstructor
+public class ErrorResponseDTO {
+    private String code;       // HTTP Status Code (400, 500, etc.)
+    private String message;    // General error message
+    private List<ErrorDetailDTO> details; // Specific field errors (if applicable)
+    private LocalDateTime timestamp; // When the error occurred
+    private String requestId;  // Unique request ID (generated in exception handler)
+}
 
-Create a QueryConfig.java class to read queries dynamically.
+Define an additional DTO for field validation errors.
 
-@Configuration
-public class QueryConfig {
-    private final Properties queries = new Properties();
+@Data
+@AllArgsConstructor
+@NoArgsConstructor
+public class ErrorDetailDTO {
+    private String field; // The field that caused the error
+    private String issue; // Description of the issue
+}
 
-    @PostConstruct
-    public void loadQueries() throws IOException {
-        ClassPathResource resource = new ClassPathResource("queries.properties");
-        queries.load(resource.getInputStream());
+📌 Step 2: Implement the Global Exception Handler
+
+Use @RestControllerAdvice to catch exceptions globally and generate requestId inside the exception handler.
+
+package jp.co.mycompany.servicing.exception;
+
+import jp.co.mycompany.servicing.dto.ErrorDetailDTO;
+import jp.co.mycompany.servicing.dto.ErrorResponseDTO;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.validation.FieldError;
+import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.UUID;
+import java.util.stream.Collectors;
+
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+
+    private static final String ERROR_REQUEST_ID_PREFIX = "ERR-";
+
+    // 🛑 Handle Validation Errors (400 Bad Request)
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<ErrorResponseDTO> handleValidationException(MethodArgumentNotValidException ex) {
+        List<ErrorDetailDTO> details = ex.getBindingResult().getAllErrors().stream()
+                .map(error -> new ErrorDetailDTO(
+                        ((FieldError) error).getField(),
+                        error.getDefaultMessage()
+                ))
+                .collect(Collectors.toList());
+
+        ErrorResponseDTO errorResponse = new ErrorResponseDTO(
+                "400",
+                "Invalid parameter value",
+                details,
+                LocalDateTime.now(),
+                generateRequestId() // Generate requestId here
+        );
+
+        return new ResponseEntity<>(errorResponse, HttpStatus.BAD_REQUEST);
     }
 
-    public String getQuery(String key) {
-        return queries.getProperty(key);
+    // 🛑 Handle Business Logic Errors (e.g., Invalid Input)
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<ErrorResponseDTO> handleIllegalArgument(IllegalArgumentException ex) {
+        ErrorResponseDTO errorResponse = new ErrorResponseDTO(
+                "400",
+                "Invalid input",
+                List.of(new ErrorDetailDTO("general", ex.getMessage())),
+                LocalDateTime.now(),
+                generateRequestId()
+        );
+
+        return new ResponseEntity<>(errorResponse, HttpStatus.BAD_REQUEST);
+    }
+
+    // 🛑 Handle Generic Exceptions (500 Internal Server Error)
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<ErrorResponseDTO> handleGenericException(Exception ex) {
+        ErrorResponseDTO errorResponse = new ErrorResponseDTO(
+                "500",
+                "Internal Server Error",
+                List.of(new ErrorDetailDTO("general", ex.getMessage())),
+                LocalDateTime.now(),
+                generateRequestId()
+        );
+
+        return new ResponseEntity<>(errorResponse, HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+
+    // ✅ Generate a unique requestId for debugging purposes
+    private String generateRequestId() {
+        return ERROR_REQUEST_ID_PREFIX + UUID.randomUUID().toString();
     }
 }
 
-	•	Loads SQL queries at application startup.
-	•	Allows easy modifications without redeploying code.
+📌 Step 3: Use Validation in DTOs
 
-3️⃣ Implement Dynamic Query Execution in Repository
+Make sure request DTOs use @Valid for field validation.
 
-We will use Cosmos SDK to build queries dynamically.
+package jp.co.mycompany.servicing.dto;
 
-@Repository
-public class MyEntityCosmosRepository {
+import jakarta.validation.constraints.Size;
+import lombok.Data;
 
-    @Autowired
-    private CosmosAsyncContainer cosmosContainer;
+@Data
+public class FinancialInstitutionSearchConditions {
 
-    @Autowired
-    private QueryConfig queryConfig;
+    @Size(min = 3, max = 10, message = "Financial Institution Code must be between 3 and 10 characters")
+    private String financialInstitutionCode;
 
-    public List<MyEntity> searchWithDynamicQuery(SearchConditionsDTO searchConditions) {
-        StringBuilder queryBuilder = new StringBuilder(queryConfig.getQuery("baseQuery"));
-        Map<String, Object> params = new HashMap<>();
+    @Size(min = 3, max = 10, message = "Branch Code must be between 3 and 10 characters")
+    private String financialInstitutionBranchCode;
 
-        if (StringUtils.hasText(searchConditions.getParam1())) {
-            queryBuilder.append(queryConfig.getQuery("filterByParam1"));
-            params.put("@param1", searchConditions.getParam1());
-        }
-        if (StringUtils.hasText(searchConditions.getParam2())) {
-            queryBuilder.append(queryConfig.getQuery("filterByParam2"));
-            params.put("@param2", searchConditions.getParam2());
-        }
-        if (StringUtils.hasText(searchConditions.getParam3())) {
-            queryBuilder.append(queryConfig.getQuery("filterByParam3"));
-            params.put("@param3", searchConditions.getParam3());
-        }
-        if (StringUtils.hasText(searchConditions.getParam4())) {
-            queryBuilder.append(queryConfig.getQuery("filterByParam4"));
-            params.put("@param4", searchConditions.getParam4());
-        }
-        if (StringUtils.hasText(searchConditions.getParam5())) {
-            queryBuilder.append(queryConfig.getQuery("filterByParam5"));
-            params.put("@param5", searchConditions.getParam5());
-        }
+    private String order;
 
-        SqlQuerySpec querySpec = new SqlQuerySpec(queryBuilder.toString(), params);
-        return cosmosContainer.queryItems(querySpec, new CosmosQueryRequestOptions(), MyEntity.class)
-                .stream().collect(Collectors.toList());
-    }
+    @Size(max = 50, message = "Name Kana cannot exceed 50 characters")
+    private String nameKana;
+
+    @Size(max = 50, message = "Name cannot exceed 50 characters")
+    private String name;
 }
 
-💡 Key Features:
+📌 Step 4: Ensure Controller Uses @Valid
 
-✅ Loads queries from queries.properties dynamically.
-✅ Constructs SQL query dynamically based on provided parameters.
-✅ Uses SqlQuerySpec for parameterized execution (prevents SQL Injection).
-✅ Leverages Cosmos SDK (queryItems) for efficient querying.
+Ensure your controller uses @Valid to trigger validation.
 
-4️⃣ Service Layer
+package jp.co.mycompany.servicing.controller;
 
-@Service
-public class MyEntityService {
+import jp.co.mycompany.servicing.dto.FinancialInstitutionDTO;
+import jp.co.mycompany.servicing.dto.FinancialInstitutionSearchConditions;
+import jp.co.mycompany.servicing.service.FinancialInstitutionService;
+import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
 
-    @Autowired
-    private MyEntityCosmosRepository customRepository;
-
-    public List<MyEntity> searchEntities(SearchConditionsDTO searchConditions) {
-        if (searchConditions.allFieldsNull()) {
-            throw new BadRequestException("At least one search parameter is required.");
-        }
-        return customRepository.searchWithDynamicQuery(searchConditions);
-    }
-}
-
-5️⃣ Controller Layer
+import java.util.List;
 
 @RestController
-@RequestMapping("/search")
-public class MyEntityController {
+@RequestMapping("/common/financialInstitution")
+@RequiredArgsConstructor
+public class FinancialInstitutionController {
 
-    @Autowired
-    private MyEntityService service;
+    private final FinancialInstitutionService service;
 
-    @PostMapping
-    public ResponseEntity<?> search(@RequestBody SearchConditionsDTO searchConditions) {
-        List<MyEntity> results = service.searchEntities(searchConditions);
-
-        if (results.isEmpty()) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                    .body(new ErrorResponseDTO("404", "No results found"));
-        }
-
+    @PostMapping("/search")
+    public ResponseEntity<List<FinancialInstitutionDTO>> searchInstitutions(
+            @Valid @RequestBody FinancialInstitutionSearchConditions searchConditions) {
+        List<FinancialInstitutionDTO> results = service.searchInstitutions(searchConditions);
         return ResponseEntity.ok(results);
     }
 }
 
-🚀 Why This is a Real-World Production Approach
+📌 How This Works
+	1.	Validation Errors (400 Bad Request)
+	•	If financialInstitutionCode is too short, Spring triggers MethodArgumentNotValidException.
+	•	The handler catches it and returns a structured JSON with the generated requestId.
+Example Response:
 
-✅ Query externalization → SQL queries are stored in properties, making it easy to update without redeployment.
-✅ Dynamic SQL Query Generation → Queries adjust dynamically based on user input.
-✅ Secure and Efficient → Uses parameterized queries with SqlQuerySpec to prevent SQL Injection.
-✅ Cosmos SDK Optimized → Uses queryItems() method with proper RU (Request Unit) efficiency.
-✅ Scalable → Handles 1 to 5 optional parameters dynamically.
+{
+  "code": "400",
+  "message": "Invalid parameter value",
+  "details": [
+    {
+      "field": "financialInstitutionCode",
+      "issue": "Financial Institution Code must be between 3 and 10 characters"
+    }
+  ],
+  "timestamp": "2024-02-28T12:30:00",
+  "requestId": "ERR-123e4567-e89b-12d3-a456-426614174000"
+}
 
-🔥 Next Steps
 
-Would you like me to help with:
-1️⃣ Unit testing this approach?
-2️⃣ Performance tuning (indexing, RU optimization)?
-3️⃣ Adding pagination for large datasets?
+	2.	Business Logic Errors (IllegalArgumentException)
+	•	If the service layer throws IllegalArgumentException, it returns 400 Bad Request with the requestId.
+	3.	Generic Exceptions (500 Internal Server Error)
+	•	If something unexpected happens (like a database error), the system catches it and assigns a unique requestId for tracking.
 
-Let me know! 🚀
+✅ Final Summary
+
+Requirement	Implemented?
+Generate requestId	✅ Inside GlobalExceptionHandler
+Use requestId only in error responses	✅ Yes
+Include requestId in validation errors	✅ Yes
+Include requestId in system failures (500 errors)	✅ Yes
+No filters, MDC, or interceptors	✅ Yes
+
+🚀 Next Steps
+
+Would you like:
+	1.	Unit tests for GlobalExceptionHandler?
+	2.	More structured logging for debugging errors? 🚀
