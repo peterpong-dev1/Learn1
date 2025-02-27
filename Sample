@@ -1,268 +1,120 @@
-✅ Implementing Error Handling Without Lombok
+✅ Minimum Configuration for Logging in Spring Boot (Without requestId)
 
-Since you don’t want to use Lombok, we will manually create constructors, getters, and setters instead.
+If you don’t want requestId, you can simplify the Logback configuration to just log to console and a file.
 
-📌 Step 1: Define ErrorDetailDTO
+📌 Step 1: Minimal logback-spring.xml
 
-This class stores field-specific validation errors.
+Create logback-spring.xml in src/main/resources/ with basic logging settings.
 
-package jp.co.mycompany.servicing.dto;
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
 
-import java.io.Serializable;
+    <!-- Console Appender (Logs to Terminal) -->
+    <appender name="ConsoleAppender" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
 
-public class ErrorDetailDTO implements Serializable {
-    private String field;
-    private String issue;
+    <!-- File Appender (Logs to File) -->
+    <appender name="FileAppender" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>logs/application.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>logs/application-%d{yyyy-MM-dd}.log</fileNamePattern>
+            <maxHistory>7</maxHistory> <!-- Keep logs for 7 days -->
+        </rollingPolicy>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
 
-    public ErrorDetailDTO() {
-    }
+    <!-- Root Logger (Default Log Level: INFO) -->
+    <root level="INFO">
+        <appender-ref ref="ConsoleAppender"/>
+        <appender-ref ref="FileAppender"/>
+    </root>
 
-    public ErrorDetailDTO(String field, String issue) {
-        this.field = field;
-        this.issue = issue;
-    }
+</configuration>
 
-    public String getField() {
-        return field;
-    }
+📌 What This Configuration Does:
+	•	Logs to console (stdout) and file (logs/application.log).
+	•	Uses INFO level (you can change it to DEBUG, WARN, ERROR).
+	•	Rotates logs daily and keeps them for 7 days.
 
-    public void setField(String field) {
-        this.field = field;
-    }
+📌 Step 2: Use Logging in Your Java Code
 
-    public String getIssue() {
-        return issue;
-    }
+Now, in your Spring Boot application, use SLF4J to log messages.
 
-    public void setIssue(String issue) {
-        this.issue = issue;
-    }
-}
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 
-📌 Step 2: Define ErrorResponseDTO
+@RestController
+@RequestMapping("/example")
+public class ExampleController {
 
-This class stores the main error details, including the error code, message, timestamp, and request ID.
+    private static final Logger logger = LoggerFactory.getLogger(ExampleController.class);
 
-package jp.co.mycompany.servicing.dto;
-
-import java.io.Serializable;
-import java.time.LocalDateTime;
-import java.util.List;
-
-public class ErrorResponseDTO implements Serializable {
-    private String code;
-    private String message;
-    private List<ErrorDetailDTO> details;
-    private LocalDateTime timestamp;
-    private String requestId;
-
-    public ErrorResponseDTO() {
-    }
-
-    public ErrorResponseDTO(String code, String message, List<ErrorDetailDTO> details, LocalDateTime timestamp, String requestId) {
-        this.code = code;
-        this.message = message;
-        this.details = details;
-        this.timestamp = timestamp;
-        this.requestId = requestId;
-    }
-
-    public String getCode() {
-        return code;
-    }
-
-    public void setCode(String code) {
-        this.code = code;
-    }
-
-    public String getMessage() {
-        return message;
-    }
-
-    public void setMessage(String message) {
-        this.message = message;
-    }
-
-    public List<ErrorDetailDTO> getDetails() {
-        return details;
-    }
-
-    public void setDetails(List<ErrorDetailDTO> details) {
-        this.details = details;
-    }
-
-    public LocalDateTime getTimestamp() {
-        return timestamp;
-    }
-
-    public void setTimestamp(LocalDateTime timestamp) {
-        this.timestamp = timestamp;
-    }
-
-    public String getRequestId() {
-        return requestId;
-    }
-
-    public void setRequestId(String requestId) {
-        this.requestId = requestId;
+    @GetMapping
+    public String testLogging() {
+        logger.info("INFO: Request received in ExampleController");
+        logger.debug("DEBUG: This is a debug log"); // Will not be logged unless log level is DEBUG
+        logger.error("ERROR: This is an error log");
+        return "Logging setup completed!";
     }
 }
 
-📌 Step 3: Define ErrorContainerDTO (Outer Error Wrapper)
+📌 Step 3: Run Your Application & Check Logs
 
-Since the Swagger file requires an “error” key wrapping the response, we use this class to match that structure.
+After starting your Spring Boot application:
+	1.	Console Output
 
-package jp.co.mycompany.servicing.dto;
+2024-02-28 12:45:30 [main] INFO  ExampleController - INFO: Request received in ExampleController
+2024-02-28 12:45:31 [main] ERROR ExampleController - ERROR: This is an error log
 
-import java.io.Serializable;
 
-public class ErrorContainerDTO implements Serializable {
-    private ErrorResponseDTO error;
+	2.	Log File (logs/application.log) should contain:
 
-    public ErrorContainerDTO() {
-    }
+2024-02-28 12:45:30 [main] INFO  ExampleController - INFO: Request received in ExampleController
+2024-02-28 12:45:31 [main] ERROR ExampleController - ERROR: This is an error log
 
-    public ErrorContainerDTO(ErrorResponseDTO error) {
-        this.error = error;
-    }
+✅ Shortcut for Multi-Line Comments & Javadoc in VS Code
 
-    public ErrorResponseDTO getError() {
-        return error;
-    }
+📌 Multi-Line Comment Shortcut
+	•	Windows/Linux: Shift + Alt + A
+	•	Mac: Shift + Option + A
 
-    public void setError(ErrorResponseDTO error) {
-        this.error = error;
-    }
+💡 Example Usage:
+
+/* 
+   This is a multi-line comment.
+   It spans multiple lines.
+*/
+
+📌 Javadoc Comment Shortcut
+	•	Windows/Linux: Type /** and press Enter
+	•	Mac: Type /** and press Enter
+
+💡 Example Usage:
+
+/**
+ * This method does something important.
+ * @param name The name of the user.
+ * @return A greeting message.
+ */
+public String greet(String name) {
+    return "Hello, " + name + "!";
 }
 
-📌 Step 4: Implement Global Exception Handling
+✅ Final Summary
 
-The exception handler catches errors, generates a unique requestId, and returns a structured response.
-
-package jp.co.mycompany.servicing.exception;
-
-import jp.co.mycompany.servicing.dto.ErrorContainerDTO;
-import jp.co.mycompany.servicing.dto.ErrorDetailDTO;
-import jp.co.mycompany.servicing.dto.ErrorResponseDTO;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
-import org.springframework.validation.FieldError;
-import org.springframework.web.bind.MethodArgumentNotValidException;
-import org.springframework.web.bind.annotation.ExceptionHandler;
-import org.springframework.web.bind.annotation.RestControllerAdvice;
-
-import java.time.LocalDateTime;
-import java.util.List;
-import java.util.UUID;
-import java.util.stream.Collectors;
-
-@RestControllerAdvice
-public class GlobalExceptionHandler {
-
-    private static final String ERROR_REQUEST_ID_PREFIX = "ERR-";
-
-    // 🛑 Handle Validation Errors (400 Bad Request)
-    @ExceptionHandler(MethodArgumentNotValidException.class)
-    public ResponseEntity<ErrorContainerDTO> handleValidationException(MethodArgumentNotValidException ex) {
-        List<ErrorDetailDTO> details = ex.getBindingResult().getAllErrors().stream()
-                .map(error -> new ErrorDetailDTO(
-                        ((FieldError) error).getField(),
-                        error.getDefaultMessage()
-                ))
-                .collect(Collectors.toList());
-
-        ErrorResponseDTO errorResponse = new ErrorResponseDTO(
-                "400",
-                "Invalid parameter value",
-                details,
-                LocalDateTime.now(),
-                generateRequestId()
-        );
-
-        return new ResponseEntity<>(new ErrorContainerDTO(errorResponse), HttpStatus.BAD_REQUEST);
-    }
-
-    // 🛑 Handle Business Logic Errors (e.g., Invalid Input)
-    @ExceptionHandler(IllegalArgumentException.class)
-    public ResponseEntity<ErrorContainerDTO> handleIllegalArgument(IllegalArgumentException ex) {
-        ErrorResponseDTO errorResponse = new ErrorResponseDTO(
-                "400",
-                "Invalid input",
-                List.of(new ErrorDetailDTO("general", ex.getMessage())),
-                LocalDateTime.now(),
-                generateRequestId()
-        );
-
-        return new ResponseEntity<>(new ErrorContainerDTO(errorResponse), HttpStatus.BAD_REQUEST);
-    }
-
-    // 🛑 Handle Generic Exceptions (500 Internal Server Error)
-    @ExceptionHandler(Exception.class)
-    public ResponseEntity<ErrorContainerDTO> handleGenericException(Exception ex) {
-        ErrorResponseDTO errorResponse = new ErrorResponseDTO(
-                "500",
-                "Internal Server Error",
-                List.of(new ErrorDetailDTO("general", ex.getMessage())),
-                LocalDateTime.now(),
-                generateRequestId()
-        );
-
-        return new ResponseEntity<>(new ErrorContainerDTO(errorResponse), HttpStatus.INTERNAL_SERVER_ERROR);
-    }
-
-    // ✅ Generate a unique requestId for debugging purposes
-    private String generateRequestId() {
-        return ERROR_REQUEST_ID_PREFIX + UUID.randomUUID().toString();
-    }
-}
-
-📌 Step 5: Example API Responses
-
-Now, the error response format exactly matches the Swagger structure.
-
-🔹 Example: Validation Error (400 Bad Request)
-
-{
-  "error": {
-    "code": "400",
-    "message": "Invalid parameter value",
-    "details": [
-      {
-        "field": "financialInstitutionCode",
-        "issue": "Financial Institution Code must be between 3 and 10 characters"
-      }
-    ],
-    "timestamp": "2024-02-28T12:30:00",
-    "requestId": "ERR-123e4567-e89b-12d3-a456-426614174000"
-  }
-}
-
-🔹 Example: Internal Server Error (500 Internal Server Error)
-
-{
-  "error": {
-    "code": "500",
-    "message": "Internal Server Error",
-    "details": [
-      {
-        "field": "general",
-        "issue": "Unexpected error occurred"
-      }
-    ],
-    "timestamp": "2024-02-28T12:31:00",
-    "requestId": "ERR-abcdef12-3456-7890-abcd-ef1234567890"
-  }
-}
-
-✅ Final Summary (Without Lombok)
-
-✔ No Lombok annotations used (manual getters, setters, constructors).
-✔ Matches Swagger structure (error wrapper with error details inside).
-✔ requestId is generated only in exceptions and returned in error responses.
-✔ Covers validation errors (400), system errors (500), and business logic errors.
-
-🚀 Next Steps
+✔ Minimal Logback configuration without requestId.
+✔ Logs to both console and file (logs/application.log).
+✔ Shortcut for Multi-Line Comments: Shift + Alt + A (Windows/Linux) or Shift + Option + A (Mac).
+✔ Shortcut for Javadoc: Type /** and press Enter.
 
 Would you like:
-	1.	Unit tests for GlobalExceptionHandler to verify these responses?
-	2.	Logging for errors to store requestId along with error messages? 🚀
+	1.	A guide on log levels (DEBUG, INFO, ERROR) and when to use them?
+	2.	How to send logs to an external system like ELK (Elasticsearch, Logstash, Kibana)? 🚀
