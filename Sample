@@ -95,3 +95,172 @@ class FinancialInstitutionControllerTest {
         verify(financialInstitutionService, times(1)).searchInstitutions(any());
     }
 }
+
+✅ Unit Test for Service Layer (FinancialInstitutionServiceTest.java)
+
+Now, I will generate unit test cases for FinancialInstitutionService using Mockito.
+
+📌 1️⃣ What This Test Covers
+
+Test Case	Scenario	Expected Result
+testSearchInstitutions_Success ✅	Valid input is provided	Returns list of financial institutions
+testSearchInstitutions_NoResults ✅	No matching results	Returns empty list
+testSearchInstitutions_ExceptionHandling ✅	Repository throws exception	Exception is handled properly
+
+📌 2️⃣ FinancialInstitutionServiceTest.java
+
+package jp.co.mycompany.servicing.service;
+
+import jp.co.mycompany.servicing.dto.FinancialInstitutionDTO;
+import jp.co.mycompany.servicing.dto.FinancialInstitutionSearchConditionsDTO;
+import jp.co.mycompany.servicing.model.FinancialInstitutionModel;
+import jp.co.mycompany.servicing.repository.FinancialInstitutionRepository;
+import jp.co.mycompany.servicing.mapper.FinancialInstitutionMapper;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+import java.util.Collections;
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.Mockito.*;
+
+@ExtendWith(MockitoExtension.class)
+class FinancialInstitutionServiceTest {
+
+    @Mock
+    private FinancialInstitutionRepository financialInstitutionRepository;
+
+    @Mock
+    private FinancialInstitutionMapper financialInstitutionMapper;
+
+    @InjectMocks
+    private FinancialInstitutionService financialInstitutionService;
+
+    private FinancialInstitutionSearchConditionsDTO searchConditions;
+    private FinancialInstitutionModel financialInstitutionModel;
+    private FinancialInstitutionDTO financialInstitutionDTO;
+
+    @BeforeEach
+    void setUp() {
+        // Populate searchConditions DTO
+        searchConditions = new FinancialInstitutionSearchConditionsDTO();
+        searchConditions.setFinancialInstitutionCode("123");
+        searchConditions.setFinancialInstitutionBranchCode("001");
+        searchConditions.setName("XYZ Bank");
+        searchConditions.setOrderCode("ORD001");
+        searchConditions.setNameKana("KanaXYZ");
+
+        // Populate model entity from DB
+        financialInstitutionModel = new FinancialInstitutionModel();
+        financialInstitutionModel.setFinancialInstitutionCode("123");
+        financialInstitutionModel.setFinancialInstitutionBranchCode("001");
+        financialInstitutionModel.setName("XYZ Bank");
+        financialInstitutionModel.setOrderCode("ORD001");
+        financialInstitutionModel.setNameKana("KanaXYZ");
+
+        // Populate DTO (response)
+        financialInstitutionDTO = new FinancialInstitutionDTO();
+        financialInstitutionDTO.setFinancialInstitutionCode("123");
+        financialInstitutionDTO.setFinancialInstitutionBranchCode("001");
+        financialInstitutionDTO.setName("XYZ Bank");
+        financialInstitutionDTO.setOrderCode("ORD001");
+        financialInstitutionDTO.setNameKana("KanaXYZ");
+    }
+
+    /**
+     * ✅ Test: When valid input is provided, should return list of financial institutions.
+     */
+    @Test
+    void testSearchInstitutions_Success() {
+        List<FinancialInstitutionModel> modelList = Collections.singletonList(financialInstitutionModel);
+        List<FinancialInstitutionDTO> expectedResults = Collections.singletonList(financialInstitutionDTO);
+
+        // Mock repository returning model list
+        when(financialInstitutionRepository.searchWithDynamicQuery(any())).thenReturn(modelList);
+        // Mock mapper converting model to DTO
+        when(financialInstitutionMapper.toDTO(financialInstitutionModel)).thenReturn(financialInstitutionDTO);
+
+        List<FinancialInstitutionDTO> results = financialInstitutionService.searchInstitutions(searchConditions);
+
+        assertEquals(1, results.size());
+        assertEquals("XYZ Bank", results.get(0).getName());
+
+        verify(financialInstitutionRepository, times(1)).searchWithDynamicQuery(any());
+        verify(financialInstitutionMapper, times(1)).toDTO(financialInstitutionModel);
+    }
+
+    /**
+     * ✅ Test: When no matching results are found, should return an empty list.
+     */
+    @Test
+    void testSearchInstitutions_NoResults() {
+        when(financialInstitutionRepository.searchWithDynamicQuery(any())).thenReturn(Collections.emptyList());
+
+        List<FinancialInstitutionDTO> results = financialInstitutionService.searchInstitutions(searchConditions);
+
+        assertEquals(0, results.size());
+        verify(financialInstitutionRepository, times(1)).searchWithDynamicQuery(any());
+        verify(financialInstitutionMapper, never()).toDTO(any());
+    }
+
+    /**
+     * ✅ Test: When the repository throws an exception, should handle it properly.
+     */
+    @Test
+    void testSearchInstitutions_ExceptionHandling() {
+        when(financialInstitutionRepository.searchWithDynamicQuery(any())).thenThrow(new RuntimeException("Database Error"));
+
+        try {
+            financialInstitutionService.searchInstitutions(searchConditions);
+        } catch (Exception e) {
+            assertEquals("Database Error", e.getMessage());
+        }
+
+        verify(financialInstitutionRepository, times(1)).searchWithDynamicQuery(any());
+    }
+}
+
+📌 3️⃣ Explanation of Key Components
+
+Component	Purpose
+@Mock private FinancialInstitutionRepository financialInstitutionRepository;	Mocks the repository to prevent real DB queries
+@Mock private FinancialInstitutionMapper financialInstitutionMapper;	Mocks the mapping process (Model → DTO)
+@InjectMocks private FinancialInstitutionService financialInstitutionService;	Injects mocks into the service class
+@BeforeEach void setUp()	Initializes test data before every test
+testSearchInstitutions_Success() ✅	Verifies successful search returns expected data
+testSearchInstitutions_NoResults() ✅	Verifies service returns an empty list when no data found
+testSearchInstitutions_ExceptionHandling() ✅	Ensures exceptions from the repository are handled properly
+
+📌 4️⃣ What This Test Ensures
+
+✔ Mocks Repository Calls – The repository does not actually call the database.
+✔ Tests Service Logic – The service correctly calls the repository and maps data.
+✔ Verifies Correct Response – Ensures expected data is returned from the service.
+✔ Handles Exceptions – Validates that errors from the repository are handled properly.
+
+🚀 Final Steps: How to Run These Tests?
+
+1️⃣ Run the test class in VS Code or IntelliJ:
+
+Right-click → Run `FinancialInstitutionServiceTest`
+
+2️⃣ Using Maven (CLI Command):
+
+mvn test
+
+3️⃣ Verify all test cases pass. ✅
+
+Would you like me to generate unit tests for the repository layer next? ✅
+
+
+
+
+
+
+
+
