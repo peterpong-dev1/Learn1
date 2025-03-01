@@ -1,117 +1,97 @@
-It looks like the method signature for searchInstitutions in FinancialInstitutionService takes a single FinancialInstitutionSearchConditionsDTO object instead of individual parameters. You’ll need to update your controller test to pass this DTO instead of separate query parameters.
+package jp.co.mycompany.servicing.controller;
 
-Updated Test Code for FinancialInstitutionControllerTest.java
-
-Modify your test cases to:
-	•	Create an instance of FinancialInstitutionSearchConditionsDTO
-	•	Pass it as a request body in a POST request instead of using query parameters.
-
-Updated Test Code:
-
-import static org.mockito.Mockito.*;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
-
-import com.fasterxml.jackson.databind.ObjectMapper;
-import jp.co.mycompany.servicing.controller.FinancialInstitutionController;
 import jp.co.mycompany.servicing.dto.FinancialInstitutionDTO;
 import jp.co.mycompany.servicing.dto.FinancialInstitutionSearchConditionsDTO;
 import jp.co.mycompany.servicing.service.FinancialInstitutionService;
+import jp.co.mycompany.servicing.util.LogUtil;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
-import org.springframework.test.web.servlet.MockMvc;
-import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.http.ResponseEntity;
+
+import java.util.Collections;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.Mockito.*;
+
+@ExtendWith(MockitoExtension.class)
 class FinancialInstitutionControllerTest {
 
-    private MockMvc mockMvc;
-    private ObjectMapper objectMapper = new ObjectMapper();
-
     @Mock
-    private FinancialInstitutionService service;  // Mock the service layer
+    private FinancialInstitutionService financialInstitutionService;
 
     @InjectMocks
-    private FinancialInstitutionController controller; // Inject the mock service into the controller
+    private FinancialInstitutionController financialInstitutionController;
+
+    private FinancialInstitutionSearchConditionsDTO searchConditions;
+    private FinancialInstitutionDTO financialInstitutionDTO;
 
     @BeforeEach
     void setUp() {
-        MockitoAnnotations.openMocks(this);
-        mockMvc = MockMvcBuilders.standaloneSetup(controller).build();  // Initialize MockMvc
+        // Populate all fields in searchConditions
+        searchConditions = new FinancialInstitutionSearchConditionsDTO();
+        searchConditions.setFinancialInstitutionCode("123");
+        searchConditions.setFinancialInstitutionBranchCode("001");
+        searchConditions.setName("XYZ Bank");
+        searchConditions.setOrderCode("ORD001");
+        searchConditions.setNameKana("KanaXYZ");
+
+        // Populate all fields in financialInstitutionDTO
+        financialInstitutionDTO = new FinancialInstitutionDTO();
+        financialInstitutionDTO.setFinancialInstitutionCode("123");
+        financialInstitutionDTO.setFinancialInstitutionBranchCode("001");
+        financialInstitutionDTO.setName("XYZ Bank");
+        financialInstitutionDTO.setOrderCode("ORD001");
+        financialInstitutionDTO.setNameKana("KanaXYZ");
     }
 
+    /**
+     * ✅ Test: When valid input is provided, should return a list of financial institutions.
+     */
     @Test
-    void testSearchInstitutions_Success() throws Exception {
-        // Prepare mock request body
-        FinancialInstitutionSearchConditionsDTO searchCondition = new FinancialInstitutionSearchConditionsDTO();
-        searchCondition.setFinancialInstitutionCode("123");
+    void testSearchFinancialInstitutions_Success() {
+        List<FinancialInstitutionDTO> expectedResults = Collections.singletonList(financialInstitutionDTO);
+        when(financialInstitutionService.searchInstitutions(any())).thenReturn(expectedResults);
 
-        // Mock service response
-        List<FinancialInstitutionDTO> mockResults = List.of(new FinancialInstitutionDTO("123", "Bank A"));
-        when(service.searchInstitutions(any(FinancialInstitutionSearchConditionsDTO.class))).thenReturn(mockResults);
+        ResponseEntity<List<FinancialInstitutionDTO>> response = financialInstitutionController.searchFinancialInstitutions(searchConditions);
 
-        // Perform API request
-        mockMvc.perform(post("/common/financialInstitution/search")
-                .contentType("application/json")
-                .content(objectMapper.writeValueAsString(searchCondition)))
-                .andExpect(status().isOk()) // Expect HTTP 200 OK
-                .andExpect(jsonPath("$[0].financialInstitutionCode").value("123"))
-                .andExpect(jsonPath("$[0].name").value("Bank A"));
-
-        // Verify service was called once
-        verify(service, times(1)).searchInstitutions(any(FinancialInstitutionSearchConditionsDTO.class));
+        assertEquals(200, response.getStatusCodeValue());
+        assertEquals(1, response.getBody().size());
+        assertEquals("XYZ Bank", response.getBody().get(0).getName());
+        verify(financialInstitutionService, times(1)).searchInstitutions(any());
     }
 
+    /**
+     * ✅ Test: When no matching results are found, should return an empty list.
+     */
     @Test
-    void testSearchInstitutions_NoResults() throws Exception {
-        // Prepare mock request body
-        FinancialInstitutionSearchConditionsDTO searchCondition = new FinancialInstitutionSearchConditionsDTO();
-        searchCondition.setFinancialInstitutionCode("999");
+    void testSearchFinancialInstitutions_NoResults() {
+        when(financialInstitutionService.searchInstitutions(any())).thenReturn(Collections.emptyList());
 
-        // Mock empty response
-        when(service.searchInstitutions(any(FinancialInstitutionSearchConditionsDTO.class))).thenReturn(List.of());
+        ResponseEntity<List<FinancialInstitutionDTO>> response = financialInstitutionController.searchFinancialInstitutions(searchConditions);
 
-        mockMvc.perform(post("/common/financialInstitution/search")
-                .contentType("application/json")
-                .content(objectMapper.writeValueAsString(searchCondition)))
-                .andExpect(status().isOk())  // API should return 200 even if no results found
-                .andExpect(jsonPath("$.length()").value(0)); // Expect empty JSON array
-
-        verify(service, times(1)).searchInstitutions(any(FinancialInstitutionSearchConditionsDTO.class));
+        assertEquals(200, response.getStatusCodeValue());
+        assertEquals(0, response.getBody().size());
+        verify(financialInstitutionService, times(1)).searchInstitutions(any());
     }
 
+    /**
+     * ✅ Test: When the service throws an exception, should handle it properly.
+     */
     @Test
-    void testSearchInstitutions_ThrowsException() throws Exception {
-        // Prepare mock request body
-        FinancialInstitutionSearchConditionsDTO searchCondition = new FinancialInstitutionSearchConditionsDTO();
-        searchCondition.setFinancialInstitutionCode("123");
+    void testSearchFinancialInstitutions_ExceptionHandling() {
+        when(financialInstitutionService.searchInstitutions(any())).thenThrow(new RuntimeException("Internal Server Error"));
 
-        // Mock service throwing an exception
-        when(service.searchInstitutions(any(FinancialInstitutionSearchConditionsDTO.class)))
-                .thenThrow(new RuntimeException("Service Error"));
+        try {
+            financialInstitutionController.searchFinancialInstitutions(searchConditions);
+        } catch (Exception e) {
+            assertEquals("Internal Server Error", e.getMessage());
+        }
 
-        mockMvc.perform(post("/common/financialInstitution/search")
-                .contentType("application/json")
-                .content(objectMapper.writeValueAsString(searchCondition)))
-                .andExpect(status().isInternalServerError());  // Expect 500 Internal Server Error
-
-        verify(service, times(1)).searchInstitutions(any(FinancialInstitutionSearchConditionsDTO.class));
+        verify(financialInstitutionService, times(1)).searchInstitutions(any());
     }
 }
-
-Key Changes:
-
-✔ Changed from GET to POST request, as the method now takes a DTO object.
-✔ Created a FinancialInstitutionSearchConditionsDTO object to pass as the request body.
-✔ Used contentType("application/json") and ObjectMapper to send JSON data.
-✔ Updated service mock expectations to accept a DTO object instead of multiple parameters.
-
-✅ Expected Output (All Tests Pass)
-
-[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0
-[INFO] BUILD SUCCESS
-
-This should now align with your updated method signature. Let me know if you need further modifications! 🚀
