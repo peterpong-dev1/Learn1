@@ -1,41 +1,21 @@
-<!-- Mockito Core -->
-<dependency>
-    <groupId>org.mockito</groupId>
-    <artifactId>mockito-core</artifactId>
-    <version>5.15.2</version>
-    <scope>test</scope>
-</dependency>
+It looks like the method signature for searchInstitutions in FinancialInstitutionService takes a single FinancialInstitutionSearchConditionsDTO object instead of individual parameters. You’ll need to update your controller test to pass this DTO instead of separate query parameters.
 
-<!-- Mockito JUnit Jupiter (For JUnit 5) -->
-<dependency>
-    <groupId>org.mockito</groupId>
-    <artifactId>mockito-junit-jupiter</artifactId>
-    <version>5.15.2</version>
-    <scope>test</scope>
-</dependency>
+Updated Test Code for FinancialInstitutionControllerTest.java
 
+Modify your test cases to:
+	•	Create an instance of FinancialInstitutionSearchConditionsDTO
+	•	Pass it as a request body in a POST request instead of using query parameters.
 
-✅ Unit Test for Controller (FinancialInstitutionControllerTest.java)
-
-This test verifies that the controller correctly handles API requests and returns expected responses.
-
-📌 What This Test Covers
-
-✔ Mocks FinancialInstitutionService to isolate controller behavior.
-✔ Tests successful API response (200 OK).
-✔ Tests error handling (500 Internal Server Error).
-✔ Uses MockMvc to simulate HTTP requests.
-
-📌 Step 1: Create the Test File
-
-Create a test file under src/test/java/jp/co/mycompany/servicing/controller/FinancialInstitutionControllerTest.java
+Updated Test Code:
 
 import static org.mockito.Mockito.*;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jp.co.mycompany.servicing.controller.FinancialInstitutionController;
 import jp.co.mycompany.servicing.dto.FinancialInstitutionDTO;
+import jp.co.mycompany.servicing.dto.FinancialInstitutionSearchConditionsDTO;
 import jp.co.mycompany.servicing.service.FinancialInstitutionService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -49,6 +29,7 @@ import java.util.List;
 class FinancialInstitutionControllerTest {
 
     private MockMvc mockMvc;
+    private ObjectMapper objectMapper = new ObjectMapper();
 
     @Mock
     private FinancialInstitutionService service;  // Mock the service layer
@@ -64,504 +45,73 @@ class FinancialInstitutionControllerTest {
 
     @Test
     void testSearchInstitutions_Success() throws Exception {
+        // Prepare mock request body
+        FinancialInstitutionSearchConditionsDTO searchCondition = new FinancialInstitutionSearchConditionsDTO();
+        searchCondition.setFinancialInstitutionCode("123");
+
         // Mock service response
         List<FinancialInstitutionDTO> mockResults = List.of(new FinancialInstitutionDTO("123", "Bank A"));
-        when(service.searchInstitutions("123", null, null)).thenReturn(mockResults);
+        when(service.searchInstitutions(any(FinancialInstitutionSearchConditionsDTO.class))).thenReturn(mockResults);
 
         // Perform API request
-        mockMvc.perform(get("/common/financialInstitution/search?financialInstitutionCode=123"))
+        mockMvc.perform(post("/common/financialInstitution/search")
+                .contentType("application/json")
+                .content(objectMapper.writeValueAsString(searchCondition)))
                 .andExpect(status().isOk()) // Expect HTTP 200 OK
                 .andExpect(jsonPath("$[0].financialInstitutionCode").value("123"))
                 .andExpect(jsonPath("$[0].name").value("Bank A"));
-        
+
         // Verify service was called once
-        verify(service, times(1)).searchInstitutions("123", null, null);
+        verify(service, times(1)).searchInstitutions(any(FinancialInstitutionSearchConditionsDTO.class));
     }
 
     @Test
     void testSearchInstitutions_NoResults() throws Exception {
-        // Mock empty response
-        when(service.searchInstitutions(any(), any(), any())).thenReturn(List.of());
+        // Prepare mock request body
+        FinancialInstitutionSearchConditionsDTO searchCondition = new FinancialInstitutionSearchConditionsDTO();
+        searchCondition.setFinancialInstitutionCode("999");
 
-        mockMvc.perform(get("/common/financialInstitution/search?financialInstitutionCode=999"))
+        // Mock empty response
+        when(service.searchInstitutions(any(FinancialInstitutionSearchConditionsDTO.class))).thenReturn(List.of());
+
+        mockMvc.perform(post("/common/financialInstitution/search")
+                .contentType("application/json")
+                .content(objectMapper.writeValueAsString(searchCondition)))
                 .andExpect(status().isOk())  // API should return 200 even if no results found
                 .andExpect(jsonPath("$.length()").value(0)); // Expect empty JSON array
-        
-        verify(service, times(1)).searchInstitutions("999", null, null);
+
+        verify(service, times(1)).searchInstitutions(any(FinancialInstitutionSearchConditionsDTO.class));
     }
 
     @Test
     void testSearchInstitutions_ThrowsException() throws Exception {
-        // Mock service throwing an exception
-        when(service.searchInstitutions(any(), any(), any())).thenThrow(new RuntimeException("Service Error"));
+        // Prepare mock request body
+        FinancialInstitutionSearchConditionsDTO searchCondition = new FinancialInstitutionSearchConditionsDTO();
+        searchCondition.setFinancialInstitutionCode("123");
 
-        mockMvc.perform(get("/common/financialInstitution/search?financialInstitutionCode=123"))
+        // Mock service throwing an exception
+        when(service.searchInstitutions(any(FinancialInstitutionSearchConditionsDTO.class)))
+                .thenThrow(new RuntimeException("Service Error"));
+
+        mockMvc.perform(post("/common/financialInstitution/search")
+                .contentType("application/json")
+                .content(objectMapper.writeValueAsString(searchCondition)))
                 .andExpect(status().isInternalServerError());  // Expect 500 Internal Server Error
-        
-        verify(service, times(1)).searchInstitutions("123", null, null);
+
+        verify(service, times(1)).searchInstitutions(any(FinancialInstitutionSearchConditionsDTO.class));
     }
 }
 
-📌 Step 2: What This Test Does
-	•	Mocks the FinancialInstitutionService to test only the controller layer.
-	•	Uses MockMvc to simulate REST API calls.
-	•	Validates API responses (JSON format, status codes, and expected values).
-	•	Handles different scenarios (successful response, empty results, exceptions).
+Key Changes:
 
-📌 Step 3: Run the Test in VS Code
+✔ Changed from GET to POST request, as the method now takes a DTO object.
+✔ Created a FinancialInstitutionSearchConditionsDTO object to pass as the request body.
+✔ Used contentType("application/json") and ObjectMapper to send JSON data.
+✔ Updated service mock expectations to accept a DTO object instead of multiple parameters.
 
-🔹 Run with Maven
-
-mvn test
-
-🔹 Run a Single Test in VS Code
-	1.	Open FinancialInstitutionControllerTest.java
-	2.	Click the Run Test button next to the method
-OR
-Use the VS Code Test Explorer to run all tests.
-
-📌 Expected Output (All Tests Pass)
+✅ Expected Output (All Tests Pass)
 
 [INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0
 [INFO] BUILD SUCCESS
 
-
-✅ Unit Test for Service Layer (FinancialInstitutionServiceTest.java)
-
-This test ensures that the service correctly interacts with the repository and handles different scenarios properly.
-
-📌 What This Test Covers
-
-✔ Mocks FinancialInstitutionRepository to isolate service logic.
-✔ Tests valid search results when data is available.
-✔ Tests empty results when no data is found.
-✔ Tests exception handling for repository failures.
-✔ Ensures correct method calls and interactions.
-
-📌 Step 1: Create the Test File
-
-Create a test file under:
-📍 src/test/java/jp/co/mycompany/servicing/service/FinancialInstitutionServiceTest.java
-
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.Mockito.*;
-
-import jp.co.mycompany.servicing.dto.FinancialInstitutionDTO;
-import jp.co.mycompany.servicing.model.FinancialInstitution;
-import jp.co.mycompany.servicing.repository.FinancialInstitutionRepository;
-import jp.co.mycompany.servicing.service.FinancialInstitutionService;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.mockito.InjectMocks;
-import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
-import java.util.List;
-
-class FinancialInstitutionServiceTest {
-
-    @Mock
-    private FinancialInstitutionRepository repository;  // Mocked repository
-
-    @InjectMocks
-    private FinancialInstitutionService service;  // Service under test
-
-    @BeforeEach
-    void setUp() {
-        MockitoAnnotations.openMocks(this);
-    }
-
-    @Test
-    void testSearchInstitutions_ByCode_ReturnsResults() {
-        // Mock repository response
-        List<FinancialInstitution> mockResults = List.of(new FinancialInstitution("123", "Bank A"));
-        when(repository.findByFinancialInstitutionCode("123")).thenReturn(mockResults);
-
-        // Call service method
-        List<FinancialInstitutionDTO> results = service.searchInstitutions("123", null, null);
-
-        // Assertions
-        assertEquals(1, results.size());
-        assertEquals("Bank A", results.get(0).getName());
-        
-        // Verify correct method was called once
-        verify(repository, times(1)).findByFinancialInstitutionCode("123");
-    }
-
-    @Test
-    void testSearchInstitutions_NoResults_ReturnsEmptyList() {
-        when(repository.findByFinancialInstitutionCode(anyString())).thenReturn(List.of());
-
-        List<FinancialInstitutionDTO> results = service.searchInstitutions("999", null, null);
-
-        assertTrue(results.isEmpty());
-        verify(repository, times(1)).findByFinancialInstitutionCode("999");
-    }
-
-    @Test
-    void testSearchInstitutions_ThrowsException() {
-        when(repository.findByFinancialInstitutionCode(anyString())).thenThrow(new RuntimeException("Database error"));
-
-        Exception exception = assertThrows(RuntimeException.class, () -> service.searchInstitutions("123", null, null));
-
-        assertEquals("Database error", exception.getMessage());
-        verify(repository, times(1)).findByFinancialInstitutionCode("123");
-    }
-
-    @Test
-    void testSearchInstitutions_AllFieldsEmpty_ThrowsBadRequestException() {
-        Exception exception = assertThrows(IllegalArgumentException.class, () -> service.searchInstitutions(null, null, null));
-
-        assertEquals("At least one search field must be provided.", exception.getMessage());
-    }
-}
-
-📌 Step 2: What This Test Does
-	•	Mocks FinancialInstitutionRepository so that no actual database calls happen.
-	•	Tests different inputs:
-	•	✅ Returns results when valid financialInstitutionCode is provided.
-	•	✅ Returns an empty list when no results are found.
-	•	✅ Throws an exception if the repository fails.
-	•	✅ Throws a BadRequestException if no search criteria are provided.
-	•	Uses Mockito.verify() to confirm that the correct repository method was called.
-
-📌 Step 3: Run the Test in VS Code
-
-🔹 Run with Maven
-
-mvn test
-
-🔹 Run a Single Test in VS Code
-	1.	Open FinancialInstitutionServiceTest.java
-	2.	Click the Run Test button next to the method
-OR
-Use the VS Code Test Explorer to run all tests.
-
-📌 Expected Output (All Tests Pass)
-
-[INFO] Tests run: 4, Failures: 0, Errors: 0, Skipped: 0
-[INFO] BUILD SUCCESS
-
-
-
-✅ Unit Test for Repository Layer (FinancialInstitutionRepositoryTest.java)
-
-This test ensures that the repository correctly builds dynamic queries and fetches data from CosmosDB.
-
-📌 What This Test Covers
-
-✔ Mocks CosmosTemplate to avoid actual database calls.
-✔ Tests valid search queries when filters are applied.
-✔ Tests empty results when no data is found.
-✔ Tests query formation dynamically based on input criteria.
-✔ Ensures proper exception handling when a database error occurs.
-
-📌 Step 1: Create the Test File
-
-Create a test file under:
-📍 src/test/java/jp/co/mycompany/servicing/repository/FinancialInstitutionRepositoryTest.java
-
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.Mockito.*;
-
-import com.azure.spring.data.cosmos.core.CosmosTemplate;
-import com.azure.cosmos.models.SqlQuerySpec;
-import com.azure.cosmos.models.SqlParameter;
-import jp.co.mycompany.servicing.model.FinancialInstitution;
-import jp.co.mycompany.servicing.repository.FinancialInstitutionRepository;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.mockito.InjectMocks;
-import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
-import java.util.List;
-import java.util.stream.Stream;
-
-class FinancialInstitutionRepositoryTest {
-
-    @Mock
-    private CosmosTemplate cosmosTemplate;  // Mocked CosmosDB template
-
-    @InjectMocks
-    private FinancialInstitutionRepository repository;  // Repository under test
-
-    @BeforeEach
-    void setUp() {
-        MockitoAnnotations.openMocks(this);
-    }
-
-    @Test
-    void testFindByFinancialInstitutionCode_ReturnsResults() {
-        // Given
-        String code = "123";
-        List<FinancialInstitution> expectedResults = List.of(new FinancialInstitution(code, "Bank A"));
-
-        SqlQuerySpec querySpec = new SqlQuerySpec("SELECT * FROM c WHERE c.financialInstitutionCode = @code",
-                List.of(new SqlParameter("@code", code)));
-
-        // When
-        when(cosmosTemplate.queryItems(querySpec, FinancialInstitution.class))
-                .thenReturn(expectedResults.stream());
-
-        // Then
-        List<FinancialInstitution> results = repository.findByFinancialInstitutionCode(code);
-        assertEquals(1, results.size());
-        assertEquals("Bank A", results.get(0).getName());
-
-        verify(cosmosTemplate, times(1)).queryItems(querySpec, FinancialInstitution.class);
-    }
-
-    @Test
-    void testFindByFinancialInstitutionCode_EmptyResults() {
-        // Given
-        String code = "999";
-        SqlQuerySpec querySpec = new SqlQuerySpec("SELECT * FROM c WHERE c.financialInstitutionCode = @code",
-                List.of(new SqlParameter("@code", code)));
-
-        // When
-        when(cosmosTemplate.queryItems(querySpec, FinancialInstitution.class))
-                .thenReturn(Stream.empty());
-
-        // Then
-        List<FinancialInstitution> results = repository.findByFinancialInstitutionCode(code);
-        assertTrue(results.isEmpty());
-        verify(cosmosTemplate, times(1)).queryItems(querySpec, FinancialInstitution.class);
-    }
-
-    @Test
-    void testFindByFinancialInstitutionCodeAndBranch_ReturnsResults() {
-        // Given
-        String code = "123";
-        String branch = "456";
-        List<FinancialInstitution> expectedResults = List.of(new FinancialInstitution(code, "Bank A"));
-
-        SqlQuerySpec querySpec = new SqlQuerySpec("SELECT * FROM c WHERE c.financialInstitutionCode = @code AND c.financialInstitutionBranchCode = @branch",
-                List.of(new SqlParameter("@code", code), new SqlParameter("@branch", branch)));
-
-        // When
-        when(cosmosTemplate.queryItems(querySpec, FinancialInstitution.class))
-                .thenReturn(expectedResults.stream());
-
-        // Then
-        List<FinancialInstitution> results = repository.findByFinancialInstitutionCodeAndBranch(code, branch);
-        assertEquals(1, results.size());
-        assertEquals("Bank A", results.get(0).getName());
-
-        verify(cosmosTemplate, times(1)).queryItems(querySpec, FinancialInstitution.class);
-    }
-
-    @Test
-    void testFindByName_ReturnsResults() {
-        // Given
-        String name = "Bank A";
-        List<FinancialInstitution> expectedResults = List.of(new FinancialInstitution("123", name));
-
-        SqlQuerySpec querySpec = new SqlQuerySpec("SELECT * FROM c WHERE c.name = @name",
-                List.of(new SqlParameter("@name", name)));
-
-        // When
-        when(cosmosTemplate.queryItems(querySpec, FinancialInstitution.class))
-                .thenReturn(expectedResults.stream());
-
-        // Then
-        List<FinancialInstitution> results = repository.findByName(name);
-        assertEquals(1, results.size());
-        assertEquals("Bank A", results.get(0).getName());
-
-        verify(cosmosTemplate, times(1)).queryItems(querySpec, FinancialInstitution.class);
-    }
-
-    @Test
-    void testFindByFinancialInstitutionCode_ThrowsException() {
-        // Given
-        String code = "123";
-        SqlQuerySpec querySpec = new SqlQuerySpec("SELECT * FROM c WHERE c.financialInstitutionCode = @code",
-                List.of(new SqlParameter("@code", code)));
-
-        // When
-        when(cosmosTemplate.queryItems(querySpec, FinancialInstitution.class))
-                .thenThrow(new RuntimeException("Database error"));
-
-        // Then
-        Exception exception = assertThrows(RuntimeException.class, () -> repository.findByFinancialInstitutionCode(code));
-        assertEquals("Database error", exception.getMessage());
-
-        verify(cosmosTemplate, times(1)).queryItems(querySpec, FinancialInstitution.class);
-    }
-}
-
-📌 Step 2: What This Test Does
-	•	Mocks CosmosTemplate to simulate database queries without hitting the actual CosmosDB.
-	•	Tests different search queries:
-	•	✅ Finds results when financialInstitutionCode is provided.
-	•	✅ Finds results when financialInstitutionCode and financialInstitutionBranchCode are provided.
-	•	✅ Finds results when name is provided.
-	•	✅ Returns an empty list when no data matches.
-	•	Handles exceptions properly:
-	•	✅ Throws an exception when the CosmosDB query fails.
-	•	Verifies correct queries are being executed dynamically.
-
-📌 Step 3: Run the Test in VS Code
-
-🔹 Run with Maven
-
-mvn test
-
-🔹 Run a Single Test in VS Code
-	1.	Open FinancialInstitutionRepositoryTest.java
-	2.	Click the Run Test button next to the method
-OR
-Use the VS Code Test Explorer to run all tests.
-
-📌 Expected Output (All Tests Pass)
-
-[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0
-[INFO] BUILD SUCCESS
-
-
-✅ Unit Test for Global Exception Handler (GlobalExceptionHandlerTest.java)
-
-This test ensures that exception handling works correctly with hardcoded inputs, without any configurable parameters.
-
-📌 What This Test Covers
-
-✔ Tests handling of different exceptions (BadRequestException, DatabaseException, RuntimeException).
-✔ Verifies correct HTTP status codes (400, 500).
-✔ Ensures error responses match the expected JSON schema.
-✔ Uses hardcoded input values (no configuration).
-
-📌 Create the Test File
-
-Create a test file under:
-📍 src/test/java/jp/co/mycompany/servicing/exception/GlobalExceptionHandlerTest.java
-
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.Mockito.*;
-
-import jp.co.mycompany.servicing.dto.ErrorResponseDTO;
-import jp.co.mycompany.servicing.exception.GlobalExceptionHandler;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.springframework.http.ResponseEntity;
-
-class GlobalExceptionHandlerTest {
-
-    private GlobalExceptionHandler exceptionHandler;
-
-    @BeforeEach
-    void setUp() {
-        exceptionHandler = new GlobalExceptionHandler();
-    }
-
-    @Test
-    void testHandleBadRequestException() {
-        // Given
-        Exception badRequestException = new IllegalArgumentException("Invalid request parameters");
-
-        // When
-        ResponseEntity<ErrorResponseDTO> response = exceptionHandler.handleException(badRequestException);
-
-        // Then
-        assertEquals(400, response.getStatusCodeValue());
-        assertNotNull(response.getBody());
-        assertEquals("Invalid request parameters", response.getBody().getMessage());
-    }
-
-    @Test
-    void testHandleDatabaseException() {
-        // Given
-        Exception dbException = new RuntimeException("Database connection failed");
-
-        // When
-        ResponseEntity<ErrorResponseDTO> response = exceptionHandler.handleException(dbException);
-
-        // Then
-        assertEquals(500, response.getStatusCodeValue());
-        assertNotNull(response.getBody());
-        assertEquals("Database connection failed", response.getBody().getMessage());
-    }
-
-    @Test
-    void testHandleGenericException() {
-        // Given
-        Exception genericException = new RuntimeException("Unexpected error occurred");
-
-        // When
-        ResponseEntity<ErrorResponseDTO> response = exceptionHandler.handleException(genericException);
-
-        // Then
-        assertEquals(500, response.getStatusCodeValue());
-        assertNotNull(response.getBody());
-        assertEquals("Unexpected error occurred", response.getBody().getMessage());
-    }
-
-    @Test
-    void testHandleExceptionWithRequestId() {
-        // Given
-        String requestId = "REQ-123456";
-        Exception exception = new RuntimeException("Internal server error");
-
-        // When
-        ResponseEntity<ErrorResponseDTO> response = exceptionHandler.handleException(exception);
-
-        // Then
-        assertEquals(500, response.getStatusCodeValue());
-        assertNotNull(response.getBody());
-        assertEquals("Internal server error", response.getBody().getMessage());
-    }
-}
-
-📌 What This Test Does
-
-Test Case	Exception Type	Expected HTTP Status	Expected Message
-Bad Request	IllegalArgumentException	400 Bad Request	"Invalid request parameters"
-Database Failure	RuntimeException	500 Internal Server Error	"Database connection failed"
-Generic Exception	RuntimeException	500 Internal Server Error	"Unexpected error occurred"
-Request ID Included	RuntimeException	500 Internal Server Error	"Internal server error"
-
-📌 No configurable input values, everything is hardcoded.
-
-📌 Run the Test in VS Code
-
-🔹 Run with Maven
-
-mvn test
-
-🔹 Run a Single Test in VS Code
-	1.	Open GlobalExceptionHandlerTest.java
-	2.	Click the Run Test button next to the method
-OR
-Use the VS Code Test Explorer to run all tests.
-
-📌 Expected Output (All Tests Pass)
-
-[INFO] Tests run: 4, Failures: 0, Errors: 0, Skipped: 0
-[INFO] BUILD SUCCESS
-
-✅ Now you can copy-paste and use this directly! 🚀
-
-Would you like:
-	1.	How to integrate these unit tests into a CI/CD pipeline (Jenkins/GitHub Actions)?
-	2.	How to generate test coverage reports (JaCoCo) in Spring Boot? 🚀
-
-
-
-
-
-✅ Next Steps
-
-Would you like:
-	1.	Unit test for GlobalExceptionHandler next?
-	2.	How to integrate these tests into a CI/CD pipeline? 🚀
-
-
-
-
-
-
-✅ Next Steps
-
-Would you like:
-	1.	Unit test for FinancialInstitutionRepository next?
-	2.	How to mock the database layer 
-	1.	Unit test for FinancialInstitutionService next?
-	2.	How to generate coverage reports (JaCoCo) for the tests? 🚀
+This should now align with your updated method signature. Let me know if you need further modifications! 🚀
