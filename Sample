@@ -259,6 +259,162 @@ Would you like me to generate unit tests for the repository layer next? ✅
 
 
 
+✅ Test Cases for Dynamic Queries in Repository Layer
+
+Since your repository method uses dynamic queries based on 5 parameters, we need to test different input combinations to verify that the query is built correctly for each case.
+
+📌 1️⃣ What This Test Covers
+
+Test Case	Scenario	Expected Query Behavior
+testSearchWithOnlyFinancialInstitutionCode() ✅	Only financialInstitutionCode is provided	Query should filter only by financialInstitutionCode
+testSearchWithOnlyBranchCode() ✅	Only financialInstitutionBranchCode is provided	Query should filter only by branchCode
+testSearchWithMultipleFilters() ✅	Combination of parameters	Query should include multiple filters
+testSearchWithAllParameters() ✅	All search fields are filled	Query should include all filters
+
+📌 2️⃣ Updated FinancialInstitutionRepositoryTest.java with Dynamic Query Tests
+
+package jp.co.mycompany.servicing.repository;
+
+import com.azure.cosmos.CosmosContainer;
+import com.azure.cosmos.models.CosmosQueryRequestOptions;
+import com.azure.cosmos.models.SqlQuerySpec;
+import jp.co.mycompany.servicing.config.CosmosDBRepository;
+import jp.co.mycompany.servicing.dto.FinancialInstitutionSearchConditionsDTO;
+import jp.co.mycompany.servicing.model.FinancialInstitutionModel;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+import java.util.Collections;
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.Mockito.*;
+
+@ExtendWith(MockitoExtension.class)
+class FinancialInstitutionRepositoryTest {
+
+    @Mock
+    private CosmosDBRepository cosmosDBRepository;
+
+    @Mock
+    private CosmosContainer cosmosContainer;
+
+    @InjectMocks
+    private FinancialInstitutionRepository financialInstitutionRepository;
+
+    private FinancialInstitutionSearchConditionsDTO searchConditions;
+
+    @BeforeEach
+    void setUp() {
+        searchConditions = new FinancialInstitutionSearchConditionsDTO();
+        when(cosmosDBRepository.getContainer()).thenReturn(cosmosContainer);
+    }
+
+    /**
+     * ✅ Test: Query should filter only by `financialInstitutionCode`
+     */
+    @Test
+    void testSearchWithOnlyFinancialInstitutionCode() {
+        searchConditions.setFinancialInstitutionCode("123");
+
+        financialInstitutionRepository.searchWithDynamicQuery(searchConditions);
+
+        verify(cosmosContainer, times(1)).queryItems(argThat(querySpec ->
+                querySpec.getQueryText().contains("financialInstitutionCode = @code") &&
+                !querySpec.getQueryText().contains("branchCode") &&
+                !querySpec.getQueryText().contains("name")
+        ), any(CosmosQueryRequestOptions.class), eq(FinancialInstitutionModel.class));
+    }
+
+    /**
+     * ✅ Test: Query should filter only by `branchCode`
+     */
+    @Test
+    void testSearchWithOnlyBranchCode() {
+        searchConditions.setFinancialInstitutionBranchCode("001");
+
+        financialInstitutionRepository.searchWithDynamicQuery(searchConditions);
+
+        verify(cosmosContainer, times(1)).queryItems(argThat(querySpec ->
+                querySpec.getQueryText().contains("financialInstitutionBranchCode = @branch") &&
+                !querySpec.getQueryText().contains("financialInstitutionCode") &&
+                !querySpec.getQueryText().contains("name")
+        ), any(CosmosQueryRequestOptions.class), eq(FinancialInstitutionModel.class));
+    }
+
+    /**
+     * ✅ Test: Query should filter by multiple parameters
+     */
+    @Test
+    void testSearchWithMultipleFilters() {
+        searchConditions.setFinancialInstitutionCode("123");
+        searchConditions.setName("XYZ Bank");
+
+        financialInstitutionRepository.searchWithDynamicQuery(searchConditions);
+
+        verify(cosmosContainer, times(1)).queryItems(argThat(querySpec ->
+                querySpec.getQueryText().contains("financialInstitutionCode = @code") &&
+                querySpec.getQueryText().contains("name = @name") &&
+                !querySpec.getQueryText().contains("branchCode")
+        ), any(CosmosQueryRequestOptions.class), eq(FinancialInstitutionModel.class));
+    }
+
+    /**
+     * ✅ Test: Query should filter by all parameters
+     */
+    @Test
+    void testSearchWithAllParameters() {
+        searchConditions.setFinancialInstitutionCode("123");
+        searchConditions.setFinancialInstitutionBranchCode("001");
+        searchConditions.setName("XYZ Bank");
+        searchConditions.setOrderCode("ORD001");
+        searchConditions.setNameKana("KanaXYZ");
+
+        financialInstitutionRepository.searchWithDynamicQuery(searchConditions);
+
+        verify(cosmosContainer, times(1)).queryItems(argThat(querySpec ->
+                querySpec.getQueryText().contains("financialInstitutionCode = @code") &&
+                querySpec.getQueryText().contains("financialInstitutionBranchCode = @branch") &&
+                querySpec.getQueryText().contains("name = @name") &&
+                querySpec.getQueryText().contains("orderCode = @orderCode") &&
+                querySpec.getQueryText().contains("nameKana = @nameKana")
+        ), any(CosmosQueryRequestOptions.class), eq(FinancialInstitutionModel.class));
+    }
+}
+
+📌 3️⃣ Explanation of Dynamic Query Tests
+
+Test Case	What It Does	How It Works
+testSearchWithOnlyFinancialInstitutionCode() ✅	Ensures that only financialInstitutionCode is included in the query	Uses argThat() to check if the generated query contains "financialInstitutionCode = @code" and no other filters
+testSearchWithOnlyBranchCode() ✅	Ensures that only financialInstitutionBranchCode is included	Verifies that the query does not contain other parameters
+testSearchWithMultipleFilters() ✅	Ensures query includes multiple conditions when provided	Verifies that both financialInstitutionCode and name are included
+testSearchWithAllParameters() ✅	Ensures that all filters are included when all parameters are filled	Checks that all fields exist in the generated query
+
+📌 4️⃣ What This Test Ensures
+
+✔ Verifies Query Building – Ensures correct filters are applied for different input combinations.
+✔ Prevents Missing Filters – Ensures no extra filters are added when not needed.
+✔ Validates Dynamic Query Execution – Prevents incorrect SQL conditions.
+
+🚀 Final Steps: How to Run These Tests?
+
+1️⃣ Run the test class in VS Code or IntelliJ:
+
+Right-click → Run `FinancialInstitutionRepositoryTest`
+
+2️⃣ Using Maven (CLI Command):
+
+mvn test
+
+3️⃣ Verify all test cases pass. ✅
+
+Would you like me to generate unit tests for exception handling next? ✅
+
+
 
 
 
