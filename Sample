@@ -13,3 +13,120 @@
     <version>5.15.2</version>
     <scope>test</scope>
 </dependency>
+
+
+✅ Unit Test for Controller (FinancialInstitutionControllerTest.java)
+
+This test verifies that the controller correctly handles API requests and returns expected responses.
+
+📌 What This Test Covers
+
+✔ Mocks FinancialInstitutionService to isolate controller behavior.
+✔ Tests successful API response (200 OK).
+✔ Tests error handling (500 Internal Server Error).
+✔ Uses MockMvc to simulate HTTP requests.
+
+📌 Step 1: Create the Test File
+
+Create a test file under src/test/java/jp/co/mycompany/servicing/controller/FinancialInstitutionControllerTest.java
+
+import static org.mockito.Mockito.*;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+
+import jp.co.mycompany.servicing.controller.FinancialInstitutionController;
+import jp.co.mycompany.servicing.dto.FinancialInstitutionDTO;
+import jp.co.mycompany.servicing.service.FinancialInstitutionService;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.MockitoAnnotations;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import java.util.List;
+
+class FinancialInstitutionControllerTest {
+
+    private MockMvc mockMvc;
+
+    @Mock
+    private FinancialInstitutionService service;  // Mock the service layer
+
+    @InjectMocks
+    private FinancialInstitutionController controller; // Inject the mock service into the controller
+
+    @BeforeEach
+    void setUp() {
+        MockitoAnnotations.openMocks(this);
+        mockMvc = MockMvcBuilders.standaloneSetup(controller).build();  // Initialize MockMvc
+    }
+
+    @Test
+    void testSearchInstitutions_Success() throws Exception {
+        // Mock service response
+        List<FinancialInstitutionDTO> mockResults = List.of(new FinancialInstitutionDTO("123", "Bank A"));
+        when(service.searchInstitutions("123", null, null)).thenReturn(mockResults);
+
+        // Perform API request
+        mockMvc.perform(get("/common/financialInstitution/search?financialInstitutionCode=123"))
+                .andExpect(status().isOk()) // Expect HTTP 200 OK
+                .andExpect(jsonPath("$[0].financialInstitutionCode").value("123"))
+                .andExpect(jsonPath("$[0].name").value("Bank A"));
+        
+        // Verify service was called once
+        verify(service, times(1)).searchInstitutions("123", null, null);
+    }
+
+    @Test
+    void testSearchInstitutions_NoResults() throws Exception {
+        // Mock empty response
+        when(service.searchInstitutions(any(), any(), any())).thenReturn(List.of());
+
+        mockMvc.perform(get("/common/financialInstitution/search?financialInstitutionCode=999"))
+                .andExpect(status().isOk())  // API should return 200 even if no results found
+                .andExpect(jsonPath("$.length()").value(0)); // Expect empty JSON array
+        
+        verify(service, times(1)).searchInstitutions("999", null, null);
+    }
+
+    @Test
+    void testSearchInstitutions_ThrowsException() throws Exception {
+        // Mock service throwing an exception
+        when(service.searchInstitutions(any(), any(), any())).thenThrow(new RuntimeException("Service Error"));
+
+        mockMvc.perform(get("/common/financialInstitution/search?financialInstitutionCode=123"))
+                .andExpect(status().isInternalServerError());  // Expect 500 Internal Server Error
+        
+        verify(service, times(1)).searchInstitutions("123", null, null);
+    }
+}
+
+📌 Step 2: What This Test Does
+	•	Mocks the FinancialInstitutionService to test only the controller layer.
+	•	Uses MockMvc to simulate REST API calls.
+	•	Validates API responses (JSON format, status codes, and expected values).
+	•	Handles different scenarios (successful response, empty results, exceptions).
+
+📌 Step 3: Run the Test in VS Code
+
+🔹 Run with Maven
+
+mvn test
+
+🔹 Run a Single Test in VS Code
+	1.	Open FinancialInstitutionControllerTest.java
+	2.	Click the Run Test button next to the method
+OR
+Use the VS Code Test Explorer to run all tests.
+
+📌 Expected Output (All Tests Pass)
+
+[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0
+[INFO] BUILD SUCCESS
+
+✅ Next Steps
+
+Would you like:
+	1.	Unit test for FinancialInstitutionService next?
+	2.	How to generate coverage reports (JaCoCo) for the tests? 🚀
