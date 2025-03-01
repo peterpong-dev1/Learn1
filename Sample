@@ -1,18 +1,97 @@
-import com.azure.cosmos.CosmosClient;
-import com.azure.cosmos.CosmosContainer;
-import jp.co.mycompany.servicing.config.CosmosDBConfig;
-import jp.co.mycompany.servicing.model.FinancialInstitutionModel;
-import jp.co.mycompany.servicing.dto.FinancialInstitutionSearchConditionsDTO;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.stereotype.Repository;
-import java.util.List;
+✅ INFO Logs Without Request ID (Request ID Managed via Logger Config)
 
-/**
- * Repository class for accessing financial institution data in Azure Cosmos DB.
- * This class dynamically builds queries based on provided search conditions.
- */
+Here are the updated INFO logs with Request ID removed from manual log messages since you have configured it in your logger XML. These logs capture essential details like input parameters, query execution, and response size for efficient debugging and monitoring.
+
+📌 What INFO Logs Should Include?
+
+✔ Start and End of API Calls → Tracks when an API request starts and completes.
+✔ Input Parameters (Request Data) → Logs what is received in API requests.
+✔ Size of the Response Data → Ensures expected results are returned.
+✔ Execution Time → Measures request processing time.
+✔ Query Execution Logging (Repository Layer) → Captures search filters and SQL query execution.
+✔ Exception Logging (Global Exception Handler) → Ensures proper tracking of validation and unexpected errors.
+
+📌 1️⃣ Controller Layer – FinancialInstitutionController.java
+
+@RestController
+@RequestMapping("/common/financialInstitution")
+public class FinancialInstitutionController {
+
+    private final FinancialInstitutionService financialInstitutionService;
+    private final Logger logger = LoggerFactory.getLogger(FinancialInstitutionController.class);
+
+    public FinancialInstitutionController(FinancialInstitutionService financialInstitutionService) {
+        this.financialInstitutionService = financialInstitutionService;
+    }
+
+    /**
+     * Endpoint for searching financial institutions.
+     * Logs input parameters and result size.
+     *
+     * @param searchCondition The search parameters.
+     * @return A list of matching financial institutions.
+     */
+    @PostMapping("/search")
+    public ResponseEntity<List<FinancialInstitutionDTO>> searchFinancialInstitutions(
+            @RequestBody FinancialInstitutionSearchConditionsDTO searchCondition) {
+
+        long startTime = System.currentTimeMillis(); // Track start time
+
+        logger.info("[START] Searching financial institutions with criteria: {}", searchCondition);
+
+        List<FinancialInstitutionDTO> results = financialInstitutionService.searchInstitutions(searchCondition);
+
+        logger.info("[END] Search completed. Results found: {}, Processing time: {} ms", 
+                results.size(), (System.currentTimeMillis() - startTime));
+
+        return ResponseEntity.ok(results);
+    }
+}
+
+✔ Logs request parameters (searchCondition).
+✔ Logs number of results returned (results.size()).
+✔ Logs request processing time.
+
+📌 2️⃣ Service Layer – FinancialInstitutionServiceImpl.java
+
+@Service
+public class FinancialInstitutionServiceImpl implements FinancialInstitutionService {
+
+    private final FinancialInstitutionRepository repository;
+    private final FinancialInstitutionMapper mapper;
+    private final Logger logger = LoggerFactory.getLogger(FinancialInstitutionServiceImpl.class);
+
+    public FinancialInstitutionServiceImpl(FinancialInstitutionRepository repository, FinancialInstitutionMapper mapper) {
+        this.repository = repository;
+        this.mapper = mapper;
+    }
+
+    /**
+     * Searches for financial institutions based on provided criteria.
+     *
+     * @param searchCondition The search parameters.
+     * @return A list of matching financial institutions.
+     */
+    @Override
+    public List<FinancialInstitutionDTO> searchInstitutions(FinancialInstitutionSearchConditionsDTO searchCondition) {
+
+        logger.info("Processing financial institution search in service layer with criteria: {}", searchCondition);
+
+        List<FinancialInstitutionModel> institutions = repository.searchWithDynamicQuery(searchCondition);
+        List<FinancialInstitutionDTO> results = institutions.stream().map(mapper::toDTO).collect(Collectors.toList());
+
+        logger.info("Search completed in service layer. Institutions found: {}", results.size());
+
+        return results;
+    }
+}
+
+✔ Logs input search criteria.
+✔ Logs when processing starts and ends.
+✔ Logs the number of results returned.
+
+📌 3️⃣ Repository Layer – FinancialInstitutionRepository.java
+
 @Repository
 public class FinancialInstitutionRepository {
 
@@ -25,24 +104,105 @@ public class FinancialInstitutionRepository {
     private final Logger logger = LoggerFactory.getLogger(FinancialInstitutionRepository.class);
 
     /**
-     * Retrieves the Cosmos DB container to execute SQL queries.
+     * Searches financial institutions dynamically based on provided criteria.
      *
-     * @return The CosmosContainer instance used for querying financial institution data.
+     * @param searchConditions The search filters.
+     * @return A list of matching financial institutions.
      */
-    private CosmosContainer getContainer() {
-        return cosmosClient.getDatabase(cosmosProperties.getDatabase()).getContainer(cosmosProperties.getContainer());
+    public List<FinancialInstitutionModel> searchWithDynamicQuery(FinancialInstitutionSearchConditionsDTO searchConditions) {
+        
+        logger.info("[QUERY START] Building dynamic query for financial institutions");
+
+        StringBuilder queryBuilder = new StringBuilder("SELECT * FROM FinancialInstitutions WHERE 1=1");
+        List<SqlParameter> parameters = new ArrayList<>();
+
+        if (StringUtils.hasText(searchConditions.getFinancialInstitutionCode())) {
+            queryBuilder.append(" AND financialInstitutionCode = @code");
+            parameters.add(new SqlParameter("@code", searchConditions.getFinancialInstitutionCode()));
+            logger.info("Added filter: financialInstitutionCode = {}", searchConditions.getFinancialInstitutionCode());
+        }
+
+        if (StringUtils.hasText(searchConditions.getFinancialInstitutionBranchCode())) {
+            queryBuilder.append(" AND financialInstitutionBranchCode = @branch");
+            parameters.add(new SqlParameter("@branch", searchConditions.getFinancialInstitutionBranchCode()));
+            logger.info("Added filter: financialInstitutionBranchCode = {}", searchConditions.getFinancialInstitutionBranchCode());
+        }
+
+        SqlQuerySpec querySpec = new SqlQuerySpec(queryBuilder.toString(), parameters);
+
+        logger.info("[QUERY EXECUTE] Executing query: {}", queryBuilder.toString());
+
+        List<FinancialInstitutionModel> results = getContainer()
+                .queryItems(querySpec, new CosmosQueryRequestOptions(), FinancialInstitutionModel.class)
+                .stream()
+                .collect(Collectors.toList());
+
+        logger.info("[QUERY END] Query execution completed. Results found: {}", results.size());
+
+        return results;
+    }
+}
+
+✔ Logs query-building process step-by-step.
+✔ Logs added filters dynamically.
+✔ Logs query execution start and end.
+✔ Logs the number of results fetched from the database.
+
+📌 4️⃣ Global Exception Handling – GlobalExceptionHandler.java
+
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+
+    private final Logger logger = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
+    /**
+     * Handles validation errors (400 Bad Request).
+     *
+     * @param ex The validation exception.
+     * @return ResponseEntity containing error details.
+     */
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<ErrorResponseDTO> handleValidationException(MethodArgumentNotValidException ex) {
+        
+        logger.info("Validation error occurred: {}", ex.getMessage());
+
+        ErrorResponseDTO errorResponse = new ErrorResponseDTO("400", "Invalid parameter value", 
+                null, LocalDateTime.now(), null);
+
+        return new ResponseEntity<>(errorResponse, HttpStatus.BAD_REQUEST);
     }
 
     /**
-     * Searches financial institutions dynamically based on provided search conditions.
-     * The query is built dynamically, meaning no fixed parameters are required.
+     * Handles general exceptions (500 Internal Server Error).
      *
-     * @param searchConditions The search criteria containing optional parameters.
-     *                         At least one valid parameter should be provided.
-     * @return A list of financial institutions matching the search criteria.
+     * @param ex The unexpected exception.
+     * @return ResponseEntity containing error details.
      */
-    public List<FinancialInstitutionModel> searchWithDynamicQuery(
-            FinancialInstitutionSearchConditionsDTO searchConditions) {
-        // Implementation logic for executing dynamic query in Cosmos DB
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<ErrorResponseDTO> handleGeneralException(Exception ex) {
+        
+        logger.error("Unexpected error occurred: {}", ex.getMessage());
+
+        ErrorResponseDTO errorResponse = new ErrorResponseDTO("500", "An unexpected error occurred", 
+                null, LocalDateTime.now(), null);
+
+        return new ResponseEntity<>(errorResponse, HttpStatus.INTERNAL_SERVER_ERROR);
     }
 }
+
+✔ Logs validation errors and general exceptions.
+
+✅ Is This Logging Enough?
+
+Yes, this logging setup provides sufficient visibility while keeping logs clean and readable.
+
+📌 Summary of What’s Logged
+
+Layer	What is Logged?
+Controller	Start, input parameters, number of results, processing time
+Service	Input parameters, number of results from DB
+Repository	Query-building process, filters, number of records found
+Global Exception Handler	Validation and unexpected errors
+
+🚀 Now your logs are structured for effective tracking and debugging!
+Would you like DEBUG logs next? ✅
