@@ -125,6 +125,130 @@ Use the VS Code Test Explorer to run all tests.
 [INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0
 [INFO] BUILD SUCCESS
 
+
+✅ Unit Test for Service Layer (FinancialInstitutionServiceTest.java)
+
+This test ensures that the service correctly interacts with the repository and handles different scenarios properly.
+
+📌 What This Test Covers
+
+✔ Mocks FinancialInstitutionRepository to isolate service logic.
+✔ Tests valid search results when data is available.
+✔ Tests empty results when no data is found.
+✔ Tests exception handling for repository failures.
+✔ Ensures correct method calls and interactions.
+
+📌 Step 1: Create the Test File
+
+Create a test file under:
+📍 src/test/java/jp/co/mycompany/servicing/service/FinancialInstitutionServiceTest.java
+
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
+
+import jp.co.mycompany.servicing.dto.FinancialInstitutionDTO;
+import jp.co.mycompany.servicing.model.FinancialInstitution;
+import jp.co.mycompany.servicing.repository.FinancialInstitutionRepository;
+import jp.co.mycompany.servicing.service.FinancialInstitutionService;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.MockitoAnnotations;
+import java.util.List;
+
+class FinancialInstitutionServiceTest {
+
+    @Mock
+    private FinancialInstitutionRepository repository;  // Mocked repository
+
+    @InjectMocks
+    private FinancialInstitutionService service;  // Service under test
+
+    @BeforeEach
+    void setUp() {
+        MockitoAnnotations.openMocks(this);
+    }
+
+    @Test
+    void testSearchInstitutions_ByCode_ReturnsResults() {
+        // Mock repository response
+        List<FinancialInstitution> mockResults = List.of(new FinancialInstitution("123", "Bank A"));
+        when(repository.findByFinancialInstitutionCode("123")).thenReturn(mockResults);
+
+        // Call service method
+        List<FinancialInstitutionDTO> results = service.searchInstitutions("123", null, null);
+
+        // Assertions
+        assertEquals(1, results.size());
+        assertEquals("Bank A", results.get(0).getName());
+        
+        // Verify correct method was called once
+        verify(repository, times(1)).findByFinancialInstitutionCode("123");
+    }
+
+    @Test
+    void testSearchInstitutions_NoResults_ReturnsEmptyList() {
+        when(repository.findByFinancialInstitutionCode(anyString())).thenReturn(List.of());
+
+        List<FinancialInstitutionDTO> results = service.searchInstitutions("999", null, null);
+
+        assertTrue(results.isEmpty());
+        verify(repository, times(1)).findByFinancialInstitutionCode("999");
+    }
+
+    @Test
+    void testSearchInstitutions_ThrowsException() {
+        when(repository.findByFinancialInstitutionCode(anyString())).thenThrow(new RuntimeException("Database error"));
+
+        Exception exception = assertThrows(RuntimeException.class, () -> service.searchInstitutions("123", null, null));
+
+        assertEquals("Database error", exception.getMessage());
+        verify(repository, times(1)).findByFinancialInstitutionCode("123");
+    }
+
+    @Test
+    void testSearchInstitutions_AllFieldsEmpty_ThrowsBadRequestException() {
+        Exception exception = assertThrows(IllegalArgumentException.class, () -> service.searchInstitutions(null, null, null));
+
+        assertEquals("At least one search field must be provided.", exception.getMessage());
+    }
+}
+
+📌 Step 2: What This Test Does
+	•	Mocks FinancialInstitutionRepository so that no actual database calls happen.
+	•	Tests different inputs:
+	•	✅ Returns results when valid financialInstitutionCode is provided.
+	•	✅ Returns an empty list when no results are found.
+	•	✅ Throws an exception if the repository fails.
+	•	✅ Throws a BadRequestException if no search criteria are provided.
+	•	Uses Mockito.verify() to confirm that the correct repository method was called.
+
+📌 Step 3: Run the Test in VS Code
+
+🔹 Run with Maven
+
+mvn test
+
+🔹 Run a Single Test in VS Code
+	1.	Open FinancialInstitutionServiceTest.java
+	2.	Click the Run Test button next to the method
+OR
+Use the VS Code Test Explorer to run all tests.
+
+📌 Expected Output (All Tests Pass)
+
+[INFO] Tests run: 4, Failures: 0, Errors: 0, Skipped: 0
+[INFO] BUILD SUCCESS
+
+✅ Next Steps
+
+Would you like:
+	1.	Unit test for FinancialInstitutionRepository next?
+	2.	How to mock the database layer (CosmosDB) properly in tests? 🚀
+
+
+
 ✅ Next Steps
 
 Would you like:
