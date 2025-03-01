@@ -196,7 +196,83 @@ public class GlobalExceptionHandler {
         return new ResponseEntity<>(errorResponse, HttpStatus.INTERNAL_SERVER_ERROR);
     }
 }
+✅ How INFO and DEBUG Will Log searchCondition Differently?
 
+By default, both INFO and DEBUG logs will print the same format if searchCondition is passed directly. However, if we want:
+	•	INFO to log a concise key-value format
+	•	DEBUG to log a full JSON structure
+
+We need custom formatting.
+
+📌 Solution: Format INFO and DEBUG Logs Differently
+
+Modify the logging statements so that INFO logs a simple key-value format, while DEBUG logs the full JSON payload.
+
+🔹 Updated Controller Logging
+
+@PostMapping("/search")
+public ResponseEntity<List<FinancialInstitutionDTO>> searchFinancialInstitutions(
+        @RequestBody FinancialInstitutionSearchConditionsDTO searchCondition) {
+
+    long startTime = System.currentTimeMillis();
+
+    // INFO: Log search condition in key-value format
+    logger.info("[START] Searching financial institutions with criteria: {}", formatForInfoLog(searchCondition));
+
+    // DEBUG: Log full JSON structure
+    logger.debug("Received full request payload: {}", convertToJson(searchCondition));
+
+    List<FinancialInstitutionDTO> results = financialInstitutionService.searchInstitutions(searchCondition);
+
+    logger.debug("Raw service response before sending: {}", convertToJson(results));
+    logger.info("[END] Search completed. Results found: {}, Processing time: {} ms", 
+            results.size(), (System.currentTimeMillis() - startTime));
+
+    return ResponseEntity.ok(results);
+}
+
+✔ INFO logs key-value format
+✔ DEBUG logs full JSON payload
+
+📌 Implement Formatting Methods
+
+🔹 1️⃣ Convert to Key-Value Format for INFO Logs
+
+private String formatForInfoLog(FinancialInstitutionSearchConditionsDTO searchCondition) {
+    return String.format("financialInstitutionCode=%s, branchCode=%s, name=%s",
+            searchCondition.getFinancialInstitutionCode(),
+            searchCondition.getFinancialInstitutionBranchCode(),
+            searchCondition.getName());
+}
+
+✔ Creates a compact key-value format for INFO logs.
+✔ Prints something like:
+
+[INFO] Searching financial institutions with criteria: financialInstitutionCode=123, branchCode=null, name=XYZ Bank
+
+🔹 2️⃣ Convert to JSON for DEBUG Logs
+
+private String convertToJson(Object object) {
+    try {
+        return new ObjectMapper().writeValueAsString(object);
+    } catch (JsonProcessingException e) {
+        return "Error converting to JSON: " + e.getMessage();
+    }
+}
+
+✔ Converts any Java object to a JSON string for DEBUG logs.
+✔ Prints something like:
+
+[DEBUG] Received full request payload: {"financialInstitutionCode":"123","branchCode":null,"name":"XYZ Bank"}
+
+📌 Final Logging Behavior
+
+Log Level	Format	Example Output
+INFO	Key-Value	[INFO] Searching financial institutions with criteria: financialInstitutionCode=123, branchCode=null, name=XYZ Bank
+DEBUG	Full JSON	[DEBUG] Received full request payload: {"financialInstitutionCode":"123","branchCode":null,"name":"XYZ Bank"}
+
+🚀 Now INFO logs remain clean, while DEBUG logs capture full JSON payloads for troubleshooting.
+Would you like to apply similar formatting in Service & Repository layers? ✅
 ✔ INFO logs key errors.
 ✔ DEBUG logs full stack trace for detailed debugging.
 
