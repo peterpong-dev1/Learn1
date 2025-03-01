@@ -415,6 +415,81 @@ mvn test
 Would you like me to generate unit tests for exception handling next? ✅
 
 
+✅ Update: Empty List Should Return HTTP 400 (Bad Request)
+
+If the service returns an empty list, it should throw a 400 Bad Request instead of returning an empty response.
+We need to update the service and the test cases to ensure this behavior.
+
+📌 1️⃣ Update the FinancialInstitutionService
+
+Modify the searchInstitutions method to throw an exception when results are empty:
+
+public List<FinancialInstitutionDTO> searchInstitutions(FinancialInstitutionSearchConditionsDTO searchCondition) {
+    if (searchCondition == null || (
+            searchCondition.getFinancialInstitutionCode() == null &&
+            searchCondition.getFinancialInstitutionBranchCode() == null &&
+            searchCondition.getName() == null &&
+            searchCondition.getOrderCode() == null &&
+            searchCondition.getNameKana() == null)) {
+        throw new IllegalArgumentException("At least one search condition must be provided.");
+    }
+
+    List<FinancialInstitutionModel> institutions = financialInstitutionRepository.searchWithDynamicQuery(searchCondition);
+
+    if (institutions.isEmpty()) {
+        throw new IllegalArgumentException("No matching financial institutions found."); // Return 400
+    }
+
+    return institutions.stream().map(financialInstitutionMapper::toDTO).toList();
+}
+
+✔ Throws IllegalArgumentException (400) if no matching results are found.
+
+📌 2️⃣ Update FinancialInstitutionServiceTest.java
+
+Now, modify the test cases to reflect this behavior.
+
+/**
+ * ✅ Test: When no matching results are found, should throw HTTP 400 error.
+ */
+@Test
+void testSearchInstitutions_NoResults_ShouldThrow400() {
+    when(financialInstitutionRepository.searchWithDynamicQuery(any())).thenReturn(Collections.emptyList());
+
+    IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () -> 
+        financialInstitutionService.searchInstitutions(searchConditions)
+    );
+
+    assertEquals("No matching financial institutions found.", exception.getMessage());
+    verify(financialInstitutionRepository, times(1)).searchWithDynamicQuery(any());
+}
+
+✔ Test case now expects a 400 Bad Request error when the result is empty.
+
+📌 3️⃣ Final Updated Test Case List
+
+Test Case	Scenario	Expected Behavior
+testSearchInstitutions_EmptyRequest() ✅	Request is completely empty	Throws 400 Bad Request
+testSearchInstitutions_AllFieldsNull() ✅	All fields in request are null	Throws 400 Bad Request
+testSearchInstitutions_ValidRequest() ✅	Valid input is provided	Returns list of financial institutions
+testSearchInstitutions_NoResults_ShouldThrow400() ✅	No matching results	Throws 400 Bad Request
+testSearchInstitutions_ExceptionHandling() ✅	Repository throws an exception	Exception is handled properly
+
+🚀 Final Steps: How to Run These Tests?
+
+1️⃣ Run the test class in VS Code or IntelliJ:
+
+Right-click → Run `FinancialInstitutionServiceTest`
+
+2️⃣ Using Maven (CLI Command):
+
+mvn test
+
+3️⃣ Verify all test cases pass. ✅
+
+Would you like me to generate unit tests for controller exception handling next? ✅
+
+
 
 
 
