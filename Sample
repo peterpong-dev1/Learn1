@@ -1,252 +1,48 @@
-Sure! Below is the JavaDoc for each class based on the Swagger file you provided. This covers controller, service, repository, DTOs, exception handlers, and filters. You can copy-paste these directly into your code.
-
-📌 1️⃣ FinancialInstitutionController.java
-
-import org.springframework.web.bind.annotation.*;
-import jp.co.mycompany.servicing.dto.FinancialInstitutionDTO;
-import jp.co.mycompany.servicing.service.FinancialInstitutionService;
+import com.azure.cosmos.CosmosClient;
+import com.azure.cosmos.CosmosContainer;
+import jp.co.mycompany.servicing.config.CosmosDBConfig;
+import jp.co.mycompany.servicing.model.FinancialInstitutionModel;
+import jp.co.mycompany.servicing.dto.FinancialInstitutionSearchConditionsDTO;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Repository;
 import java.util.List;
 
 /**
- * Controller for handling financial institution-related operations.
- * Exposes APIs to search, retrieve, and manage financial institutions.
+ * Repository class for accessing financial institution data in Azure Cosmos DB.
+ * This class dynamically builds queries based on provided search conditions.
  */
-@RestController
-@RequestMapping("/common/financialInstitution")
-public class FinancialInstitutionController {
+@Repository
+public class FinancialInstitutionRepository {
 
-    private final FinancialInstitutionService service;
+    @Autowired
+    private CosmosClient cosmosClient;
+
+    @Autowired
+    private CosmosDBConfig cosmosProperties;
+
+    private final Logger logger = LoggerFactory.getLogger(FinancialInstitutionRepository.class);
 
     /**
-     * Constructs FinancialInstitutionController with required dependencies.
+     * Retrieves the Cosmos DB container to execute SQL queries.
      *
-     * @param service The financial institution service.
+     * @return The CosmosContainer instance used for querying financial institution data.
      */
-    public FinancialInstitutionController(FinancialInstitutionService service) {
-        this.service = service;
+    private CosmosContainer getContainer() {
+        return cosmosClient.getDatabase(cosmosProperties.getDatabase()).getContainer(cosmosProperties.getContainer());
     }
 
     /**
-     * Searches for financial institutions based on provided criteria.
+     * Searches financial institutions dynamically based on provided search conditions.
+     * The query is built dynamically, meaning no fixed parameters are required.
      *
-     * @param financialInstitutionCode The institution code to filter by.
-     * @param pageable Pagination details (page number, size, sorting).
-     * @return A list of matching financial institutions.
+     * @param searchConditions The search criteria containing optional parameters.
+     *                         At least one valid parameter should be provided.
+     * @return A list of financial institutions matching the search criteria.
      */
-    @GetMapping("/search")
-    public List<FinancialInstitutionDTO> searchInstitutions(
-            @RequestParam(required = false) String financialInstitutionCode,
-            Pageable pageable) {
-        return service.searchInstitutions(financialInstitutionCode, pageable);
+    public List<FinancialInstitutionModel> searchWithDynamicQuery(
+            FinancialInstitutionSearchConditionsDTO searchConditions) {
+        // Implementation logic for executing dynamic query in Cosmos DB
     }
 }
-
-📌 2️⃣ FinancialInstitutionService.java
-
-import org.springframework.stereotype.Service;
-import org.springframework.data.domain.Pageable;
-import jp.co.mycompany.servicing.dto.FinancialInstitutionDTO;
-import jp.co.mycompany.servicing.model.FinancialInstitution;
-import jp.co.mycompany.servicing.repository.FinancialInstitutionRepository;
-import java.util.List;
-import java.util.stream.Collectors;
-
-/**
- * Service layer for financial institution operations.
- * Handles business logic for retrieving financial institution details.
- */
-@Service
-public class FinancialInstitutionService {
-
-    private final FinancialInstitutionRepository repository;
-
-    /**
-     * Constructs FinancialInstitutionService with required dependencies.
-     *
-     * @param repository The financial institution repository.
-     */
-    public FinancialInstitutionService(FinancialInstitutionRepository repository) {
-        this.repository = repository;
-    }
-
-    /**
-     * Searches for financial institutions based on provided criteria.
-     *
-     * @param financialInstitutionCode The institution code to filter by.
-     * @param pageable Pagination details (page number, size, sorting).
-     * @return A list of financial institutions matching the criteria.
-     */
-    public List<FinancialInstitutionDTO> searchInstitutions(String financialInstitutionCode, Pageable pageable) {
-        return repository.findByFinancialInstitutionCode(financialInstitutionCode, pageable)
-                .stream().map(FinancialInstitutionDTO::fromEntity).collect(Collectors.toList());
-    }
-}
-
-📌 3️⃣ FinancialInstitutionRepository.java
-
-import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
-import jp.co.mycompany.servicing.model.FinancialInstitution;
-
-/**
- * Repository interface for financial institution operations.
- * Extends JpaRepository to provide CRUD and pagination support.
- */
-public interface FinancialInstitutionRepository extends JpaRepository<FinancialInstitution, String> {
-
-    /**
-     * Finds financial institutions by institution code with pagination support.
-     *
-     * @param financialInstitutionCode The institution code to filter by.
-     * @param pageable The pagination parameters.
-     * @return A paginated list of financial institutions.
-     */
-    Page<FinancialInstitution> findByFinancialInstitutionCode(String financialInstitutionCode, Pageable pageable);
-}
-
-📌 4️⃣ FinancialInstitutionDTO.java
-
-import lombok.Getter;
-import lombok.Setter;
-import jp.co.mycompany.servicing.model.FinancialInstitution;
-
-/**
- * Data Transfer Object (DTO) for financial institutions.
- * Used to transfer data between layers while maintaining abstraction.
- */
-@Getter
-@Setter
-public class FinancialInstitutionDTO {
-    private String financialInstitutionCode;
-    private String name;
-
-    /**
-     * Converts a FinancialInstitution entity to a DTO.
-     *
-     * @param entity The financial institution entity.
-     * @return The corresponding DTO representation.
-     */
-    public static FinancialInstitutionDTO fromEntity(FinancialInstitution entity) {
-        FinancialInstitutionDTO dto = new FinancialInstitutionDTO();
-        dto.setFinancialInstitutionCode(entity.getFinancialInstitutionCode());
-        dto.setName(entity.getName());
-        return dto;
-    }
-}
-
-📌 5️⃣ GlobalExceptionHandler.java
-
-import org.slf4j.MDC;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.ExceptionHandler;
-import org.springframework.web.bind.annotation.RestControllerAdvice;
-import jp.co.mycompany.servicing.dto.ErrorResponseDTO;
-
-/**
- * Global exception handler for managing application-wide exceptions.
- * Captures errors and returns standardized error responses.
- */
-@RestControllerAdvice
-public class GlobalExceptionHandler {
-
-    /**
-     * Handles general exceptions and returns an appropriate error response.
-     *
-     * @param ex The exception that occurred.
-     * @return A ResponseEntity containing error details.
-     */
-    @ExceptionHandler(Exception.class)
-    public ResponseEntity<ErrorResponseDTO> handleException(Exception ex) {
-        String requestId = MDC.get("requestId");
-
-        ErrorResponseDTO errorResponse = new ErrorResponseDTO();
-        errorResponse.setMessage(ex.getMessage());
-        errorResponse.setRequestId(requestId);
-
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse);
-    }
-}
-
-📌 6️⃣ RequestIdFilter.java
-
-import jakarta.servlet.Filter;
-import jakarta.servlet.FilterChain;
-import jakarta.servlet.ServletException;
-import jakarta.servlet.ServletRequest;
-import jakarta.servlet.ServletResponse;
-import jakarta.servlet.http.HttpServletRequest;
-import org.slf4j.MDC;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.stereotype.Component;
-import java.io.IOException;
-
-/**
- * Servlet filter to extract request ID from incoming requests.
- * Stores the request ID in MDC (Mapped Diagnostic Context) for logging.
- */
-@Component
-public class RequestIdFilter implements Filter {
-
-    @Value("${request.id.header}") // Configurable request ID header
-    private String requestIdHeader;
-
-    @Override
-    public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain)
-            throws IOException, ServletException {
-        HttpServletRequest httpRequest = (HttpServletRequest) request;
-        String requestId = httpRequest.getHeader(requestIdHeader);
-
-        if (requestId != null && !requestId.isEmpty()) {
-            MDC.put("requestId", requestId);
-        }
-
-        try {
-            chain.doFilter(request, response);
-        } finally {
-            MDC.remove("requestId"); // Cleanup MDC after request
-        }
-    }
-}
-
-📌 7️⃣ ErrorResponseDTO.java
-
-import lombok.Getter;
-import lombok.Setter;
-
-/**
- * Standardized error response DTO.
- * Used to send consistent error messages to clients.
- */
-@Getter
-@Setter
-public class ErrorResponseDTO {
-    private String message;
-    private String requestId;
-}
-
-📌 8️⃣ PaginationRequestDTO.java
-
-import lombok.Getter;
-import lombok.Setter;
-
-/**
- * DTO for handling paginated requests.
- * Contains necessary parameters for pagination.
- */
-@Getter
-@Setter
-public class PaginationRequestDTO {
-    private String financialInstitutionCode;
-    private int page;
-    private int size;
-}
-
-✅ Final Summary
-
-✔ All JavaDocs follow Swagger API documentation format.
-✔ Direct copy-paste-ready for fast integration.
-✔ Ensures all classes are well-documented for maintainability.
-
-Would you like unit test templates with JavaDocs next? 🚀
