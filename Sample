@@ -241,16 +241,204 @@ Use the VS Code Test Explorer to run all tests.
 [INFO] Tests run: 4, Failures: 0, Errors: 0, Skipped: 0
 [INFO] BUILD SUCCESS
 
+
+
+✅ Unit Test for Repository Layer (FinancialInstitutionRepositoryTest.java)
+
+This test ensures that the repository correctly builds dynamic queries and fetches data from CosmosDB.
+
+📌 What This Test Covers
+
+✔ Mocks CosmosTemplate to avoid actual database calls.
+✔ Tests valid search queries when filters are applied.
+✔ Tests empty results when no data is found.
+✔ Tests query formation dynamically based on input criteria.
+✔ Ensures proper exception handling when a database error occurs.
+
+📌 Step 1: Create the Test File
+
+Create a test file under:
+📍 src/test/java/jp/co/mycompany/servicing/repository/FinancialInstitutionRepositoryTest.java
+
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
+
+import com.azure.spring.data.cosmos.core.CosmosTemplate;
+import com.azure.cosmos.models.SqlQuerySpec;
+import com.azure.cosmos.models.SqlParameter;
+import jp.co.mycompany.servicing.model.FinancialInstitution;
+import jp.co.mycompany.servicing.repository.FinancialInstitutionRepository;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.MockitoAnnotations;
+import java.util.List;
+import java.util.stream.Stream;
+
+class FinancialInstitutionRepositoryTest {
+
+    @Mock
+    private CosmosTemplate cosmosTemplate;  // Mocked CosmosDB template
+
+    @InjectMocks
+    private FinancialInstitutionRepository repository;  // Repository under test
+
+    @BeforeEach
+    void setUp() {
+        MockitoAnnotations.openMocks(this);
+    }
+
+    @Test
+    void testFindByFinancialInstitutionCode_ReturnsResults() {
+        // Given
+        String code = "123";
+        List<FinancialInstitution> expectedResults = List.of(new FinancialInstitution(code, "Bank A"));
+
+        SqlQuerySpec querySpec = new SqlQuerySpec("SELECT * FROM c WHERE c.financialInstitutionCode = @code",
+                List.of(new SqlParameter("@code", code)));
+
+        // When
+        when(cosmosTemplate.queryItems(querySpec, FinancialInstitution.class))
+                .thenReturn(expectedResults.stream());
+
+        // Then
+        List<FinancialInstitution> results = repository.findByFinancialInstitutionCode(code);
+        assertEquals(1, results.size());
+        assertEquals("Bank A", results.get(0).getName());
+
+        verify(cosmosTemplate, times(1)).queryItems(querySpec, FinancialInstitution.class);
+    }
+
+    @Test
+    void testFindByFinancialInstitutionCode_EmptyResults() {
+        // Given
+        String code = "999";
+        SqlQuerySpec querySpec = new SqlQuerySpec("SELECT * FROM c WHERE c.financialInstitutionCode = @code",
+                List.of(new SqlParameter("@code", code)));
+
+        // When
+        when(cosmosTemplate.queryItems(querySpec, FinancialInstitution.class))
+                .thenReturn(Stream.empty());
+
+        // Then
+        List<FinancialInstitution> results = repository.findByFinancialInstitutionCode(code);
+        assertTrue(results.isEmpty());
+        verify(cosmosTemplate, times(1)).queryItems(querySpec, FinancialInstitution.class);
+    }
+
+    @Test
+    void testFindByFinancialInstitutionCodeAndBranch_ReturnsResults() {
+        // Given
+        String code = "123";
+        String branch = "456";
+        List<FinancialInstitution> expectedResults = List.of(new FinancialInstitution(code, "Bank A"));
+
+        SqlQuerySpec querySpec = new SqlQuerySpec("SELECT * FROM c WHERE c.financialInstitutionCode = @code AND c.financialInstitutionBranchCode = @branch",
+                List.of(new SqlParameter("@code", code), new SqlParameter("@branch", branch)));
+
+        // When
+        when(cosmosTemplate.queryItems(querySpec, FinancialInstitution.class))
+                .thenReturn(expectedResults.stream());
+
+        // Then
+        List<FinancialInstitution> results = repository.findByFinancialInstitutionCodeAndBranch(code, branch);
+        assertEquals(1, results.size());
+        assertEquals("Bank A", results.get(0).getName());
+
+        verify(cosmosTemplate, times(1)).queryItems(querySpec, FinancialInstitution.class);
+    }
+
+    @Test
+    void testFindByName_ReturnsResults() {
+        // Given
+        String name = "Bank A";
+        List<FinancialInstitution> expectedResults = List.of(new FinancialInstitution("123", name));
+
+        SqlQuerySpec querySpec = new SqlQuerySpec("SELECT * FROM c WHERE c.name = @name",
+                List.of(new SqlParameter("@name", name)));
+
+        // When
+        when(cosmosTemplate.queryItems(querySpec, FinancialInstitution.class))
+                .thenReturn(expectedResults.stream());
+
+        // Then
+        List<FinancialInstitution> results = repository.findByName(name);
+        assertEquals(1, results.size());
+        assertEquals("Bank A", results.get(0).getName());
+
+        verify(cosmosTemplate, times(1)).queryItems(querySpec, FinancialInstitution.class);
+    }
+
+    @Test
+    void testFindByFinancialInstitutionCode_ThrowsException() {
+        // Given
+        String code = "123";
+        SqlQuerySpec querySpec = new SqlQuerySpec("SELECT * FROM c WHERE c.financialInstitutionCode = @code",
+                List.of(new SqlParameter("@code", code)));
+
+        // When
+        when(cosmosTemplate.queryItems(querySpec, FinancialInstitution.class))
+                .thenThrow(new RuntimeException("Database error"));
+
+        // Then
+        Exception exception = assertThrows(RuntimeException.class, () -> repository.findByFinancialInstitutionCode(code));
+        assertEquals("Database error", exception.getMessage());
+
+        verify(cosmosTemplate, times(1)).queryItems(querySpec, FinancialInstitution.class);
+    }
+}
+
+📌 Step 2: What This Test Does
+	•	Mocks CosmosTemplate to simulate database queries without hitting the actual CosmosDB.
+	•	Tests different search queries:
+	•	✅ Finds results when financialInstitutionCode is provided.
+	•	✅ Finds results when financialInstitutionCode and financialInstitutionBranchCode are provided.
+	•	✅ Finds results when name is provided.
+	•	✅ Returns an empty list when no data matches.
+	•	Handles exceptions properly:
+	•	✅ Throws an exception when the CosmosDB query fails.
+	•	Verifies correct queries are being executed dynamically.
+
+📌 Step 3: Run the Test in VS Code
+
+🔹 Run with Maven
+
+mvn test
+
+🔹 Run a Single Test in VS Code
+	1.	Open FinancialInstitutionRepositoryTest.java
+	2.	Click the Run Test button next to the method
+OR
+Use the VS Code Test Explorer to run all tests.
+
+📌 Expected Output (All Tests Pass)
+
+[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0
+[INFO] BUILD SUCCESS
+
+
+
+
+
+
+
+
+✅ Next Steps
+
+Would you like:
+	1.	Unit test for GlobalExceptionHandler next?
+	2.	How to integrate these tests into a CI/CD pipeline? 🚀
+
+
+
+
+
+
 ✅ Next Steps
 
 Would you like:
 	1.	Unit test for FinancialInstitutionRepository next?
-	2.	How to mock the database layer (CosmosDB) properly in tests? 🚀
-
-
-
-✅ Next Steps
-
-Would you like:
+	2.	How to mock the database layer 
 	1.	Unit test for FinancialInstitutionService next?
 	2.	How to generate coverage reports (JaCoCo) for the tests? 🚀
