@@ -641,6 +641,28 @@ mvn test
 
 Would you like help adding an exception handler (@RestControllerAdvice) to format error responses in JSON? ✅
 
+You’re right! If you’re looking for a minimal setup, you only need one dependency for JUnit 5:
 
+<dependency>
+    <groupId>org.junit.jupiter</groupId>
+    <artifactId>junit-jupiter-api</artifactId>
+    <version>5.9.2</version>
+    <scope>test</scope>
+</dependency>
+
+When Do You Need More?
+	•	If you’re using Mockito for mocking services, add:
+
+<dependency>
+    <groupId>org.mockito</groupId>
+    <artifactId>mockito-junit-jupiter</artifactId>
+    <version>5.2.0</version>
+    <scope>test</scope>
+</dependency>
+
+
+	•	If you’re testing a Spring Boot application with MockMvc, then spring-boot-starter-test is useful.
+
+Let me know what you need, and I’ll suggest only the essentials! 🚀
 
 
