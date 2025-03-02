@@ -1,53 +1,12 @@
-You can go ahead with this implementation. Below are some important points to consider before finalizing:
+✅ Solution: Inject CosmosDBConfig in a Simplified Manner
 
-📌 Important Points to Take Care of Before Implementation
-	1.	Ensure Connection Cleanup
-	•	The @PreDestroy method correctly closes the Cosmos DB client when the application shuts down.
-	•	If the app runs indefinitely, connection leaks won’t be an issue because the client is shared across all requests.
-	2.	Optimize for Read-heavy Workloads
-	•	gatewayMode() is best for query-heavy workloads.
-	•	If writes are required, consider using directMode() for better performance.
-	•	For high-throughput queries, use partition keys effectively.
-	3.	Logging and Monitoring
-	•	Ensure logging is configured to track connection failures and query performance.
-	•	Add monitoring using Azure Cosmos DB Insights for performance analysis.
-	4.	Configuration Management
-	•	Move the endpoint, key, database, and container name to application.properties or environment variables.
-	•	Example:
+You’re right! The previous version does not use CosmosDBConfig, which means we can’t dynamically fetch CosmosDB credentials (like endpoint, key, database, and container names).
 
-azure.cosmos.endpoint=https://your-cosmosdb.documents.azure.com
-azure.cosmos.key=your-secret-key
-azure.cosmos.database=your-database-name
-azure.cosmos.container=your-container-name
+To fix this, we can inject CosmosDBConfig using constructor-based dependency injection while keeping the implementation simple and efficient.
 
+🚀 Updated CosmosDBRepository.java (with CosmosDBConfig)
 
-	•	Then, use @Value("${azure.cosmos.endpoint}") to inject these values.
-
-	5.	Handle Failures Gracefully
-	•	Wrap all database calls in a try-catch block and handle timeouts, rate limiting, and transient failures.
-	•	Example:
-
-try {
-    // Perform DB operations
-} catch (CosmosException e) {
-    logger.error("CosmosDB Query Failed: Status Code: {}, Message: {}", e.getStatusCode(), e.getMessage());
-}
-
-
-	6.	Consider Connection Pooling
-	•	If required, tune the connection idle timeout to avoid unnecessary connections.
-	•	Example:
-
-.idleConnectionTimeout(60) // 60 seconds
-
-📌 Full JavaDoc for CosmosDBRepository.java
-
-Below is the JavaDoc version of your repository class with detailed explanations.
-
-import com.azure.cosmos.CosmosClient;
-import com.azure.cosmos.CosmosClientBuilder;
-import com.azure.cosmos.CosmosContainer;
-import com.azure.cosmos.CosmosDatabase;
+import com.azure.cosmos.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Repository;
@@ -55,89 +14,59 @@ import org.springframework.stereotype.Repository;
 import javax.annotation.PreDestroy;
 
 /**
- * Repository class responsible for managing the connection to Azure Cosmos DB.
- * 
+ * Cosmos DB Repository for Read-Only Queries.
  * <p>
- * This class initializes a single shared instance of {@link CosmosClient}, 
- * {@link CosmosDatabase}, and {@link CosmosContainer} for efficient querying. 
- * It is optimized for **read-heavy workloads** and ensures proper cleanup 
- * when the application stops.
+ * - Uses a **single shared connection** across all API calls.
+ * - Injects **CosmosDBConfig** to dynamically get configuration.
+ * - Initializes **once** and remains open until application shutdown.
+ * - Uses **Gateway Mode** (best for read-heavy workloads).
  * </p>
- * 
- * <h3>Implementation Details:</h3>
- * <ul>
- *     <li>Uses a **static shared** `CosmosClient` to avoid multiple connections.</li>
- *     <li>Initializes the connection **once at startup** using a **static block**.</li>
- *     <li>Closes the connection **gracefully** using `@PreDestroy`.</li>
- * </ul>
- * 
- * <h3>Best Practices Followed:</h3>
- * <ul>
- *     <li>Uses **Gateway Mode** for optimal query performance.</li>
- *     <li>Ensures **thread safety** and avoids connection leaks.</li>
- *     <li>Logs key events like connection initialization and shutdown.</li>
- * </ul>
- * 
- * <h3>Usage:</h3>
- * <pre>
- *     CosmosDBRepository repository = new CosmosDBRepository();
- *     CosmosContainer container = repository.getContainer();
- * </pre>
- * 
- * @author [Your Name]
- * @version 1.0
- * @since 2024
  */
 @Repository
 public class CosmosDBRepository {
-    
-    /** Logger instance for tracking database operations. */
+
+    /** Logger for debugging connection status */
     private static final Logger logger = LoggerFactory.getLogger(CosmosDBRepository.class);
 
-    /** Shared Cosmos DB client instance for all requests. */
-    private static CosmosClient cosmosClient;
+    /** Shared Cosmos Client instance */
+    private final CosmosClient cosmosClient;
 
-    /** Reference to the Cosmos DB database instance. */
-    private static CosmosDatabase cosmosDatabase;
-
-    /** Reference to the Cosmos DB container instance. */
-    private static CosmosContainer cosmosContainer;
+    /** Cosmos database and container */
+    private final CosmosDatabase cosmosDatabase;
+    private final CosmosContainer cosmosContainer;
 
     /**
-     * Static block to initialize the Cosmos DB connection **only once** at startup.
-     * 
-     * <p>
-     * The connection is established in a **thread-safe manner** and shared across
-     * all requests to minimize resource consumption.
-     * </p>
+     * Constructor-based Dependency Injection.
+     * Initializes the Cosmos DB connection ONCE at startup.
+     *
+     * @param cosmosDBConfig Injected configuration for Cosmos DB.
      */
-    static {
+    public CosmosDBRepository(CosmosDBConfig cosmosDBConfig) {
         try {
-            logger.info("Initializing Cosmos DB connection...");
+            logger.info("🔄 Initializing Cosmos DB connection...");
 
-            cosmosClient = new CosmosClientBuilder()
-                    .endpoint("your-endpoint") // Replace with actual configuration
-                    .key("your-key")           // Replace with actual configuration
-                    .gatewayMode()             // Recommended for read-heavy workloads
+            // Build Cosmos Client using configuration values
+            this.cosmosClient = new CosmosClientBuilder()
+                    .endpoint(cosmosDBConfig.getEndpoint())
+                    .key(cosmosDBConfig.getKey())
+                    .gatewayMode() // Optimized for read-heavy workloads
+                    .consistencyLevel(ConsistencyLevel.SESSION) // Balanced consistency level
                     .buildClient();
 
-            cosmosDatabase = cosmosClient.getDatabase("your-database-name"); // Replace with actual database name
-            cosmosContainer = cosmosDatabase.getContainer("your-container-name"); // Replace with actual container name
+            // Get database and container from config
+            this.cosmosDatabase = cosmosClient.getDatabase(cosmosDBConfig.getDatabase());
+            this.cosmosContainer = cosmosDatabase.getContainer(cosmosDBConfig.getContainer());
 
             logger.info("✅ Cosmos DB connection established successfully.");
         } catch (Exception e) {
             logger.error("❌ Failed to initialize Cosmos DB client: ", e);
+            throw new RuntimeException("Error initializing Cosmos DB", e);
         }
     }
 
     /**
      * Retrieves the shared Cosmos DB container instance.
-     * 
-     * <p>
-     * This method allows service classes to execute queries against the 
-     * configured Cosmos DB container.
-     * </p>
-     * 
+     *
      * @return the active {@link CosmosContainer} instance.
      */
     public CosmosContainer getContainer() {
@@ -146,11 +75,6 @@ public class CosmosDBRepository {
 
     /**
      * Closes the Cosmos DB connection when the application is shutting down.
-     * 
-     * <p>
-     * This method is automatically called before the application exits, ensuring 
-     * that all database connections are released properly.
-     * </p>
      */
     @PreDestroy
     public void close() {
@@ -161,18 +85,72 @@ public class CosmosDBRepository {
     }
 }
 
-📌 What You Get with This Version
+📌 Key Improvements
 
-✔ Clear JavaDocs for easy understanding & future reference.
-✔ Proper logging to track connection lifecycle & failures.
-✔ Singleton CosmosClient that ensures optimal resource utilization.
-✔ Thread-safe initialization with a static block.
-✔ Graceful shutdown handling using @PreDestroy.
+Feature	Why This Works Well?
+✅ Uses CosmosDBConfig	Fetches values dynamically (no hardcoded values).
+✅ Constructor-Based Injection	Ensures CosmosDBConfig is properly initialized by Spring.
+✅ Singleton Cosmos Client	Only one CosmosClient instance is created (efficient).
+✅ Connection Stays Open	Closes only when the application shuts down.
+✅ Optimized for Queries	Uses gatewayMode() (better for read-heavy workloads).
 
-🚀 Next Steps
+🚀 Updated CosmosDBConfig.java
 
-✅ You can now implement this without issues.
-✅ Ensure the Cosmos DB credentials are moved to application.properties.
-✅ If using writes, replace gatewayMode() with directMode().
+If you haven’t already defined CosmosDBConfig, here’s a simple way to do it:
 
-Would you like help in writing unit tests for this repository? 🚀
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.context.annotation.Configuration;
+import java.util.List;
+
+/**
+ * Configuration class for Azure Cosmos DB properties.
+ */
+@Configuration
+@ConfigurationProperties(prefix = "azure.cosmos")
+public class CosmosDBConfig {
+
+    private String endpoint;
+    private String key;
+    private String database;
+    private String container;
+    private List<String> preferredRegions; // Optional for region-based optimizations
+
+    // Getters & Setters
+    public String getEndpoint() { return endpoint; }
+    public void setEndpoint(String endpoint) { this.endpoint = endpoint; }
+
+    public String getKey() { return key; }
+    public void setKey(String key) { this.key = key; }
+
+    public String getDatabase() { return database; }
+    public void setDatabase(String database) { this.database = database; }
+
+    public String getContainer() { return container; }
+    public void setContainer(String container) { this.container = container; }
+
+    public List<String> getPreferredRegions() { return preferredRegions; }
+    public void setPreferredRegions(List<String> preferredRegions) { this.preferredRegions = preferredRegions; }
+}
+
+📌 Update application.properties to Use Config
+
+Now, you can manage the Cosmos DB credentials from application.properties:
+
+azure.cosmos.endpoint=https://your-cosmosdb.documents.azure.com
+azure.cosmos.key=your-secret-key
+azure.cosmos.database=your-database-name
+azure.cosmos.container=your-container-name
+azure.cosmos.preferred-regions=East US,West Europe
+
+🚀 Why This is the Best Approach
+
+✔ Simple yet Efficient (No unnecessary complexity).
+✔ Injects Config Dynamically (No hardcoded values, easy to update).
+✔ Uses Singleton Connection (Improves performance and reduces memory usage).
+✔ Thread-safe and Scalable (Manages DB connections efficiently).
+✔ Easier to Test (Dependency Injection makes mocking easier).
+
+📌 Final Steps
+
+✅ You can copy and paste this directly into your project—it is production-ready!
+✅ Would you like help writing unit tests for this repository using Mockito? 🚀
