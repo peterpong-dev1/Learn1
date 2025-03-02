@@ -1,34 +1,41 @@
-Here is the CSV format so you can copy and paste it easily:
-1..10 | ForEach-Object -Parallel {
-    curl -X POST https://api.example.com/financialInstitution/search `
-    -H "Content-Type: application/json" `
-    -d '{"financialInstitutionCode": "123"}'
-} -ThrottleLimit 5
-Test Case ID,Test Scenario,Steps,Expected Outcome,Pass/Fail
-1,Verify Application Startup,Run the application using `mvn spring-boot:run`,"Application starts successfully without errors",✔
-2,Verify API Endpoint,Hit `/common/financialInstitution/search` with valid payload,Returns HTTP 200 with expected JSON response,✔
-3,Verify API with Invalid Input,Send empty request body,Returns HTTP 400 Bad Request with error message,✔
-4,Verify API with Partial Input,Provide only `financialInstitutionCode`,Returns filtered results matching code,✔
-5,Verify API with No Matching Data,Provide a non-existent `financialInstitutionCode`,Returns empty list `[]` with HTTP 200,✔
-6,Verify Database Connection,Check logs for DB connection message,Logs show successful connection to Cosmos DB,✔
-7,Verify Exception Handling,Simulate DB failure (e.g., incorrect endpoint),Returns HTTP 500 with appropriate error message,✔
-8,Performance Test,Send multiple concurrent requests,Application handles requests without errors,✔
-9,Verify Logging,Check logs after a request,Logs contain input parameters and execution time,✔
-10,Verify API with Name Filter,Provide only `name` field in request,Returns filtered results matching name,✔
-11,Verify API with Branch Code Filter,Provide only `financialInstitutionBranchCode`,Returns filtered results for that branch,✔
-12,Verify API with NameKana Filter,Provide only `nameKana`,Returns results matching nameKana,✔
-13,Verify API with Order Code Filter,Provide only `orderCode`,Returns results matching order code,✔
-14,Verify API with Multiple Filters,Provide `financialInstitutionCode` and `name`,Returns results matching both conditions,✔
-15,Verify API with Invalid JSON Format,Send a request with incorrect JSON structure,Returns HTTP 400 with appropriate error message,✔
-16,Verify API with Missing Mandatory Fields,Omit required fields from the request,Returns HTTP 400 Bad Request,✔
-17,Verify API Response Time,Send a request and measure response time,Response time should be within acceptable limits,✔
-18,Verify API Handling Large Payload,Send a request with a very large JSON body,Handles request without crashing,✔
-19,Verify API Handling Special Characters,Provide input with special characters (e.g., `#,$,%`),Returns valid response without breaking,✔
-20,Verify API Response Headers,Check response headers in API response,Includes `Content-Type: application/json`,✔
+import com.azure.cosmos.CosmosClient;
+import com.azure.cosmos.CosmosClientBuilder;
+import org.springframework.stereotype.Repository;
+import javax.annotation.PreDestroy;
 
-How to Use This CSV Format?
-	1.	Copy the above text.
-	2.	Paste it into a new .csv file (e.g., test_cases.csv).
-	3.	Open it in Excel or Google Sheets (it will format automatically into columns).
+@Repository
+public class CosmosDBRepository {
 
-🚀 Let me know if you need more modifications! ✅
+    private static volatile CosmosClient cosmosClient; // Thread-safe singleton
+
+    /**
+     * Gets the singleton Cosmos DB client.
+     * Uses double-checked locking to ensure only one instance is created.
+     */
+    public CosmosClient getCosmosClient() {
+        if (cosmosClient == null) { // First check (no lock)
+            synchronized (CosmosDBRepository.class) {
+                if (cosmosClient == null) { // Second check (inside lock)
+                    cosmosClient = new CosmosClientBuilder()
+                            .endpoint(System.getenv("COSMOS_DB_ENDPOINT"))  // Use environment variable
+                            .key(System.getenv("COSMOS_DB_KEY"))  // Use environment variable
+                            .gatewayMode()  // Use directMode() if low latency is needed
+                            .buildClient();
+                    System.out.println("✅ Cosmos DB Client Initialized.");
+                }
+            }
+        }
+        return cosmosClient;
+    }
+
+    /**
+     * Closes the Cosmos DB connection when the application shuts down.
+     */
+    @PreDestroy
+    public void close() {
+        if (cosmosClient != null) {
+            cosmosClient.close();
+            System.out.println("✅ Cosmos DB Connection closed.");
+        }
+    }
+}
