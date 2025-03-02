@@ -1,668 +1,181 @@
-package jp.co.mycompany.servicing.controller;
+Thanks for sharing the photos! Based on them, I will now generate Mockito-based unit tests for FinancialInstitutionRepository. The test cases will cover:
 
-import jp.co.mycompany.servicing.dto.FinancialInstitutionDTO;
-import jp.co.mycompany.servicing.dto.FinancialInstitutionSearchConditionsDTO;
-import jp.co.mycompany.servicing.service.FinancialInstitutionService;
-import jp.co.mycompany.servicing.util.LogUtil;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.http.ResponseEntity;
+✔ Mocking all dependencies (CosmosContainer, QueryPropertyFileConfig, etc.).
+✔ Verifying dynamic query generation using Mockito.
+✔ Testing different search conditions (e.g., financialInstitutionCode, name, branchCode).
+✔ Handling empty results and exceptions.
 
-import java.util.Collections;
-import java.util.List;
+✅ Unit Test for FinancialInstitutionRepository
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+📌 FinancialInstitutionRepositoryTest.java
+
+package jp.co.neofirst.servicing.repository;
+
+import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
-
-@ExtendWith(MockitoExtension.class)
-class FinancialInstitutionControllerTest {
-
-    @Mock
-    private FinancialInstitutionService financialInstitutionService;
-
-    @InjectMocks
-    private FinancialInstitutionController financialInstitutionController;
-
-    private FinancialInstitutionSearchConditionsDTO searchConditions;
-    private FinancialInstitutionDTO financialInstitutionDTO;
-
-    @BeforeEach
-    void setUp() {
-        // Populate all fields in searchConditions
-        searchConditions = new FinancialInstitutionSearchConditionsDTO();
-        searchConditions.setFinancialInstitutionCode("123");
-        searchConditions.setFinancialInstitutionBranchCode("001");
-        searchConditions.setName("XYZ Bank");
-        searchConditions.setOrderCode("ORD001");
-        searchConditions.setNameKana("KanaXYZ");
-
-        // Populate all fields in financialInstitutionDTO
-        financialInstitutionDTO = new FinancialInstitutionDTO();
-        financialInstitutionDTO.setFinancialInstitutionCode("123");
-        financialInstitutionDTO.setFinancialInstitutionBranchCode("001");
-        financialInstitutionDTO.setName("XYZ Bank");
-        financialInstitutionDTO.setOrderCode("ORD001");
-        financialInstitutionDTO.setNameKana("KanaXYZ");
-    }
-
-    /**
-     * ✅ Test: When valid input is provided, should return a list of financial institutions.
-     */
-    @Test
-    void testSearchFinancialInstitutions_Success() {
-        List<FinancialInstitutionDTO> expectedResults = Collections.singletonList(financialInstitutionDTO);
-        when(financialInstitutionService.searchInstitutions(any())).thenReturn(expectedResults);
-
-        ResponseEntity<List<FinancialInstitutionDTO>> response = financialInstitutionController.searchFinancialInstitutions(searchConditions);
-
-        assertEquals(200, response.getStatusCodeValue());
-        assertEquals(1, response.getBody().size());
-        assertEquals("XYZ Bank", response.getBody().get(0).getName());
-        verify(financialInstitutionService, times(1)).searchInstitutions(any());
-    }
-
-    /**
-     * ✅ Test: When no matching results are found, should return an empty list.
-     */
-    @Test
-    void testSearchFinancialInstitutions_NoResults() {
-        when(financialInstitutionService.searchInstitutions(any())).thenReturn(Collections.emptyList());
-
-        ResponseEntity<List<FinancialInstitutionDTO>> response = financialInstitutionController.searchFinancialInstitutions(searchConditions);
-
-        assertEquals(200, response.getStatusCodeValue());
-        assertEquals(0, response.getBody().size());
-        verify(financialInstitutionService, times(1)).searchInstitutions(any());
-    }
-
-    /**
-     * ✅ Test: When the service throws an exception, should handle it properly.
-     */
-    @Test
-    void testSearchFinancialInstitutions_ExceptionHandling() {
-        when(financialInstitutionService.searchInstitutions(any())).thenThrow(new RuntimeException("Internal Server Error"));
-
-        try {
-            financialInstitutionController.searchFinancialInstitutions(searchConditions);
-        } catch (Exception e) {
-            assertEquals("Internal Server Error", e.getMessage());
-        }
-
-        verify(financialInstitutionService, times(1)).searchInstitutions(any());
-    }
-}
-
-✅ Unit Test for Service Layer (FinancialInstitutionServiceTest.java)
-
-Now, I will generate unit test cases for FinancialInstitutionService using Mockito.
-
-📌 1️⃣ What This Test Covers
-
-Test Case	Scenario	Expected Result
-testSearchInstitutions_Success ✅	Valid input is provided	Returns list of financial institutions
-testSearchInstitutions_NoResults ✅	No matching results	Returns empty list
-testSearchInstitutions_ExceptionHandling ✅	Repository throws exception	Exception is handled properly
-
-📌 2️⃣ FinancialInstitutionServiceTest.java
-
-package jp.co.mycompany.servicing.service;
-
-import jp.co.mycompany.servicing.dto.FinancialInstitutionDTO;
-import jp.co.mycompany.servicing.dto.FinancialInstitutionSearchConditionsDTO;
-import jp.co.mycompany.servicing.model.FinancialInstitutionModel;
-import jp.co.mycompany.servicing.repository.FinancialInstitutionRepository;
-import jp.co.mycompany.servicing.mapper.FinancialInstitutionMapper;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
-
-import java.util.Collections;
-import java.util.List;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.mockito.Mockito.*;
-
-@ExtendWith(MockitoExtension.class)
-class FinancialInstitutionServiceTest {
-
-    @Mock
-    private FinancialInstitutionRepository financialInstitutionRepository;
-
-    @Mock
-    private FinancialInstitutionMapper financialInstitutionMapper;
-
-    @InjectMocks
-    private FinancialInstitutionService financialInstitutionService;
-
-    private FinancialInstitutionSearchConditionsDTO searchConditions;
-    private FinancialInstitutionModel financialInstitutionModel;
-    private FinancialInstitutionDTO financialInstitutionDTO;
-
-    @BeforeEach
-    void setUp() {
-        // Populate searchConditions DTO
-        searchConditions = new FinancialInstitutionSearchConditionsDTO();
-        searchConditions.setFinancialInstitutionCode("123");
-        searchConditions.setFinancialInstitutionBranchCode("001");
-        searchConditions.setName("XYZ Bank");
-        searchConditions.setOrderCode("ORD001");
-        searchConditions.setNameKana("KanaXYZ");
-
-        // Populate model entity from DB
-        financialInstitutionModel = new FinancialInstitutionModel();
-        financialInstitutionModel.setFinancialInstitutionCode("123");
-        financialInstitutionModel.setFinancialInstitutionBranchCode("001");
-        financialInstitutionModel.setName("XYZ Bank");
-        financialInstitutionModel.setOrderCode("ORD001");
-        financialInstitutionModel.setNameKana("KanaXYZ");
-
-        // Populate DTO (response)
-        financialInstitutionDTO = new FinancialInstitutionDTO();
-        financialInstitutionDTO.setFinancialInstitutionCode("123");
-        financialInstitutionDTO.setFinancialInstitutionBranchCode("001");
-        financialInstitutionDTO.setName("XYZ Bank");
-        financialInstitutionDTO.setOrderCode("ORD001");
-        financialInstitutionDTO.setNameKana("KanaXYZ");
-    }
-
-    /**
-     * ✅ Test: When valid input is provided, should return list of financial institutions.
-     */
-    @Test
-    void testSearchInstitutions_Success() {
-        List<FinancialInstitutionModel> modelList = Collections.singletonList(financialInstitutionModel);
-        List<FinancialInstitutionDTO> expectedResults = Collections.singletonList(financialInstitutionDTO);
-
-        // Mock repository returning model list
-        when(financialInstitutionRepository.searchWithDynamicQuery(any())).thenReturn(modelList);
-        // Mock mapper converting model to DTO
-        when(financialInstitutionMapper.toDTO(financialInstitutionModel)).thenReturn(financialInstitutionDTO);
-
-        List<FinancialInstitutionDTO> results = financialInstitutionService.searchInstitutions(searchConditions);
-
-        assertEquals(1, results.size());
-        assertEquals("XYZ Bank", results.get(0).getName());
-
-        verify(financialInstitutionRepository, times(1)).searchWithDynamicQuery(any());
-        verify(financialInstitutionMapper, times(1)).toDTO(financialInstitutionModel);
-    }
-
-    /**
-     * ✅ Test: When no matching results are found, should return an empty list.
-     */
-    @Test
-    void testSearchInstitutions_NoResults() {
-        when(financialInstitutionRepository.searchWithDynamicQuery(any())).thenReturn(Collections.emptyList());
-
-        List<FinancialInstitutionDTO> results = financialInstitutionService.searchInstitutions(searchConditions);
-
-        assertEquals(0, results.size());
-        verify(financialInstitutionRepository, times(1)).searchWithDynamicQuery(any());
-        verify(financialInstitutionMapper, never()).toDTO(any());
-    }
-
-    /**
-     * ✅ Test: When the repository throws an exception, should handle it properly.
-     */
-    @Test
-    void testSearchInstitutions_ExceptionHandling() {
-        when(financialInstitutionRepository.searchWithDynamicQuery(any())).thenThrow(new RuntimeException("Database Error"));
-
-        try {
-            financialInstitutionService.searchInstitutions(searchConditions);
-        } catch (Exception e) {
-            assertEquals("Database Error", e.getMessage());
-        }
-
-        verify(financialInstitutionRepository, times(1)).searchWithDynamicQuery(any());
-    }
-}
-
-📌 3️⃣ Explanation of Key Components
-
-Component	Purpose
-@Mock private FinancialInstitutionRepository financialInstitutionRepository;	Mocks the repository to prevent real DB queries
-@Mock private FinancialInstitutionMapper financialInstitutionMapper;	Mocks the mapping process (Model → DTO)
-@InjectMocks private FinancialInstitutionService financialInstitutionService;	Injects mocks into the service class
-@BeforeEach void setUp()	Initializes test data before every test
-testSearchInstitutions_Success() ✅	Verifies successful search returns expected data
-testSearchInstitutions_NoResults() ✅	Verifies service returns an empty list when no data found
-testSearchInstitutions_ExceptionHandling() ✅	Ensures exceptions from the repository are handled properly
-
-📌 4️⃣ What This Test Ensures
-
-✔ Mocks Repository Calls – The repository does not actually call the database.
-✔ Tests Service Logic – The service correctly calls the repository and maps data.
-✔ Verifies Correct Response – Ensures expected data is returned from the service.
-✔ Handles Exceptions – Validates that errors from the repository are handled properly.
-
-🚀 Final Steps: How to Run These Tests?
-
-1️⃣ Run the test class in VS Code or IntelliJ:
-
-Right-click → Run `FinancialInstitutionServiceTest`
-
-2️⃣ Using Maven (CLI Command):
-
-mvn test
-
-3️⃣ Verify all test cases pass. ✅
-
-Would you like me to generate unit tests for the repository layer next? ✅
-
-
-
-✅ Test Cases for Dynamic Queries in Repository Layer
-
-Since your repository method uses dynamic queries based on 5 parameters, we need to test different input combinations to verify that the query is built correctly for each case.
-
-📌 1️⃣ What This Test Covers
-
-Test Case	Scenario	Expected Query Behavior
-testSearchWithOnlyFinancialInstitutionCode() ✅	Only financialInstitutionCode is provided	Query should filter only by financialInstitutionCode
-testSearchWithOnlyBranchCode() ✅	Only financialInstitutionBranchCode is provided	Query should filter only by branchCode
-testSearchWithMultipleFilters() ✅	Combination of parameters	Query should include multiple filters
-testSearchWithAllParameters() ✅	All search fields are filled	Query should include all filters
-
-📌 2️⃣ Updated FinancialInstitutionRepositoryTest.java with Dynamic Query Tests
-
-package jp.co.mycompany.servicing.repository;
 
 import com.azure.cosmos.CosmosContainer;
 import com.azure.cosmos.models.CosmosQueryRequestOptions;
 import com.azure.cosmos.models.SqlQuerySpec;
-import jp.co.mycompany.servicing.config.CosmosDBRepository;
-import jp.co.mycompany.servicing.dto.FinancialInstitutionSearchConditionsDTO;
-import jp.co.mycompany.servicing.model.FinancialInstitutionModel;
+import jp.co.neofirst.servicing.config.QueryPropertyFileConfig;
+import jp.co.neofirst.servicing.model.FinancialInstitutionModel;
+import jp.co.neofirst.servicing.dto.FinancialInstitutionSearchConditionsDTO;
+import org.apache.commons.lang3.StringUtils;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.Collections;
 import java.util.List;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
 class FinancialInstitutionRepositoryTest {
 
     @Mock
-    private CosmosDBRepository cosmosDBRepository;
+    private CosmosContainer cosmosContainer;
 
     @Mock
-    private CosmosContainer cosmosContainer;
+    private QueryPropertyFileConfig queryConfig;
 
     @InjectMocks
     private FinancialInstitutionRepository financialInstitutionRepository;
 
-    private FinancialInstitutionSearchConditionsDTO searchConditions;
-
     @BeforeEach
     void setUp() {
-        searchConditions = new FinancialInstitutionSearchConditionsDTO();
-        when(cosmosDBRepository.getContainer()).thenReturn(cosmosContainer);
+        // Mock query configuration retrieval
+        when(queryConfig.getQuery("baseQuery")).thenReturn("SELECT * FROM c WHERE 1=1");
+        when(queryConfig.getQuery("filterByCode")).thenReturn("AND c.financialInstitutionCode = @code");
+        when(queryConfig.getQuery("filterByBranchCode")).thenReturn("AND c.financialInstitutionBranchCode = @branch");
+        when(queryConfig.getQuery("filterByName")).thenReturn("AND c.name = @name");
+        when(queryConfig.getQuery("filterByNameKana")).thenReturn("AND c.nameKana = @nameKana");
+        when(queryConfig.getQuery("filterByOrder")).thenReturn("AND c.orderCode = @orderCode");
     }
 
-    /**
-     * ✅ Test: Query should filter only by `financialInstitutionCode`
-     */
     @Test
-    void testSearchWithOnlyFinancialInstitutionCode() {
+    void testSearchWithDynamicQuery_AllFiltersApplied() {
+        // Arrange
+        FinancialInstitutionSearchConditionsDTO searchConditions = new FinancialInstitutionSearchConditionsDTO();
+        searchConditions.setFinancialInstitutionCode("123");
+        searchConditions.setFinancialInstitutionBranchCode("456");
+        searchConditions.setName("Test Bank");
+        searchConditions.setNameKana("テスト銀行");
+        searchConditions.setOrderCode("789");
+
+        // Mock database response
+        when(cosmosContainer.queryItems(any(SqlQuerySpec.class), any(CosmosQueryRequestOptions.class), eq(FinancialInstitutionModel.class)))
+                .thenReturn(Collections.emptyList().stream());
+
+        // Act
+        List<FinancialInstitutionModel> result = financialInstitutionRepository.searchWithDynamicQuery(searchConditions);
+
+        // Assert
+        assertNotNull(result);
+        assertTrue(result.isEmpty());
+
+        // Capture the generated query
+        ArgumentCaptor<SqlQuerySpec> queryCaptor = ArgumentCaptor.forClass(SqlQuerySpec.class);
+        verify(cosmosContainer).queryItems(queryCaptor.capture(), any(CosmosQueryRequestOptions.class), eq(FinancialInstitutionModel.class));
+
+        String capturedQuery = queryCaptor.getValue().getQueryText();
+        assertTrue(capturedQuery.contains("AND c.financialInstitutionCode = @code"));
+        assertTrue(capturedQuery.contains("AND c.financialInstitutionBranchCode = @branch"));
+        assertTrue(capturedQuery.contains("AND c.name = @name"));
+        assertTrue(capturedQuery.contains("AND c.nameKana = @nameKana"));
+        assertTrue(capturedQuery.contains("AND c.orderCode = @orderCode"));
+    }
+
+    @Test
+    void testSearchWithDynamicQuery_OnlyFinancialInstitutionCode() {
+        // Arrange
+        FinancialInstitutionSearchConditionsDTO searchConditions = new FinancialInstitutionSearchConditionsDTO();
         searchConditions.setFinancialInstitutionCode("123");
 
-        financialInstitutionRepository.searchWithDynamicQuery(searchConditions);
+        // Mock database response
+        when(cosmosContainer.queryItems(any(SqlQuerySpec.class), any(CosmosQueryRequestOptions.class), eq(FinancialInstitutionModel.class)))
+                .thenReturn(Collections.emptyList().stream());
 
-        verify(cosmosContainer, times(1)).queryItems(argThat(querySpec ->
-                querySpec.getQueryText().contains("financialInstitutionCode = @code") &&
-                !querySpec.getQueryText().contains("branchCode") &&
-                !querySpec.getQueryText().contains("name")
-        ), any(CosmosQueryRequestOptions.class), eq(FinancialInstitutionModel.class));
+        // Act
+        List<FinancialInstitutionModel> result = financialInstitutionRepository.searchWithDynamicQuery(searchConditions);
+
+        // Assert
+        assertNotNull(result);
+        assertTrue(result.isEmpty());
+
+        // Capture query
+        ArgumentCaptor<SqlQuerySpec> queryCaptor = ArgumentCaptor.forClass(SqlQuerySpec.class);
+        verify(cosmosContainer).queryItems(queryCaptor.capture(), any(CosmosQueryRequestOptions.class), eq(FinancialInstitutionModel.class));
+
+        String capturedQuery = queryCaptor.getValue().getQueryText();
+        assertTrue(capturedQuery.contains("AND c.financialInstitutionCode = @code"));
+        assertFalse(capturedQuery.contains("AND c.financialInstitutionBranchCode"));
     }
 
-    /**
-     * ✅ Test: Query should filter only by `branchCode`
-     */
     @Test
-    void testSearchWithOnlyBranchCode() {
-        searchConditions.setFinancialInstitutionBranchCode("001");
+    void testSearchWithDynamicQuery_EmptyRequest_ShouldReturn400() {
+        // Arrange
+        FinancialInstitutionSearchConditionsDTO searchConditions = new FinancialInstitutionSearchConditionsDTO();
 
-        financialInstitutionRepository.searchWithDynamicQuery(searchConditions);
+        // Act & Assert
+        IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class, () -> {
+            financialInstitutionRepository.searchWithDynamicQuery(searchConditions);
+        });
 
-        verify(cosmosContainer, times(1)).queryItems(argThat(querySpec ->
-                querySpec.getQueryText().contains("financialInstitutionBranchCode = @branch") &&
-                !querySpec.getQueryText().contains("financialInstitutionCode") &&
-                !querySpec.getQueryText().contains("name")
-        ), any(CosmosQueryRequestOptions.class), eq(FinancialInstitutionModel.class));
+        assertEquals("At least one search condition is required", thrown.getMessage());
     }
 
-    /**
-     * ✅ Test: Query should filter by multiple parameters
-     */
     @Test
-    void testSearchWithMultipleFilters() {
-        searchConditions.setFinancialInstitutionCode("123");
-        searchConditions.setName("XYZ Bank");
+    void testSearchWithDynamicQuery_NoResults() {
+        // Arrange
+        FinancialInstitutionSearchConditionsDTO searchConditions = new FinancialInstitutionSearchConditionsDTO();
+        searchConditions.setFinancialInstitutionCode("999");
 
-        financialInstitutionRepository.searchWithDynamicQuery(searchConditions);
+        when(cosmosContainer.queryItems(any(SqlQuerySpec.class), any(CosmosQueryRequestOptions.class), eq(FinancialInstitutionModel.class)))
+                .thenReturn(Collections.emptyList().stream());
 
-        verify(cosmosContainer, times(1)).queryItems(argThat(querySpec ->
-                querySpec.getQueryText().contains("financialInstitutionCode = @code") &&
-                querySpec.getQueryText().contains("name = @name") &&
-                !querySpec.getQueryText().contains("branchCode")
-        ), any(CosmosQueryRequestOptions.class), eq(FinancialInstitutionModel.class));
+        // Act
+        List<FinancialInstitutionModel> result = financialInstitutionRepository.searchWithDynamicQuery(searchConditions);
+
+        // Assert
+        assertNotNull(result);
+        assertTrue(result.isEmpty());
     }
 
-    /**
-     * ✅ Test: Query should filter by all parameters
-     */
     @Test
-    void testSearchWithAllParameters() {
-        searchConditions.setFinancialInstitutionCode("123");
-        searchConditions.setFinancialInstitutionBranchCode("001");
-        searchConditions.setName("XYZ Bank");
-        searchConditions.setOrderCode("ORD001");
-        searchConditions.setNameKana("KanaXYZ");
+    void testSearchWithDynamicQuery_ExceptionHandling() {
+        // Arrange
+        FinancialInstitutionSearchConditionsDTO searchConditions = new FinancialInstitutionSearchConditionsDTO();
+        searchConditions.setFinancialInstitutionCode("999");
 
-        financialInstitutionRepository.searchWithDynamicQuery(searchConditions);
+        when(cosmosContainer.queryItems(any(SqlQuerySpec.class), any(CosmosQueryRequestOptions.class), eq(FinancialInstitutionModel.class)))
+                .thenThrow(new RuntimeException("Database error"));
 
-        verify(cosmosContainer, times(1)).queryItems(argThat(querySpec ->
-                querySpec.getQueryText().contains("financialInstitutionCode = @code") &&
-                querySpec.getQueryText().contains("financialInstitutionBranchCode = @branch") &&
-                querySpec.getQueryText().contains("name = @name") &&
-                querySpec.getQueryText().contains("orderCode = @orderCode") &&
-                querySpec.getQueryText().contains("nameKana = @nameKana")
-        ), any(CosmosQueryRequestOptions.class), eq(FinancialInstitutionModel.class));
+        // Act & Assert
+        RuntimeException thrown = assertThrows(RuntimeException.class, () -> {
+            financialInstitutionRepository.searchWithDynamicQuery(searchConditions);
+        });
+
+        assertEquals("Database error", thrown.getMessage());
     }
 }
 
-📌 3️⃣ Explanation of Dynamic Query Tests
+✅ What’s Covered in This Test?
 
-Test Case	What It Does	How It Works
-testSearchWithOnlyFinancialInstitutionCode() ✅	Ensures that only financialInstitutionCode is included in the query	Uses argThat() to check if the generated query contains "financialInstitutionCode = @code" and no other filters
-testSearchWithOnlyBranchCode() ✅	Ensures that only financialInstitutionBranchCode is included	Verifies that the query does not contain other parameters
-testSearchWithMultipleFilters() ✅	Ensures query includes multiple conditions when provided	Verifies that both financialInstitutionCode and name are included
-testSearchWithAllParameters() ✅	Ensures that all filters are included when all parameters are filled	Checks that all fields exist in the generated query
+✔ Tests different search conditions (financialInstitutionCode, branchCode, etc.).
+✔ Verifies dynamic SQL query formation using queryConfig.getQuery().
+✔ Ensures no query condition is missed.
+✔ Handles edge cases: Empty input (400 Bad Request), No results, and Exceptions.
+✔ Mocks CosmosContainer and verifies queryItems() execution.
 
-📌 4️⃣ What This Test Ensures
+🚀 Final Steps
 
-✔ Verifies Query Building – Ensures correct filters are applied for different input combinations.
-✔ Prevents Missing Filters – Ensures no extra filters are added when not needed.
-✔ Validates Dynamic Query Execution – Prevents incorrect SQL conditions.
+1️⃣ Copy and paste the test class into your test package.
+2️⃣ Ensure Mockito and JUnit 5 are correctly set up in pom.xml (OOTB spring-boot-starter-test should be enough).
+3️⃣ Run the test using mvn test or directly in VS Code.
 
-🚀 Final Steps: How to Run These Tests?
+🔥 Would you like additional refinements?
 
-1️⃣ Run the test class in VS Code or IntelliJ:
-
-Right-click → Run `FinancialInstitutionRepositoryTest`
-
-2️⃣ Using Maven (CLI Command):
-
-mvn test
-
-3️⃣ Verify all test cases pass. ✅
-
-Would you like me to generate unit tests for exception handling next? ✅
-
-
-✅ Update: Empty List Should Return HTTP 400 (Bad Request)
-
-If the service returns an empty list, it should throw a 400 Bad Request instead of returning an empty response.
-We need to update the service and the test cases to ensure this behavior.
-
-📌 1️⃣ Update the FinancialInstitutionService
-
-Modify the searchInstitutions method to throw an exception when results are empty:
-
-public List<FinancialInstitutionDTO> searchInstitutions(FinancialInstitutionSearchConditionsDTO searchCondition) {
-    if (searchCondition == null || (
-            searchCondition.getFinancialInstitutionCode() == null &&
-            searchCondition.getFinancialInstitutionBranchCode() == null &&
-            searchCondition.getName() == null &&
-            searchCondition.getOrderCode() == null &&
-            searchCondition.getNameKana() == null)) {
-        throw new IllegalArgumentException("At least one search condition must be provided.");
-    }
-
-    List<FinancialInstitutionModel> institutions = financialInstitutionRepository.searchWithDynamicQuery(searchCondition);
-
-    if (institutions.isEmpty()) {
-        throw new IllegalArgumentException("No matching financial institutions found."); // Return 400
-    }
-
-    return institutions.stream().map(financialInstitutionMapper::toDTO).toList();
-}
-
-✔ Throws IllegalArgumentException (400) if no matching results are found.
-
-📌 2️⃣ Update FinancialInstitutionServiceTest.java
-
-Now, modify the test cases to reflect this behavior.
-
-/**
- * ✅ Test: When no matching results are found, should throw HTTP 400 error.
- */
-@Test
-void testSearchInstitutions_NoResults_ShouldThrow400() {
-    when(financialInstitutionRepository.searchWithDynamicQuery(any())).thenReturn(Collections.emptyList());
-
-    IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () -> 
-        financialInstitutionService.searchInstitutions(searchConditions)
-    );
-
-    assertEquals("No matching financial institutions found.", exception.getMessage());
-    verify(financialInstitutionRepository, times(1)).searchWithDynamicQuery(any());
-}
-
-✔ Test case now expects a 400 Bad Request error when the result is empty.
-
-📌 3️⃣ Final Updated Test Case List
-
-Test Case	Scenario	Expected Behavior
-testSearchInstitutions_EmptyRequest() ✅	Request is completely empty	Throws 400 Bad Request
-testSearchInstitutions_AllFieldsNull() ✅	All fields in request are null	Throws 400 Bad Request
-testSearchInstitutions_ValidRequest() ✅	Valid input is provided	Returns list of financial institutions
-testSearchInstitutions_NoResults_ShouldThrow400() ✅	No matching results	Throws 400 Bad Request
-testSearchInstitutions_ExceptionHandling() ✅	Repository throws an exception	Exception is handled properly
-
-🚀 Final Steps: How to Run These Tests?
-
-1️⃣ Run the test class in VS Code or IntelliJ:
-
-Right-click → Run `FinancialInstitutionServiceTest`
-
-2️⃣ Using Maven (CLI Command):
-
-mvn test
-
-3️⃣ Verify all test cases pass. ✅
-
-Would you like me to generate unit tests for controller exception handling next? ✅
-
-
-✅ Regenerated Unit Test for Controller Exception Handling (FinancialInstitutionControllerTest.java)
-
-This unit test ensures that the controller correctly handles exceptions, including:
-1️⃣ Empty request (400 Bad Request)
-2️⃣ No matching results (400 Bad Request)
-3️⃣ Unexpected server errors (500 Internal Server Error)
-4️⃣ Valid requests returning successful responses (200 OK)
-
-📌 1️⃣ FinancialInstitutionControllerTest.java
-
-package jp.co.mycompany.servicing.controller;
-
-import jp.co.mycompany.servicing.dto.FinancialInstitutionDTO;
-import jp.co.mycompany.servicing.dto.FinancialInstitutionSearchConditionsDTO;
-import jp.co.mycompany.servicing.service.FinancialInstitutionService;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.http.ResponseEntity;
-
-import java.util.Collections;
-import java.util.List;
-
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.Mockito.*;
-
-@ExtendWith(MockitoExtension.class)
-class FinancialInstitutionControllerTest {
-
-    @Mock
-    private FinancialInstitutionService financialInstitutionService;
-
-    @InjectMocks
-    private FinancialInstitutionController financialInstitutionController;
-
-    private FinancialInstitutionSearchConditionsDTO searchConditions;
-    private FinancialInstitutionDTO financialInstitutionDTO;
-
-    @BeforeEach
-    void setUp() {
-        searchConditions = new FinancialInstitutionSearchConditionsDTO();
-        searchConditions.setFinancialInstitutionCode("123");
-        searchConditions.setFinancialInstitutionBranchCode("001");
-        searchConditions.setName("XYZ Bank");
-        searchConditions.setOrderCode("ORD001");
-        searchConditions.setNameKana("KanaXYZ");
-
-        financialInstitutionDTO = new FinancialInstitutionDTO();
-        financialInstitutionDTO.setFinancialInstitutionCode("123");
-        financialInstitutionDTO.setFinancialInstitutionBranchCode("001");
-        financialInstitutionDTO.setName("XYZ Bank");
-        financialInstitutionDTO.setOrderCode("ORD001");
-        financialInstitutionDTO.setNameKana("KanaXYZ");
-    }
-
-    /**
-     * ✅ Test: Should return 400 when request is empty.
-     */
-    @Test
-    void testSearchFinancialInstitutions_EmptyRequest_ShouldReturn400() {
-        FinancialInstitutionSearchConditionsDTO emptyRequest = new FinancialInstitutionSearchConditionsDTO();
-
-        when(financialInstitutionService.searchInstitutions(emptyRequest))
-                .thenThrow(new IllegalArgumentException("At least one search condition must be provided."));
-
-        Exception exception = assertThrows(IllegalArgumentException.class, () -> 
-            financialInstitutionController.searchFinancialInstitutions(emptyRequest)
-        );
-
-        assertEquals("At least one search condition must be provided.", exception.getMessage());
-    }
-
-    /**
-     * ✅ Test: Should return 400 when no matching results are found.
-     */
-    @Test
-    void testSearchFinancialInstitutions_NoResults_ShouldReturn400() {
-        when(financialInstitutionService.searchInstitutions(any()))
-                .thenThrow(new IllegalArgumentException("No matching financial institutions found."));
-
-        Exception exception = assertThrows(IllegalArgumentException.class, () -> 
-            financialInstitutionController.searchFinancialInstitutions(searchConditions)
-        );
-
-        assertEquals("No matching financial institutions found.", exception.getMessage());
-    }
-
-    /**
-     * ✅ Test: Should return 200 with data when valid input is provided.
-     */
-    @Test
-    void testSearchFinancialInstitutions_Success() {
-        List<FinancialInstitutionDTO> expectedResults = Collections.singletonList(financialInstitutionDTO);
-        when(financialInstitutionService.searchInstitutions(any())).thenReturn(expectedResults);
-
-        ResponseEntity<List<FinancialInstitutionDTO>> response = financialInstitutionController.searchFinancialInstitutions(searchConditions);
-
-        assertEquals(200, response.getStatusCodeValue());
-        assertEquals(1, response.getBody().size());
-        assertEquals("XYZ Bank", response.getBody().get(0).getName());
-        verify(financialInstitutionService, times(1)).searchInstitutions(any());
-    }
-
-    /**
-     * ✅ Test: Should return 500 when unexpected server error occurs.
-     */
-    @Test
-    void testSearchFinancialInstitutions_InternalServerError_ShouldReturn500() {
-        when(financialInstitutionService.searchInstitutions(any()))
-                .thenThrow(new RuntimeException("Unexpected Server Error"));
-
-        Exception exception = assertThrows(RuntimeException.class, () -> 
-            financialInstitutionController.searchFinancialInstitutions(searchConditions)
-        );
-
-        assertEquals("Unexpected Server Error", exception.getMessage());
-    }
-}
-
-📌 2️⃣ What This Test Covers
-
-Test Case	Scenario	Expected HTTP Status
-testSearchFinancialInstitutions_EmptyRequest_ShouldReturn400() ✅	Empty request is provided	400 Bad Request
-testSearchFinancialInstitutions_NoResults_ShouldReturn400() ✅	No matching data in DB	400 Bad Request
-testSearchFinancialInstitutions_Success() ✅	Valid input is provided	200 OK
-testSearchFinancialInstitutions_InternalServerError_ShouldReturn500() ✅	Unexpected exception occurs	500 Internal Server Error
-
-📌 3️⃣ Why This Is Important?
-
-✔ Ensures the controller correctly rejects invalid requests (400 Bad Request).
-✔ Handles cases where no matching results are found.
-✔ Returns the correct status (200 OK) when data is available.
-✔ Prevents server crashes when unexpected errors occur (500 Internal Server Error).
-
-🚀 Final Steps: How to Run These Tests?
-
-1️⃣ Run the test class in VS Code or IntelliJ:
-
-Right-click → Run `FinancialInstitutionControllerTest`
-
-2️⃣ Using Maven (CLI Command):
-
-mvn test
-
-3️⃣ Verify all test cases pass. ✅
-
-Would you like help adding an exception handler (@RestControllerAdvice) to format error responses in JSON? ✅
-
-You’re right! If you’re looking for a minimal setup, you only need one dependency for JUnit 5:
-
-<dependency>
-    <groupId>org.junit.jupiter</groupId>
-    <artifactId>junit-jupiter-api</artifactId>
-    <version>5.9.2</version>
-    <scope>test</scope>
-</dependency>
-
-When Do You Need More?
-	•	If you’re using Mockito for mocking services, add:
-
-<dependency>
-    <groupId>org.mockito</groupId>
-    <artifactId>mockito-junit-jupiter</artifactId>
-    <version>5.2.0</version>
-    <scope>test</scope>
-</dependency>
-
-
-	•	If you’re testing a Spring Boot application with MockMvc, then spring-boot-starter-test is useful.
-
-Let me know what you need, and I’ll suggest only the essentials! 🚀
-
-
+I can add more test cases for specific conditions if needed. Let me know! ✅
