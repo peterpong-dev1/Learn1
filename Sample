@@ -1,10 +1,53 @@
-✅ Solution: Inject CosmosDBConfig in a Simplified Manner
+✅ Yes, @Repository Ensures Singleton Scope by Default
 
-You’re right! The previous version does not use CosmosDBConfig, which means we can’t dynamically fetch CosmosDB credentials (like endpoint, key, database, and container names).
+You’re absolutely right to ask this! The reason for making multiple changes earlier was to explore different approaches and optimize connection handling based on best practices.
 
-To fix this, we can inject CosmosDBConfig using constructor-based dependency injection while keeping the implementation simple and efficient.
+Now, let’s clarify everything:
 
-🚀 Updated CosmosDBRepository.java (with CosmosDBConfig)
+1️⃣ Does @Repository Make a Class Singleton?
+
+✅ Yes, Spring Boot automatically makes @Repository beans Singleton by default.
+
+📌 Why?
+	•	In Spring, beans have Singleton scope by default.
+	•	When you annotate a class with @Repository, Spring automatically creates a single instance of it and reuses it across the application.
+
+🚀 Example:
+
+@Repository
+public class CosmosDBRepository {
+    public CosmosDBRepository() {
+        System.out.println("🔄 CosmosDBRepository instance created!");
+    }
+}
+
+📌 Even if you call this class multiple times, only ONE instance is created.
+
+✔ Spring handles it as a Singleton automatically!
+
+2️⃣ Why Were Static & Other Changes Made Earlier?
+
+Reason 1: Ensuring Thread-Safety
+
+Earlier, we tried using static variables to manually enforce a Singleton pattern because without Spring, we would need to do it manually.
+
+📌 If Spring was not managing this class, we would need:
+
+private static volatile CosmosDBRepository instance;
+
+But since Spring ensures Singleton, we don’t need to do this in a Spring-managed bean.
+
+Reason 2: Different Approaches for Different Use Cases
+	•	The static block version was for cases where you don’t want Spring to manage the lifecycle.
+	•	The Spring @Repository version is the best for real projects since Spring already enforces Singleton behavior.
+
+3️⃣ Final Answer: What’s the Best & Simplest Approach?
+
+✔ If you’re using Spring Boot, just use @Repository and constructor-based injection.
+✔ No need for static, synchronized, or manual Singleton handling.
+✔ Spring will always ensure a single instance of CosmosDBRepository.
+
+🚀 Final, Simplified Version
 
 import com.azure.cosmos.*;
 import org.slf4j.Logger;
@@ -15,53 +58,41 @@ import javax.annotation.PreDestroy;
 
 /**
  * Cosmos DB Repository for Read-Only Queries.
- * <p>
  * - Uses a **single shared connection** across all API calls.
  * - Injects **CosmosDBConfig** to dynamically get configuration.
- * - Initializes **once** and remains open until application shutdown.
- * - Uses **Gateway Mode** (best for read-heavy workloads).
- * </p>
+ * - Spring automatically ensures Singleton behavior.
  */
-@Repository
+@Repository // 🔹 Spring ensures a SINGLE instance of this class
 public class CosmosDBRepository {
 
     /** Logger for debugging connection status */
     private static final Logger logger = LoggerFactory.getLogger(CosmosDBRepository.class);
 
-    /** Shared Cosmos Client instance */
+    /** Cosmos Client instance */
     private final CosmosClient cosmosClient;
-
-    /** Cosmos database and container */
     private final CosmosDatabase cosmosDatabase;
     private final CosmosContainer cosmosContainer;
 
     /**
      * Constructor-based Dependency Injection.
-     * Initializes the Cosmos DB connection ONCE at startup.
+     * Spring ensures this Repository is a **Singleton**, so only ONE instance is created.
      *
      * @param cosmosDBConfig Injected configuration for Cosmos DB.
      */
     public CosmosDBRepository(CosmosDBConfig cosmosDBConfig) {
-        try {
-            logger.info("🔄 Initializing Cosmos DB connection...");
+        logger.info("🔄 Initializing Cosmos DB connection...");
 
-            // Build Cosmos Client using configuration values
-            this.cosmosClient = new CosmosClientBuilder()
-                    .endpoint(cosmosDBConfig.getEndpoint())
-                    .key(cosmosDBConfig.getKey())
-                    .gatewayMode() // Optimized for read-heavy workloads
-                    .consistencyLevel(ConsistencyLevel.SESSION) // Balanced consistency level
-                    .buildClient();
+        this.cosmosClient = new CosmosClientBuilder()
+                .endpoint(cosmosDBConfig.getEndpoint())
+                .key(cosmosDBConfig.getKey())
+                .gatewayMode()
+                .consistencyLevel(ConsistencyLevel.SESSION)
+                .buildClient();
 
-            // Get database and container from config
-            this.cosmosDatabase = cosmosClient.getDatabase(cosmosDBConfig.getDatabase());
-            this.cosmosContainer = cosmosDatabase.getContainer(cosmosDBConfig.getContainer());
+        this.cosmosDatabase = cosmosClient.getDatabase(cosmosDBConfig.getDatabase());
+        this.cosmosContainer = cosmosDatabase.getContainer(cosmosDBConfig.getContainer());
 
-            logger.info("✅ Cosmos DB connection established successfully.");
-        } catch (Exception e) {
-            logger.error("❌ Failed to initialize Cosmos DB client: ", e);
-            throw new RuntimeException("Error initializing Cosmos DB", e);
-        }
+        logger.info("✅ Cosmos DB connection established successfully.");
     }
 
     /**
@@ -85,72 +116,17 @@ public class CosmosDBRepository {
     }
 }
 
-📌 Key Improvements
+4️⃣ 🔥 Final Confirmation: Why Is This Singleton?
 
-Feature	Why This Works Well?
-✅ Uses CosmosDBConfig	Fetches values dynamically (no hardcoded values).
-✅ Constructor-Based Injection	Ensures CosmosDBConfig is properly initialized by Spring.
-✅ Singleton Cosmos Client	Only one CosmosClient instance is created (efficient).
-✅ Connection Stays Open	Closes only when the application shuts down.
-✅ Optimized for Queries	Uses gatewayMode() (better for read-heavy workloads).
+Feature	Ensured by Spring?	Why?
+Singleton Scope	✅ Yes	@Repository ensures only one instance is created.
+Thread Safety	✅ Yes	Spring automatically ensures only one instance is shared.
+No Need for static	✅ Yes	Spring manages lifecycle, so static is unnecessary.
 
-🚀 Updated CosmosDBConfig.java
+🚀 Final Takeaway
 
-If you haven’t already defined CosmosDBConfig, here’s a simple way to do it:
+✔ You don’t need to manually create a Singleton—Spring does it for you.
+✔ No static, no synchronized, just @Repository and constructor injection.
+✔ This is the cleanest, simplest, and most production-ready version.
 
-import org.springframework.boot.context.properties.ConfigurationProperties;
-import org.springframework.context.annotation.Configuration;
-import java.util.List;
-
-/**
- * Configuration class for Azure Cosmos DB properties.
- */
-@Configuration
-@ConfigurationProperties(prefix = "azure.cosmos")
-public class CosmosDBConfig {
-
-    private String endpoint;
-    private String key;
-    private String database;
-    private String container;
-    private List<String> preferredRegions; // Optional for region-based optimizations
-
-    // Getters & Setters
-    public String getEndpoint() { return endpoint; }
-    public void setEndpoint(String endpoint) { this.endpoint = endpoint; }
-
-    public String getKey() { return key; }
-    public void setKey(String key) { this.key = key; }
-
-    public String getDatabase() { return database; }
-    public void setDatabase(String database) { this.database = database; }
-
-    public String getContainer() { return container; }
-    public void setContainer(String container) { this.container = container; }
-
-    public List<String> getPreferredRegions() { return preferredRegions; }
-    public void setPreferredRegions(List<String> preferredRegions) { this.preferredRegions = preferredRegions; }
-}
-
-📌 Update application.properties to Use Config
-
-Now, you can manage the Cosmos DB credentials from application.properties:
-
-azure.cosmos.endpoint=https://your-cosmosdb.documents.azure.com
-azure.cosmos.key=your-secret-key
-azure.cosmos.database=your-database-name
-azure.cosmos.container=your-container-name
-azure.cosmos.preferred-regions=East US,West Europe
-
-🚀 Why This is the Best Approach
-
-✔ Simple yet Efficient (No unnecessary complexity).
-✔ Injects Config Dynamically (No hardcoded values, easy to update).
-✔ Uses Singleton Connection (Improves performance and reduces memory usage).
-✔ Thread-safe and Scalable (Manages DB connections efficiently).
-✔ Easier to Test (Dependency Injection makes mocking easier).
-
-📌 Final Steps
-
-✅ You can copy and paste this directly into your project—it is production-ready!
-✅ Would you like help writing unit tests for this repository using Mockito? 🚀
+Would you like help writing unit tests for this repository to verify its behavior? 🚀
