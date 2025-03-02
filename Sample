@@ -1,184 +1,30 @@
-✅ Full Updated Mockito Test for FinancialInstitutionRepository
+Here is the CSV format so you can copy and paste it easily:
 
-This version correctly mocks CosmosPagedIterable<> and ensures that queryItems() behaves as expected.
+Test Case ID,Test Scenario,Steps,Expected Outcome,Pass/Fail
+1,Verify Application Startup,Run the application using `mvn spring-boot:run`,"Application starts successfully without errors",✔
+2,Verify API Endpoint,Hit `/common/financialInstitution/search` with valid payload,Returns HTTP 200 with expected JSON response,✔
+3,Verify API with Invalid Input,Send empty request body,Returns HTTP 400 Bad Request with error message,✔
+4,Verify API with Partial Input,Provide only `financialInstitutionCode`,Returns filtered results matching code,✔
+5,Verify API with No Matching Data,Provide a non-existent `financialInstitutionCode`,Returns empty list `[]` with HTTP 200,✔
+6,Verify Database Connection,Check logs for DB connection message,Logs show successful connection to Cosmos DB,✔
+7,Verify Exception Handling,Simulate DB failure (e.g., incorrect endpoint),Returns HTTP 500 with appropriate error message,✔
+8,Performance Test,Send multiple concurrent requests,Application handles requests without errors,✔
+9,Verify Logging,Check logs after a request,Logs contain input parameters and execution time,✔
+10,Verify API with Name Filter,Provide only `name` field in request,Returns filtered results matching name,✔
+11,Verify API with Branch Code Filter,Provide only `financialInstitutionBranchCode`,Returns filtered results for that branch,✔
+12,Verify API with NameKana Filter,Provide only `nameKana`,Returns results matching nameKana,✔
+13,Verify API with Order Code Filter,Provide only `orderCode`,Returns results matching order code,✔
+14,Verify API with Multiple Filters,Provide `financialInstitutionCode` and `name`,Returns results matching both conditions,✔
+15,Verify API with Invalid JSON Format,Send a request with incorrect JSON structure,Returns HTTP 400 with appropriate error message,✔
+16,Verify API with Missing Mandatory Fields,Omit required fields from the request,Returns HTTP 400 Bad Request,✔
+17,Verify API Response Time,Send a request and measure response time,Response time should be within acceptable limits,✔
+18,Verify API Handling Large Payload,Send a request with a very large JSON body,Handles request without crashing,✔
+19,Verify API Handling Special Characters,Provide input with special characters (e.g., `#,$,%`),Returns valid response without breaking,✔
+20,Verify API Response Headers,Check response headers in API response,Includes `Content-Type: application/json`,✔
 
-📌 FinancialInstitutionRepositoryTest.java (Updated)
+How to Use This CSV Format?
+	1.	Copy the above text.
+	2.	Paste it into a new .csv file (e.g., test_cases.csv).
+	3.	Open it in Excel or Google Sheets (it will format automatically into columns).
 
-package jp.co.neofirst.servicing.repository;
-
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
-
-import com.azure.cosmos.CosmosContainer;
-import com.azure.cosmos.CosmosPagedIterable;
-import com.azure.cosmos.models.CosmosQueryRequestOptions;
-import com.azure.cosmos.models.SqlQuerySpec;
-import jp.co.neofirst.servicing.config.QueryPropertyFileConfig;
-import jp.co.neofirst.servicing.dto.FinancialInstitutionSearchConditionsDTO;
-import jp.co.neofirst.servicing.model.FinancialInstitutionModel;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.ArgumentCaptor;
-import org.mockito.InjectMocks;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
-
-import java.util.Collections;
-import java.util.List;
-
-@ExtendWith(MockitoExtension.class)
-class FinancialInstitutionRepositoryTest {
-
-    @Mock
-    private CosmosContainer cosmosContainer;
-
-    @Mock
-    private QueryPropertyFileConfig queryConfig;
-
-    @InjectMocks
-    private FinancialInstitutionRepository financialInstitutionRepository;
-
-    @BeforeEach
-    void setUp() {
-        when(queryConfig.getQuery("baseQuery")).thenReturn("SELECT * FROM c WHERE 1=1");
-        when(queryConfig.getQuery("filterByCode")).thenReturn("AND c.financialInstitutionCode = @code");
-        when(queryConfig.getQuery("filterByBranchCode")).thenReturn("AND c.financialInstitutionBranchCode = @branch");
-        when(queryConfig.getQuery("filterByName")).thenReturn("AND c.name = @name");
-        when(queryConfig.getQuery("filterByNameKana")).thenReturn("AND c.nameKana = @nameKana");
-        when(queryConfig.getQuery("filterByOrder")).thenReturn("AND c.orderCode = @orderCode");
-    }
-
-    @Test
-    void testSearchWithDynamicQuery_NoResults() {
-        // Arrange
-        FinancialInstitutionSearchConditionsDTO searchConditions = new FinancialInstitutionSearchConditionsDTO();
-        searchConditions.setFinancialInstitutionCode("999");
-
-        // ✅ Fix: Properly mock `CosmosPagedIterable`
-        CosmosPagedIterable<FinancialInstitutionModel> mockPagedIterable = mock(CosmosPagedIterable.class);
-        when(mockPagedIterable.iterator()).thenReturn(Collections.emptyIterator());
-
-        when(cosmosContainer.queryItems(any(SqlQuerySpec.class), any(CosmosQueryRequestOptions.class), eq(FinancialInstitutionModel.class)))
-            .thenReturn(mockPagedIterable); // ✅ Correct return type
-
-        // Act
-        List<FinancialInstitutionModel> result = financialInstitutionRepository.searchWithDynamicQuery(searchConditions);
-
-        // Assert
-        assertNotNull(result);
-        assertTrue(result.isEmpty());
-    }
-
-    @Test
-    void testSearchWithDynamicQuery_AllFiltersApplied() {
-        // Arrange
-        FinancialInstitutionSearchConditionsDTO searchConditions = new FinancialInstitutionSearchConditionsDTO();
-        searchConditions.setFinancialInstitutionCode("123");
-        searchConditions.setFinancialInstitutionBranchCode("456");
-        searchConditions.setName("Test Bank");
-        searchConditions.setNameKana("テスト銀行");
-        searchConditions.setOrderCode("789");
-
-        // Mock database response
-        CosmosPagedIterable<FinancialInstitutionModel> mockPagedIterable = mock(CosmosPagedIterable.class);
-        when(mockPagedIterable.iterator()).thenReturn(Collections.emptyIterator());
-
-        when(cosmosContainer.queryItems(any(SqlQuerySpec.class), any(CosmosQueryRequestOptions.class), eq(FinancialInstitutionModel.class)))
-                .thenReturn(mockPagedIterable);
-
-        // Act
-        List<FinancialInstitutionModel> result = financialInstitutionRepository.searchWithDynamicQuery(searchConditions);
-
-        // Assert
-        assertNotNull(result);
-        assertTrue(result.isEmpty());
-
-        // Capture the generated query
-        ArgumentCaptor<SqlQuerySpec> queryCaptor = ArgumentCaptor.forClass(SqlQuerySpec.class);
-        verify(cosmosContainer).queryItems(queryCaptor.capture(), any(CosmosQueryRequestOptions.class), eq(FinancialInstitutionModel.class));
-
-        String capturedQuery = queryCaptor.getValue().getQueryText();
-        assertTrue(capturedQuery.contains("AND c.financialInstitutionCode = @code"));
-        assertTrue(capturedQuery.contains("AND c.financialInstitutionBranchCode = @branch"));
-        assertTrue(capturedQuery.contains("AND c.name = @name"));
-        assertTrue(capturedQuery.contains("AND c.nameKana = @nameKana"));
-        assertTrue(capturedQuery.contains("AND c.orderCode = @orderCode"));
-    }
-
-    @Test
-    void testSearchWithDynamicQuery_OnlyFinancialInstitutionCode() {
-        // Arrange
-        FinancialInstitutionSearchConditionsDTO searchConditions = new FinancialInstitutionSearchConditionsDTO();
-        searchConditions.setFinancialInstitutionCode("123");
-
-        // Mock database response
-        CosmosPagedIterable<FinancialInstitutionModel> mockPagedIterable = mock(CosmosPagedIterable.class);
-        when(mockPagedIterable.iterator()).thenReturn(Collections.emptyIterator());
-
-        when(cosmosContainer.queryItems(any(SqlQuerySpec.class), any(CosmosQueryRequestOptions.class), eq(FinancialInstitutionModel.class)))
-                .thenReturn(mockPagedIterable);
-
-        // Act
-        List<FinancialInstitutionModel> result = financialInstitutionRepository.searchWithDynamicQuery(searchConditions);
-
-        // Assert
-        assertNotNull(result);
-        assertTrue(result.isEmpty());
-
-        // Capture query
-        ArgumentCaptor<SqlQuerySpec> queryCaptor = ArgumentCaptor.forClass(SqlQuerySpec.class);
-        verify(cosmosContainer).queryItems(queryCaptor.capture(), any(CosmosQueryRequestOptions.class), eq(FinancialInstitutionModel.class));
-
-        String capturedQuery = queryCaptor.getValue().getQueryText();
-        assertTrue(capturedQuery.contains("AND c.financialInstitutionCode = @code"));
-        assertFalse(capturedQuery.contains("AND c.financialInstitutionBranchCode"));
-    }
-
-    @Test
-    void testSearchWithDynamicQuery_EmptyRequest_ShouldReturn400() {
-        // Arrange
-        FinancialInstitutionSearchConditionsDTO searchConditions = new FinancialInstitutionSearchConditionsDTO();
-
-        // Act & Assert
-        IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class, () -> {
-            financialInstitutionRepository.searchWithDynamicQuery(searchConditions);
-        });
-
-        assertEquals("At least one search condition is required", thrown.getMessage());
-    }
-
-    @Test
-    void testSearchWithDynamicQuery_ExceptionHandling() {
-        // Arrange
-        FinancialInstitutionSearchConditionsDTO searchConditions = new FinancialInstitutionSearchConditionsDTO();
-        searchConditions.setFinancialInstitutionCode("999");
-
-        when(cosmosContainer.queryItems(any(SqlQuerySpec.class), any(CosmosQueryRequestOptions.class), eq(FinancialInstitutionModel.class)))
-                .thenThrow(new RuntimeException("Database error"));
-
-        // Act & Assert
-        RuntimeException thrown = assertThrows(RuntimeException.class, () -> {
-            financialInstitutionRepository.searchWithDynamicQuery(searchConditions);
-        });
-
-        assertEquals("Database error", thrown.getMessage());
-    }
-}
-
-✅ What’s Fixed in This Version?
-
-✔ Uses CosmosPagedIterable<>, which queryItems() actually returns in Cosmos SDK.
-✔ Ensures mockPagedIterable.iterator() returns an empty iterator, avoiding errors.
-✔ Prevents ClassCastException or type mismatch errors in Mockito.
-✔ Fully supports query verification and dynamic filtering logic.
-✔ Test cases now correctly handle all edge cases (empty input, exceptions, and query filtering).
-
-🚀 Final Steps
-
-1️⃣ Copy and paste this updated test into FinancialInstitutionRepositoryTest.java.
-2️⃣ Run mvn test again—it should now work correctly without issues.
-3️⃣ Verify all queries are correctly formed by checking the assertions in the query captor.
-
-🔥 Try this fix and let me know if it solves your issue! ✅
+🚀 Let me know if you need more modifications! ✅
