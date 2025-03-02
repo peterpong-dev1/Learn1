@@ -1,132 +1,178 @@
-✅ Yes, @Repository Ensures Singleton Scope by Default
+📌 Handling Errors While Creating Cosmos DB Client
 
-You’re absolutely right to ask this! The reason for making multiple changes earlier was to explore different approaches and optimize connection handling based on best practices.
+If the Cosmos DB Client fails to initialize due to:
+	•	Invalid credentials (wrong endpoint or key)
+	•	Network issues
+	•	Timeouts
+	•	Azure Cosmos DB service being down
 
-Now, let’s clarify everything:
+👉 You should handle these errors at the time of client creation and ensure they don’t crash the application.
 
-1️⃣ Does @Repository Make a Class Singleton?
+✅ Steps to Handle Errors While Creating Cosmos DB Client
 
-✅ Yes, Spring Boot automatically makes @Repository beans Singleton by default.
+1️⃣ Catch CosmosException and IllegalArgumentException while initializing the client
+2️⃣ Throw a DatabaseInitializationException (custom exception)
+3️⃣ Handle DatabaseInitializationException in GlobalExceptionHandler
+4️⃣ Ensure a proper 500 Internal Server Error response is returned
 
-📌 Why?
-	•	In Spring, beans have Singleton scope by default.
-	•	When you annotate a class with @Repository, Spring automatically creates a single instance of it and reuses it across the application.
+📌 1. Update CosmosDBRepository to Handle Initialization Failures
 
-🚀 Example:
-
-@Repository
-public class CosmosDBRepository {
-    public CosmosDBRepository() {
-        System.out.println("🔄 CosmosDBRepository instance created!");
-    }
-}
-
-📌 Even if you call this class multiple times, only ONE instance is created.
-
-✔ Spring handles it as a Singleton automatically!
-
-2️⃣ Why Were Static & Other Changes Made Earlier?
-
-Reason 1: Ensuring Thread-Safety
-
-Earlier, we tried using static variables to manually enforce a Singleton pattern because without Spring, we would need to do it manually.
-
-📌 If Spring was not managing this class, we would need:
-
-private static volatile CosmosDBRepository instance;
-
-But since Spring ensures Singleton, we don’t need to do this in a Spring-managed bean.
-
-Reason 2: Different Approaches for Different Use Cases
-	•	The static block version was for cases where you don’t want Spring to manage the lifecycle.
-	•	The Spring @Repository version is the best for real projects since Spring already enforces Singleton behavior.
-
-3️⃣ Final Answer: What’s the Best & Simplest Approach?
-
-✔ If you’re using Spring Boot, just use @Repository and constructor-based injection.
-✔ No need for static, synchronized, or manual Singleton handling.
-✔ Spring will always ensure a single instance of CosmosDBRepository.
-
-🚀 Final, Simplified Version
+📍 Inside CosmosDBRepository.java
 
 import com.azure.cosmos.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Repository;
 
-import javax.annotation.PreDestroy;
-
 /**
- * Cosmos DB Repository for Read-Only Queries.
- * - Uses a **single shared connection** across all API calls.
- * - Injects **CosmosDBConfig** to dynamically get configuration.
- * - Spring automatically ensures Singleton behavior.
+ * Cosmos DB Repository for handling database connections.
  */
-@Repository // 🔹 Spring ensures a SINGLE instance of this class
+@Repository
 public class CosmosDBRepository {
 
-    /** Logger for debugging connection status */
     private static final Logger logger = LoggerFactory.getLogger(CosmosDBRepository.class);
-
-    /** Cosmos Client instance */
-    private final CosmosClient cosmosClient;
-    private final CosmosDatabase cosmosDatabase;
-    private final CosmosContainer cosmosContainer;
+    private static CosmosClient cosmosClient;
+    private static CosmosDatabase cosmosDatabase;
+    private static CosmosContainer cosmosContainer;
 
     /**
-     * Constructor-based Dependency Injection.
-     * Spring ensures this Repository is a **Singleton**, so only ONE instance is created.
+     * Initializes Cosmos DB connection. Ensures safe handling of failures.
      *
-     * @param cosmosDBConfig Injected configuration for Cosmos DB.
+     * @param cosmosDBConfig Configuration for DB connection.
      */
     public CosmosDBRepository(CosmosDBConfig cosmosDBConfig) {
-        logger.info("🔄 Initializing Cosmos DB connection...");
+        try {
+            logger.info("🔄 Initializing Cosmos DB client...");
+            cosmosClient = new CosmosClientBuilder()
+                    .endpoint(cosmosDBConfig.getEndpoint())
+                    .key(cosmosDBConfig.getKey())
+                    .gatewayMode()
+                    .consistencyLevel(ConsistencyLevel.SESSION)
+                    .buildClient();
 
-        this.cosmosClient = new CosmosClientBuilder()
-                .endpoint(cosmosDBConfig.getEndpoint())
-                .key(cosmosDBConfig.getKey())
-                .gatewayMode()
-                .consistencyLevel(ConsistencyLevel.SESSION)
-                .buildClient();
+            cosmosDatabase = cosmosClient.getDatabase(cosmosDBConfig.getDatabase());
+            cosmosContainer = cosmosDatabase.getContainer(cosmosDBConfig.getContainer());
 
-        this.cosmosDatabase = cosmosClient.getDatabase(cosmosDBConfig.getDatabase());
-        this.cosmosContainer = cosmosDatabase.getContainer(cosmosDBConfig.getContainer());
+            logger.info("✅ Cosmos DB connection successfully established.");
 
-        logger.info("✅ Cosmos DB connection established successfully.");
+        } catch (CosmosException e) {
+            logger.error("❌ Failed to initialize Cosmos DB Client! Status Code: {}, Message: {}", e.getStatusCode(), e.getMessage());
+            throw new DatabaseInitializationException("Cosmos DB initialization failed. Please check DB connectivity.", e);
+        } catch (IllegalArgumentException e) {
+            logger.error("❌ Invalid Cosmos DB Configuration! Message: {}", e.getMessage());
+            throw new DatabaseInitializationException("Invalid Cosmos DB credentials. Please check configuration.", e);
+        } catch (Exception e) {
+            logger.error("❌ Unexpected error during Cosmos DB initialization: ", e);
+            throw new DatabaseInitializationException("Unexpected error while initializing database.", e);
+        }
     }
 
     /**
-     * Retrieves the shared Cosmos DB container instance.
+     * Gets the Cosmos DB container.
      *
-     * @return the active {@link CosmosContainer} instance.
+     * @return CosmosContainer instance.
      */
     public CosmosContainer getContainer() {
         return cosmosContainer;
     }
+}
+
+✅ Ensures the Cosmos DB client does not crash the application on startup.
+✅ Catches initialization errors and throws DatabaseInitializationException.
+
+📌 2. Create DatabaseInitializationException Class
+
+📍 Inside DatabaseInitializationException.java
+
+/**
+ * Custom exception for database initialization failures.
+ */
+public class DatabaseInitializationException extends RuntimeException {
 
     /**
-     * Closes the Cosmos DB connection when the application is shutting down.
+     * Constructs a DatabaseInitializationException with a message.
+     *
+     * @param message Error message.
      */
-    @PreDestroy
-    public void close() {
-        if (cosmosClient != null) {
-            cosmosClient.close();
-            logger.info("✅ Cosmos DB connection closed.");
-        }
+    public DatabaseInitializationException(String message) {
+        super(message);
+    }
+
+    /**
+     * Constructs a DatabaseInitializationException with a message and cause.
+     *
+     * @param message Error message.
+     * @param cause The root cause of the error.
+     */
+    public DatabaseInitializationException(String message, Throwable cause) {
+        super(message, cause);
     }
 }
 
-4️⃣ 🔥 Final Confirmation: Why Is This Singleton?
+✅ Separates initialization errors from query execution errors.
+✅ Makes it easy to catch and log initialization failures.
 
-Feature	Ensured by Spring?	Why?
-Singleton Scope	✅ Yes	@Repository ensures only one instance is created.
-Thread Safety	✅ Yes	Spring automatically ensures only one instance is shared.
-No Need for static	✅ Yes	Spring manages lifecycle, so static is unnecessary.
+📌 3. Handle Initialization Failure in GlobalExceptionHandler
 
-🚀 Final Takeaway
+📍 Inside GlobalExceptionHandler.java
 
-✔ You don’t need to manually create a Singleton—Spring does it for you.
-✔ No static, no synchronized, just @Repository and constructor injection.
-✔ This is the cleanest, simplest, and most production-ready version.
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+import java.time.LocalDateTime;
+import java.util.List;
 
-Would you like help writing unit tests for this repository to verify its behavior? 🚀
+/**
+ * Global Exception Handler for API errors.
+ */
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+
+    /**
+     * Handles database initialization failures.
+     */
+    @ExceptionHandler(DatabaseInitializationException.class)
+    public ResponseEntity<ErrorResponseDTO> handleDatabaseInitException(DatabaseInitializationException ex) {
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(new ErrorResponseDTO(
+                        "500",
+                        "Database Initialization Error",
+                        List.of(new ErrorDetailDTO("CosmosDB", ex.getMessage())),
+                        LocalDateTime.now()
+                ));
+    }
+}
+
+✅ Ensures users get a proper 500 Internal Server Error instead of a stack trace.
+✅ Helps in debugging Cosmos DB connection failures easily.
+
+📌 4. Example API Response When Cosmos DB Fails to Initialize
+
+📍 When DB Credentials Are Wrong
+
+🔹 If the DB client fails to initialize, the API will return:
+
+{
+  "code": "500",
+  "message": "Database Initialization Error",
+  "errors": [
+    {
+      "field": "CosmosDB",
+      "issue": "Invalid Cosmos DB credentials. Please check configuration."
+    }
+  ],
+  "timestamp": "2025-03-03T12:50:45.567Z"
+}
+
+✅ No stack trace is leaked.
+✅ Users get a clear message that the database connection failed.
+
+🚀 Final Takeaways
+
+✔ Catch errors at the DB client initialization level.
+✔ Throw DatabaseInitializationException instead of letting the app crash.
+✔ Use GlobalExceptionHandler to return clean API responses (500 Internal Server Error).
+✔ Log all failures (CosmosException, IllegalArgumentException, unexpected exceptions).
+
+🔥 Do you need unit test cases for this DB initialization error handling? 🚀
