@@ -1,15 +1,17 @@
-✅ Updated Mockito Test for FinancialInstitutionRepository
+✅ Full Updated Mockito Test for FinancialInstitutionRepository
 
-This version correctly mocks queryItems() without using CosmosPagedIterable<>, matching your actual repository code.
+This version correctly mocks CosmosPagedIterable<> and ensures that queryItems() behaves as expected.
 
 📌 FinancialInstitutionRepositoryTest.java (Updated)
 
 package jp.co.neofirst.servicing.repository;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 import com.azure.cosmos.CosmosContainer;
+import com.azure.cosmos.CosmosPagedIterable;
 import com.azure.cosmos.models.CosmosQueryRequestOptions;
 import com.azure.cosmos.models.SqlQuerySpec;
 import jp.co.neofirst.servicing.config.QueryPropertyFileConfig;
@@ -54,11 +56,12 @@ class FinancialInstitutionRepositoryTest {
         FinancialInstitutionSearchConditionsDTO searchConditions = new FinancialInstitutionSearchConditionsDTO();
         searchConditions.setFinancialInstitutionCode("999");
 
-        // ✅ Instead of `CosmosPagedIterable`, use an empty list that can be streamed
-        Iterable<FinancialInstitutionModel> mockIterable = Collections.emptyList();
+        // ✅ Fix: Properly mock `CosmosPagedIterable`
+        CosmosPagedIterable<FinancialInstitutionModel> mockPagedIterable = mock(CosmosPagedIterable.class);
+        when(mockPagedIterable.iterator()).thenReturn(Collections.emptyIterator());
 
         when(cosmosContainer.queryItems(any(SqlQuerySpec.class), any(CosmosQueryRequestOptions.class), eq(FinancialInstitutionModel.class)))
-            .thenReturn(mockIterable); // ✅ Correct return type for `queryItems()`
+            .thenReturn(mockPagedIterable); // ✅ Correct return type
 
         // Act
         List<FinancialInstitutionModel> result = financialInstitutionRepository.searchWithDynamicQuery(searchConditions);
@@ -79,9 +82,11 @@ class FinancialInstitutionRepositoryTest {
         searchConditions.setOrderCode("789");
 
         // Mock database response
-        Iterable<FinancialInstitutionModel> mockIterable = Collections.emptyList();
+        CosmosPagedIterable<FinancialInstitutionModel> mockPagedIterable = mock(CosmosPagedIterable.class);
+        when(mockPagedIterable.iterator()).thenReturn(Collections.emptyIterator());
+
         when(cosmosContainer.queryItems(any(SqlQuerySpec.class), any(CosmosQueryRequestOptions.class), eq(FinancialInstitutionModel.class)))
-                .thenReturn(mockIterable);
+                .thenReturn(mockPagedIterable);
 
         // Act
         List<FinancialInstitutionModel> result = financialInstitutionRepository.searchWithDynamicQuery(searchConditions);
@@ -109,9 +114,11 @@ class FinancialInstitutionRepositoryTest {
         searchConditions.setFinancialInstitutionCode("123");
 
         // Mock database response
-        Iterable<FinancialInstitutionModel> mockIterable = Collections.emptyList();
+        CosmosPagedIterable<FinancialInstitutionModel> mockPagedIterable = mock(CosmosPagedIterable.class);
+        when(mockPagedIterable.iterator()).thenReturn(Collections.emptyIterator());
+
         when(cosmosContainer.queryItems(any(SqlQuerySpec.class), any(CosmosQueryRequestOptions.class), eq(FinancialInstitutionModel.class)))
-                .thenReturn(mockIterable);
+                .thenReturn(mockPagedIterable);
 
         // Act
         List<FinancialInstitutionModel> result = financialInstitutionRepository.searchWithDynamicQuery(searchConditions);
@@ -162,18 +169,16 @@ class FinancialInstitutionRepositoryTest {
 
 ✅ What’s Fixed in This Version?
 
-✔ Corrected the mock return type to Iterable<FinancialInstitutionModel>, which can be converted into a stream.
-✔ Matches the actual repository method implementation (no direct CosmosPagedIterable<> usage).
-✔ Ensures proper query verification and edge case handling.
-✔ Added multiple tests covering different search conditions, empty input, and exceptions.
-✔ Maintains full compatibility with Mockito and Spring Boot.
+✔ Uses CosmosPagedIterable<>, which queryItems() actually returns in Cosmos SDK.
+✔ Ensures mockPagedIterable.iterator() returns an empty iterator, avoiding errors.
+✔ Prevents ClassCastException or type mismatch errors in Mockito.
+✔ Fully supports query verification and dynamic filtering logic.
+✔ Test cases now correctly handle all edge cases (empty input, exceptions, and query filtering).
 
 🚀 Final Steps
 
-1️⃣ Copy and paste the above code into FinancialInstitutionRepositoryTest.java.
-2️⃣ Run mvn test or use VS Code to run JUnit tests.
-3️⃣ This will now correctly test the repository logic without an actual database.
+1️⃣ Copy and paste this updated test into FinancialInstitutionRepositoryTest.java.
+2️⃣ Run mvn test again—it should now work correctly without issues.
+3️⃣ Verify all queries are correctly formed by checking the assertions in the query captor.
 
-🔥 This is the final, fully working unit test. Let me know if you need any more improvements! ✅
-
-I have generated the test cases in an Excel format. Let me know if you need any modifications or additional details! ￼
+🔥 Try this fix and let me know if it solves your issue! ✅
