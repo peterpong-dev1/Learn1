@@ -1,21 +1,21 @@
-📌 Handling Errors While Creating Cosmos DB Client
+📌 Where to Handle Database Failure Errors in Spring Boot?
 
-If the Cosmos DB Client fails to initialize due to:
-	•	Invalid credentials (wrong endpoint or key)
-	•	Network issues
+When the database connection fails, such as due to:
+	•	Network issues (e.g., WiFi turned off)
+	•	Cosmos DB being unreachable
+	•	Invalid credentials
 	•	Timeouts
-	•	Azure Cosmos DB service being down
 
-👉 You should handle these errors at the time of client creation and ensure they don’t crash the application.
+👉 The application should not expose a stack trace but instead return a structured error response (HTTP 500 - Internal Server Error).
 
-✅ Steps to Handle Errors While Creating Cosmos DB Client
+✅ Steps to Handle Database Errors
 
-1️⃣ Catch CosmosException and IllegalArgumentException while initializing the client
-2️⃣ Throw a DatabaseInitializationException (custom exception)
-3️⃣ Handle DatabaseInitializationException in GlobalExceptionHandler
-4️⃣ Ensure a proper 500 Internal Server Error response is returned
+1️⃣ Catch the CosmosException in Repository Layer
+2️⃣ Throw a Custom DatabaseException
+3️⃣ Handle DatabaseException in GlobalExceptionHandler
+4️⃣ Return a Proper JSON Response (500 Internal Server Error)
 
-📌 1. Update CosmosDBRepository to Handle Initialization Failures
+📌 1. Catch and Throw a DatabaseException in Repository
 
 📍 Inside CosmosDBRepository.java
 
@@ -23,96 +23,88 @@ import com.azure.cosmos.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Repository;
+import java.util.List;
 
 /**
- * Cosmos DB Repository for handling database connections.
+ * Cosmos DB Repository for handling database queries.
  */
 @Repository
 public class CosmosDBRepository {
 
     private static final Logger logger = LoggerFactory.getLogger(CosmosDBRepository.class);
-    private static CosmosClient cosmosClient;
-    private static CosmosDatabase cosmosDatabase;
-    private static CosmosContainer cosmosContainer;
+    private final CosmosContainer cosmosContainer;
 
-    /**
-     * Initializes Cosmos DB connection. Ensures safe handling of failures.
-     *
-     * @param cosmosDBConfig Configuration for DB connection.
-     */
     public CosmosDBRepository(CosmosDBConfig cosmosDBConfig) {
-        try {
-            logger.info("🔄 Initializing Cosmos DB client...");
-            cosmosClient = new CosmosClientBuilder()
-                    .endpoint(cosmosDBConfig.getEndpoint())
-                    .key(cosmosDBConfig.getKey())
-                    .gatewayMode()
-                    .consistencyLevel(ConsistencyLevel.SESSION)
-                    .buildClient();
+        CosmosClient cosmosClient = new CosmosClientBuilder()
+                .endpoint(cosmosDBConfig.getEndpoint())
+                .key(cosmosDBConfig.getKey())
+                .gatewayMode()
+                .consistencyLevel(ConsistencyLevel.SESSION)
+                .buildClient();
 
-            cosmosDatabase = cosmosClient.getDatabase(cosmosDBConfig.getDatabase());
-            cosmosContainer = cosmosDatabase.getContainer(cosmosDBConfig.getContainer());
-
-            logger.info("✅ Cosmos DB connection successfully established.");
-
-        } catch (CosmosException e) {
-            logger.error("❌ Failed to initialize Cosmos DB Client! Status Code: {}, Message: {}", e.getStatusCode(), e.getMessage());
-            throw new DatabaseInitializationException("Cosmos DB initialization failed. Please check DB connectivity.", e);
-        } catch (IllegalArgumentException e) {
-            logger.error("❌ Invalid Cosmos DB Configuration! Message: {}", e.getMessage());
-            throw new DatabaseInitializationException("Invalid Cosmos DB credentials. Please check configuration.", e);
-        } catch (Exception e) {
-            logger.error("❌ Unexpected error during Cosmos DB initialization: ", e);
-            throw new DatabaseInitializationException("Unexpected error while initializing database.", e);
-        }
+        CosmosDatabase cosmosDatabase = cosmosClient.getDatabase(cosmosDBConfig.getDatabase());
+        this.cosmosContainer = cosmosDatabase.getContainer(cosmosDBConfig.getContainer());
     }
 
     /**
-     * Gets the Cosmos DB container.
+     * Fetches financial institutions, handling DB failures properly.
      *
-     * @return CosmosContainer instance.
+     * @return List of financial institutions.
      */
-    public CosmosContainer getContainer() {
-        return cosmosContainer;
+    public List<FinancialInstitutionModel> fetchAllInstitutions() {
+        try {
+            logger.info("Executing query to fetch financial institutions...");
+            return cosmosContainer.queryItems(
+                    "SELECT * FROM c",
+                    new CosmosQueryRequestOptions(),
+                    FinancialInstitutionModel.class
+            ).stream().toList();
+
+        } catch (CosmosException e) {
+            logger.error("❌ Database connection failed! Status Code: {}, Message: {}", e.getStatusCode(), e.getMessage());
+            throw new DatabaseException("Database is unavailable. Please try again later.", e); // 🚀 THROWS CUSTOM EXCEPTION
+        } catch (Exception e) {
+            logger.error("❌ Unexpected Repository Error: ", e);
+            throw new DatabaseException("Unexpected database error occurred.", e); // 🚀 THROWS CUSTOM EXCEPTION
+        }
     }
 }
 
-✅ Ensures the Cosmos DB client does not crash the application on startup.
-✅ Catches initialization errors and throws DatabaseInitializationException.
+✅ This ensures that database connection failures are caught and wrapped inside a DatabaseException.
+✅ The exception is now thrown upwards to be handled in a global exception handler.
 
-📌 2. Create DatabaseInitializationException Class
+📌 2. Create a DatabaseException Class
 
-📍 Inside DatabaseInitializationException.java
+📍 Inside DatabaseException.java
 
 /**
- * Custom exception for database initialization failures.
+ * Custom exception for database failures.
  */
-public class DatabaseInitializationException extends RuntimeException {
+public class DatabaseException extends RuntimeException {
 
     /**
-     * Constructs a DatabaseInitializationException with a message.
-     *
+     * Constructs a DatabaseException with a message.
+     * 
      * @param message Error message.
      */
-    public DatabaseInitializationException(String message) {
+    public DatabaseException(String message) {
         super(message);
     }
 
     /**
-     * Constructs a DatabaseInitializationException with a message and cause.
-     *
+     * Constructs a DatabaseException with a message and cause.
+     * 
      * @param message Error message.
      * @param cause The root cause of the error.
      */
-    public DatabaseInitializationException(String message, Throwable cause) {
+    public DatabaseException(String message, Throwable cause) {
         super(message, cause);
     }
 }
 
-✅ Separates initialization errors from query execution errors.
-✅ Makes it easy to catch and log initialization failures.
+✅ This helps in differentiating database errors from other errors.
 
-📌 3. Handle Initialization Failure in GlobalExceptionHandler
+📌 3. Handle the Exception in GlobalExceptionHandler
 
 📍 Inside GlobalExceptionHandler.java
 
@@ -130,49 +122,47 @@ import java.util.List;
 public class GlobalExceptionHandler {
 
     /**
-     * Handles database initialization failures.
+     * Handles database failures and returns a 500 error response.
      */
-    @ExceptionHandler(DatabaseInitializationException.class)
-    public ResponseEntity<ErrorResponseDTO> handleDatabaseInitException(DatabaseInitializationException ex) {
+    @ExceptionHandler(DatabaseException.class)
+    public ResponseEntity<ErrorResponseDTO> handleDatabaseException(DatabaseException ex) {
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(new ErrorResponseDTO(
                         "500",
-                        "Database Initialization Error",
+                        "Database Error",
                         List.of(new ErrorDetailDTO("CosmosDB", ex.getMessage())),
                         LocalDateTime.now()
                 ));
     }
 }
 
-✅ Ensures users get a proper 500 Internal Server Error instead of a stack trace.
-✅ Helps in debugging Cosmos DB connection failures easily.
+✅ This ensures that DatabaseException is handled globally and returns a 500 Internal Server Error.
 
-📌 4. Example API Response When Cosmos DB Fails to Initialize
+📌 4. Example API Response When Database Fails
 
-📍 When DB Credentials Are Wrong
+📍 When Cosmos DB is Down
 
-🔹 If the DB client fails to initialize, the API will return:
+🔹 If the DB connection fails, the API will return:
 
 {
   "code": "500",
-  "message": "Database Initialization Error",
+  "message": "Database Error",
   "errors": [
     {
       "field": "CosmosDB",
-      "issue": "Invalid Cosmos DB credentials. Please check configuration."
+      "issue": "Database is unavailable. Please try again later."
     }
   ],
-  "timestamp": "2025-03-03T12:50:45.567Z"
+  "timestamp": "2025-03-03T12:45:30.123Z"
 }
 
 ✅ No stack trace is leaked.
-✅ Users get a clear message that the database connection failed.
+✅ The error response is clean and formatted.
 
 🚀 Final Takeaways
 
-✔ Catch errors at the DB client initialization level.
-✔ Throw DatabaseInitializationException instead of letting the app crash.
-✔ Use GlobalExceptionHandler to return clean API responses (500 Internal Server Error).
-✔ Log all failures (CosmosException, IllegalArgumentException, unexpected exceptions).
+✔ Repository should catch CosmosException and throw DatabaseException.
+✔ GlobalExceptionHandler should catch DatabaseException and return a clean API response.
+✔ Users should receive 500 Internal Server Error instead of a stack trace.
 
-🔥 Do you need unit test cases for this DB initialization error handling? 🚀
+🔥 Do you need unit test cases for this exception handling using Mockito? 🚀
