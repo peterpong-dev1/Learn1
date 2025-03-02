@@ -1,5 +1,9 @@
 Here is the CSV format so you can copy and paste it easily:
-
+1..10 | ForEach-Object -Parallel {
+    curl -X POST https://api.example.com/financialInstitution/search `
+    -H "Content-Type: application/json" `
+    -d '{"financialInstitutionCode": "123"}'
+} -ThrottleLimit 5
 Test Case ID,Test Scenario,Steps,Expected Outcome,Pass/Fail
 1,Verify Application Startup,Run the application using `mvn spring-boot:run`,"Application starts successfully without errors",✔
 2,Verify API Endpoint,Hit `/common/financialInstitution/search` with valid payload,Returns HTTP 200 with expected JSON response,✔
