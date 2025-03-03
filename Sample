@@ -267,4 +267,114 @@ public class AddressServiceImpl implements AddressService {
 ✅ Repository-based CosmosDB connection management
 ✅ Service implementation with logging
 
+Here is the complete solution with the controller included and all necessary logging, Javadoc, and structured implementation for the CosmosDB-based address search API. 🚀
+
+📂 Folder Structure
+
+src/main/java/jp/co/neofirst/servicing/
+│── config/
+│    ├── QueryPropertyFileConfig.java
+│── controller/
+│    ├── AddressController.java   ✅ (NOW INCLUDED)
+│── dto/
+│    ├── AddressDTO.java
+│    ├── AddressDetailsDTO.java
+│    ├── AddressSearchConditionsDTO.java
+│── exception/
+│    ├── GlobalExceptionHandler.java
+│── filter/
+│    ├── RequestIdFilter.java
+│── mapper/
+│    ├── AddressMapper.java
+│── model/
+│    ├── AddressModel.java
+│    ├── AddressDetailsModel.java
+│    ├── CharacterSetType.java
+│── repository/
+│    ├── AddressRepository.java
+│    ├── CosmosDBRepository.java
+│── service/
+│    ├── AddressService.java
+│    ├── impl/
+│         ├── AddressServiceImpl.java
+│── Application.java
+
+✅ 1. Controller Layer (API Endpoint)
+
+📌 AddressController.java
+
+package jp.co.neofirst.servicing.controller;
+
+import jp.co.neofirst.servicing.dto.AddressDTO;
+import jp.co.neofirst.servicing.dto.AddressSearchConditionsDTO;
+import jp.co.neofirst.servicing.service.AddressService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+
+/**
+ * REST controller to handle address search operations.
+ */
+@RestController
+@RequestMapping("/common/address")
+public class AddressController {
+
+    private static final Logger logger = LoggerFactory.getLogger(AddressController.class);
+    private final AddressService addressService;
+
+    public AddressController(AddressService addressService) {
+        this.addressService = addressService;
+    }
+
+    /**
+     * Endpoint to search for addresses based on given conditions.
+     * 
+     * @param requestId          Unique request identifier (from header)
+     * @param searchConditions   Search criteria for address lookup
+     * @return                   List of addresses matching the criteria
+     */
+    @PostMapping("/search")
+    public ResponseEntity<List<AddressDTO>> searchAddress(
+            @RequestHeader("x-request-id") String requestId,
+            @RequestBody AddressSearchConditionsDTO searchConditions) {
+
+        logger.info("Received search request. Request ID: {}, Search Conditions: {}", requestId, searchConditions);
+        List<AddressDTO> addressList = addressService.searchAddress(searchConditions);
+        logger.info("Returning {} address results for Request ID: {}", addressList.size(), requestId);
+
+        return ResponseEntity.ok(addressList);
+    }
+}
+
+✅ INFO Logs in Controller:
+	•	Logs incoming request details including requestId and search conditions.
+	•	Logs the size of the returned results before sending the response.
+
+✅ 2. Service Layer (Business Logic)
+
+Already provided in the previous response, but here’s a summary:
+	•	AddressServiceImpl.java: Handles logging, calls AddressRepository, maps results.
+
+✅ 3. Repository Layer (Database Access - CosmosDB)
+
+Already included in previous response, but summary:
+	•	AddressRepository.java (Interface defining the search method)
+	•	CosmosDBRepository.java (Actual CosmosDB client connection and query execution)
+
+✅ 4. Final Updates
+
+Now this solution is fully complete with:
+	•	Controller added ✅
+	•	Javadoc in all files ✅
+	•	Logging in INFO and DEBUG level ✅
+	•	Repository-based CosmosDB connection management ✅
+	•	Production-ready structure and best practices ✅
+
+This is now the fully optimized, production-ready version of the CosmosDB Address Search API 🚀
+
+
+
 Now it’s ready for development and deployment! 🚀
