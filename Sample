@@ -1,148 +1,135 @@
-To handle multiple input criteria dynamically in your repository class and queries.properties, you should follow a structured approach:
+It looks like the characterSetType field, which is an enum, might not be correctly handled during request deserialization and query building. Let’s ensure proper handling at all levels.
 
-1️⃣ Queries in queries.properties
+🔹 Fix for Enum Handling in DTO
 
-Define query templates with placeholders ({}) for each dynamic condition. Example:
+Ensure that Jackson can properly map the JSON string to the enum.
 
-baseQuery=SELECT * FROM c WHERE 1=1
-filterByAddressCode= AND c.addressCode = @addressCode
-filterByCharacterSet= AND c.characterSetType = @characterSetType
-filterByPostalCode= AND c.postalCode = @postalCode
-filterByCountry= AND c.country = @country
-filterByPrefecture= AND c.prefecture = @prefecture
-filterByCity= AND c.city = @city
-filterByTown= AND c.town = @town
-filterByLane= AND c.lane = @lane
-filterByEffectiveDate= AND c.effectiveDate = @effectiveDate
-filterByTerminationDate= AND c.terminationDate = @terminationDate
+✅ Update CharacterSetType Enum
 
-2️⃣ Repository Class (AddressRepository.java)
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonValue;
 
-This class will dynamically build queries based on available criteria.
+public enum CharacterSetType {
+    KANJI("kanji"),
+    KANA("kana");
 
-import com.azure.cosmos.CosmosContainer;
-import com.azure.cosmos.models.SqlQuerySpec;
-import com.azure.cosmos.models.SqlParameter;
-import lombok.RequiredArgsConstructor;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Repository;
+    private final String value;
 
-import java.util.ArrayList;
-import java.util.List;
+    CharacterSetType(String value) {
+        this.value = value;
+    }
 
-@Repository
-@RequiredArgsConstructor
-public class AddressRepository {
+    @JsonValue
+    public String getValue() {
+        return value;
+    }
 
-    private final CosmosContainer cosmosContainer;
-    private final QueryPropertyFileConfig queryConfig;
-    private static final Logger logger = LoggerFactory.getLogger(AddressRepository.class);
-
-    public List<AddressModel> searchWithDynamicQuery(AddressSearchConditions searchConditions) {
-        logger.info("[QUERY START] Searching address with conditions: {}", searchConditions);
-
-        StringBuilder queryBuilder = new StringBuilder(queryConfig.getQuery("baseQuery"));
-        List<SqlParameter> parameters = new ArrayList<>();
-
-        if (searchConditions.getAddressCode() != null) {
-            queryBuilder.append(queryConfig.getQuery("filterByAddressCode"));
-            parameters.add(new SqlParameter("@addressCode", searchConditions.getAddressCode()));
-        }
-
-        if (searchConditions.getAddress() != null) {
-            if (searchConditions.getAddress().getCharacterSetType() != null) {
-                queryBuilder.append(queryConfig.getQuery("filterByCharacterSet"));
-                parameters.add(new SqlParameter("@characterSetType", searchConditions.getAddress().getCharacterSetType()));
-            }
-            if (searchConditions.getAddress().getPostalCode() != null) {
-                queryBuilder.append(queryConfig.getQuery("filterByPostalCode"));
-                parameters.add(new SqlParameter("@postalCode", searchConditions.getAddress().getPostalCode()));
-            }
-            if (searchConditions.getAddress().getCountry() != null) {
-                queryBuilder.append(queryConfig.getQuery("filterByCountry"));
-                parameters.add(new SqlParameter("@country", searchConditions.getAddress().getCountry()));
-            }
-            if (searchConditions.getAddress().getPrefecture() != null) {
-                queryBuilder.append(queryConfig.getQuery("filterByPrefecture"));
-                parameters.add(new SqlParameter("@prefecture", searchConditions.getAddress().getPrefecture()));
-            }
-            if (searchConditions.getAddress().getCity() != null) {
-                queryBuilder.append(queryConfig.getQuery("filterByCity"));
-                parameters.add(new SqlParameter("@city", searchConditions.getAddress().getCity()));
-            }
-            if (searchConditions.getAddress().getTown() != null) {
-                queryBuilder.append(queryConfig.getQuery("filterByTown"));
-                parameters.add(new SqlParameter("@town", searchConditions.getAddress().getTown()));
-            }
-            if (searchConditions.getAddress().getLane() != null) {
-                queryBuilder.append(queryConfig.getQuery("filterByLane"));
-                parameters.add(new SqlParameter("@lane", searchConditions.getAddress().getLane()));
+    @JsonCreator
+    public static CharacterSetType fromValue(String value) {
+        for (CharacterSetType type : CharacterSetType.values()) {
+            if (type.value.equalsIgnoreCase(value)) {
+                return type;
             }
         }
-
-        if (searchConditions.getEffectiveDate() != null) {
-            queryBuilder.append(queryConfig.getQuery("filterByEffectiveDate"));
-            parameters.add(new SqlParameter("@effectiveDate", searchConditions.getEffectiveDate().toString()));
-        }
-
-        if (searchConditions.getTerminationDate() != null) {
-            queryBuilder.append(queryConfig.getQuery("filterByTerminationDate"));
-            parameters.add(new SqlParameter("@terminationDate", searchConditions.getTerminationDate().toString()));
-        }
-
-        long queryStartTime = System.currentTimeMillis();
-        SqlQuerySpec querySpec = new SqlQuerySpec(queryBuilder.toString(), parameters);
-
-        List<AddressModel> results = cosmosContainer
-                .queryItems(querySpec, new CosmosQueryRequestOptions(), AddressModel.class)
-                .stream()
-                .toList();
-
-        logger.info("[QUERY END] Query executed. Results found: {}, Processing time: {} ms",
-                results.size(), System.currentTimeMillis() - queryStartTime);
-        logger.debug("Raw database response: {}", results);
-
-        return results;
+        throw new IllegalArgumentException("Invalid characterSetType: " + value);
     }
 }
 
-3️⃣ Query Property Configuration Class (QueryPropertyFileConfig.java)
+	•	@JsonValue ensures that when returning responses, the JSON contains "kanji" or "kana", instead of "KANJI" or "KANA".
+	•	@JsonCreator allows deserialization from JSON string values.
 
-This will load the query properties.
+🔹 Fix in AddressDetailsDTO
 
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.context.annotation.Configuration;
-import java.io.InputStreamReader;
-import java.nio.charset.StandardCharsets;
-import java.util.Properties;
+Ensure that Jackson correctly serializes and deserializes the enum.
 
-@Configuration
-public class QueryPropertyFileConfig {
+import jakarta.validation.constraints.NotNull;
+import lombok.Data;
 
-    @Value("${query.file.path}")
-    private String queriesResourcePath;
+@Data
+public class AddressDetailsDTO {
+    @NotNull(message = "CharacterSetType must not be null")
+    private CharacterSetType characterSetType;
 
-    private final Properties queries = new Properties();
-
-    @PostConstruct
-    public void loadQueries() throws Exception {
-        try (InputStreamReader reader = new InputStreamReader(
-                getClass().getClassLoader().getResourceAsStream(queriesResourcePath),
-                StandardCharsets.UTF_8)) {
-            queries.load(reader);
-        }
-    }
-
-    public String getQuery(String key) {
-        return queries.getProperty(key, "");
-    }
+    private String postalCode;
+    private String country;
+    private String prefecture;
+    private String city;
+    private String town;
+    private String lane;
 }
 
-✅ Key Takeaways
-	1.	Dynamic Queries → We only append conditions if values are present, avoiding unnecessary filters.
-	2.	Properties-Based Queries → The query structure is easily maintainable via queries.properties.
-	3.	Logging for Debugging → Info logs provide query execution details, and debug logs capture raw responses.
-	4.	Lombok for Simplicity → @RequiredArgsConstructor auto-generates a constructor for dependencies.
+	•	Uses CharacterSetType enum instead of String.
 
-🚀 This approach ensures clean, maintainable, and flexible query handling. Let me know if you need modifications!
+🔹 Fix in Repository Query Handling
+
+The repository must correctly handle enum values while constructing the query.
+
+Before (Buggy Code)
+
+if (StringUtils.hasText(searchConditions.getAddress().getCharacterSetType())) {
+    queryBuilder.append(" ").append(queryConfig.getQuery("filterByCharacterSetType"));
+    parameters.add(new SqlParameter("@characterSetType", searchConditions.getAddress().getCharacterSetType()));
+}
+
+✅ After (Fixed Code)
+
+if (searchConditions.getAddress() != null && searchConditions.getAddress().getCharacterSetType() != null) {
+    queryBuilder.append(" ").append(queryConfig.getQuery("filterByCharacterSetType"));
+    parameters.add(new SqlParameter("@characterSetType", searchConditions.getAddress().getCharacterSetType().getValue()));
+}
+
+	•	getCharacterSetType().getValue() ensures that the query uses the correct string value (kanji/kana) rather than the enum name (KANJI/KANA).
+
+🔹 Fix in Request Validation
+
+Ensure the controller properly validates incoming requests.
+
+Before (Missing Validation)
+
+@PostMapping("/search")
+public ResponseEntity<List<AddressDTO>> searchAddress(@RequestBody AddressSearchConditionsDTO searchConditions) {
+    List<AddressDTO> results = addressService.searchAddress(searchConditions);
+    return ResponseEntity.ok(results);
+}
+
+✅ After (Fixed Validation)
+
+@PostMapping("/search")
+public ResponseEntity<List<AddressDTO>> searchAddress(
+    @Valid @RequestBody AddressSearchConditionsDTO searchConditions) {
+    List<AddressDTO> results = addressService.searchAddress(searchConditions);
+    return ResponseEntity.ok(results);
+}
+
+	•	Ensures automatic validation of characterSetType before calling the service.
+
+🔹 Fix in Test Cases
+
+Modify test cases to validate correct enum behavior.
+
+✅ Add Test Cases
+
+@Test
+void testValidCharacterSetType() {
+    String json = "{ \"addressCode\": \"123\", \"address\": { \"characterSetType\": \"kanji\" } }";
+    AddressSearchConditionsDTO dto = objectMapper.readValue(json, AddressSearchConditionsDTO.class);
+    assertEquals(CharacterSetType.KANJI, dto.getAddress().getCharacterSetType());
+}
+
+@Test
+void testInvalidCharacterSetType() {
+    String json = "{ \"addressCode\": \"123\", \"address\": { \"characterSetType\": \"invalidValue\" } }";
+    Exception exception = assertThrows(IllegalArgumentException.class, () ->
+        objectMapper.readValue(json, AddressSearchConditionsDTO.class)
+    );
+    assertTrue(exception.getMessage().contains("Invalid characterSetType"));
+}
+
+💡 Summary of Fixes
+
+✅ Fixed Enum Serialization/Deserialization
+✅ Fixed Null Checks in Repository Query Construction
+✅ Validated Enum Field in DTO and Controller
+✅ Ensured Proper Enum Handling in Test Cases
+
+Would you like me to update your log statements accordingly? 🚀
