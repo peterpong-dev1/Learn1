@@ -254,5 +254,230 @@ Feature	Implemented?	Location
 ✅ Throw IllegalArgumentException if validation fails	✅ Yes	Service Layer
 ✅ Handle exceptions globally	✅ Yes	GlobalExceptionHandler.java
 
+=======
+
+📌 Solution: Using queries.properties for Query Templates While Keeping Dynamic Query Generation
+
+This solution fetches the base query from queries.properties while dynamically appending search conditions at runtime. This approach keeps queries configurable and flexible.
+
+✅ 1. Create queries.properties (Query Templates)
+
+Place this file in src/main/resources/queries.properties:
+
+# Base query for fetching addresses
+query.base=SELECT * FROM c WHERE 1=1
+
+# Filter conditions (placeholders for dynamic parameters)
+query.filter.addressCode=AND c.addressCode = @addressCode
+query.filter.postalCode=AND c.address.postalCode = @postalCode
+query.filter.country=AND c.address.country = @country
+query.filter.prefecture=AND c.address.prefecture = @prefecture
+
+✅ Why?
+	•	Keeps base query centralized (query.base).
+	•	Stores filter conditions separately so they can be dynamically appended.
+
+✅ 2. Create QueryPropertyFileConfig.java (Load Query Templates)
+
+package jp.co.neofirst.servicing.config;
+
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Configuration;
+import java.util.Properties;
+import java.io.IOException;
+import java.io.InputStream;
+
+/**
+ * Configuration class to load query properties from queries.properties.
+ */
+@Configuration
+public class QueryPropertyFileConfig {
+
+    private final Properties queries = new Properties();
+
+    public QueryPropertyFileConfig(@Value("${queries.file.path:queries.properties}") String queryFilePath) {
+        try (InputStream inputStream = getClass().getClassLoader().getResourceAsStream(queryFilePath)) {
+            if (inputStream != null) {
+                queries.load(inputStream);
+            } else {
+                throw new RuntimeException("Failed to load queries.properties");
+            }
+        } catch (IOException e) {
+            throw new RuntimeException("Error reading queries.properties", e);
+        }
+    }
+
+    /**
+     * Fetches a query string by its key.
+     * @param key Query key from queries.properties
+     * @return SQL query as a string
+     */
+    public String getQuery(String key) {
+        return queries.getProperty(key);
+    }
+}
+
+✅ Why?
+	•	Loads queries from properties file.
+	•	Provides getQuery() method to retrieve query parts dynamically.
+
+✅ 3. Update AddressRepository.java (Build Dynamic Query with Properties)
+
+package jp.co.neofirst.servicing.repository;
+
+import com.azure.cosmos.CosmosContainer;
+import com.azure.cosmos.CosmosQueryRequestOptions;
+import com.azure.cosmos.models.SqlParameter;
+import com.azure.cosmos.models.SqlParameterList;
+import com.azure.cosmos.models.SqlQuerySpec;
+import jp.co.neofirst.servicing.config.QueryPropertyFileConfig;
+import jp.co.neofirst.servicing.dto.AddressSearchConditionsDTO;
+import jp.co.neofirst.servicing.model.AddressModel;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Repository;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.stream.Collectors;
+
+/**
+ * Repository class for fetching address data from CosmosDB using dynamic queries.
+ */
+@Repository
+public class AddressRepository {
+
+    private static final Logger logger = LoggerFactory.getLogger(AddressRepository.class);
+    private final CosmosContainer cosmosContainer;
+    private final QueryPropertyFileConfig queryConfig;
+
+    public AddressRepository(CosmosContainer cosmosContainer, QueryPropertyFileConfig queryConfig) {
+        this.cosmosContainer = cosmosContainer;
+        this.queryConfig = queryConfig;
+    }
+
+    /**
+     * Fetches addresses dynamically based on search conditions.
+     *
+     * @param searchConditions The search criteria for filtering addresses.
+     * @return List of matching AddressModel records.
+     */
+    public List<AddressModel> searchWithDynamicQuery(AddressSearchConditionsDTO searchConditions) {
+        logger.info("Executing dynamic query for address search with conditions: {}", searchConditions);
+
+        // ✅ Get base query from properties file
+        StringBuilder queryBuilder = new StringBuilder(queryConfig.getQuery("query.base"));
+
+        // ✅ Parameters list
+        List<SqlParameter> sqlParameters = new ArrayList<>();
+
+        // ✅ Append dynamic conditions based on provided search criteria
+        if (searchConditions.getAddressCode() != null) {
+            queryBuilder.append(" ").append(queryConfig.getQuery("query.filter.addressCode"));
+            sqlParameters.add(new SqlParameter("@addressCode", searchConditions.getAddressCode()));
+        }
+
+        if (searchConditions.getAddress() != null) {
+            if (searchConditions.getAddress().getPostalCode() != null) {
+                queryBuilder.append(" ").append(queryConfig.getQuery("query.filter.postalCode"));
+                sqlParameters.add(new SqlParameter("@postalCode", searchConditions.getAddress().getPostalCode()));
+            }
+            if (searchConditions.getAddress().getCountry() != null) {
+                queryBuilder.append(" ").append(queryConfig.getQuery("query.filter.country"));
+                sqlParameters.add(new SqlParameter("@country", searchConditions.getAddress().getCountry()));
+            }
+            if (searchConditions.getAddress().getPrefecture() != null) {
+                queryBuilder.append(" ").append(queryConfig.getQuery("query.filter.prefecture"));
+                sqlParameters.add(new SqlParameter("@prefecture", searchConditions.getAddress().getPrefecture()));
+            }
+        }
+
+        // ✅ Log the dynamically constructed query
+        String finalQuery = queryBuilder.toString();
+        logger.info("Constructed Query: {}", finalQuery);
+
+        // ✅ Execute the query with parameters
+        SqlQuerySpec querySpec = new SqlQuerySpec(finalQuery, new SqlParameterList(sqlParameters));
+        List<AddressModel> results = cosmosContainer.queryItems(querySpec, new CosmosQueryRequestOptions(), AddressModel.class)
+                .stream()
+                .collect(Collectors.toList());
+
+        logger.info("Query executed successfully. Found {} records.", results.size());
+        return results;
+    }
+}
+
+✅ Why?
+	•	Dynamically constructs the query but fetches base query and filters from queries.properties.
+	•	Ensures flexibility (e.g., if more filters need to be added, they can be added to queries.properties).
+	•	Keeps code clean and configuration separate.
+
+✅ 4. Update AddressServiceImpl.java (Using Updated Repository)
+
+package jp.co.neofirst.servicing.service.impl;
+
+import jp.co.neofirst.servicing.dto.AddressDTO;
+import jp.co.neofirst.servicing.dto.AddressSearchConditionsDTO;
+import jp.co.neofirst.servicing.mapper.AddressMapper;
+import jp.co.neofirst.servicing.model.AddressModel;
+import jp.co.neofirst.servicing.repository.AddressRepository;
+import jp.co.neofirst.servicing.service.AddressService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+import java.util.List;
+import java.util.stream.Collectors;
+
+/**
+ * Implementation of AddressService for searching addresses dynamically.
+ */
+@Service
+public class AddressServiceImpl implements AddressService {
+
+    private static final Logger logger = LoggerFactory.getLogger(AddressServiceImpl.class);
+    private final AddressRepository addressRepository;
+    private final AddressMapper addressMapper;
+
+    public AddressServiceImpl(AddressRepository addressRepository, AddressMapper addressMapper) {
+        this.addressRepository = addressRepository;
+        this.addressMapper = addressMapper;
+    }
+
+    @Override
+    public List<AddressDTO> searchAddress(AddressSearchConditionsDTO searchConditions) {
+        logger.info("Searching for addresses with conditions: {}", searchConditions);
+
+        List<AddressModel> addressModels = addressRepository.searchWithDynamicQuery(searchConditions);
+
+        List<AddressDTO> resultList = addressModels.stream()
+                .map(addressMapper::toDTO)
+                .collect(Collectors.toList());
+
+        logger.info("Address search returned {} results", resultList.size());
+        return resultList;
+    }
+}
+
+🚀 Final Summary
+
+Feature	Implemented?	Location
+✅ Queries stored in queries.properties	✅ Yes	queries.properties
+✅ Query templates loaded at runtime	✅ Yes	QueryPropertyFileConfig.java
+✅ Dynamically appends filters based on input	✅ Yes	AddressRepository.java
+✅ Efficient Cosmos Query Execution	✅ Yes	Only applies filters if values are provided
+✅ Flexible & Easy to Maintain	✅ Yes	Just update queries.properties to add more filters
+
+🚀 Now, your repository dynamically builds queries while fetching templates from queries.properties! 🚀
+Would you like any further refinements? 😊
+
+
+
+
+
+
+
+
+
+
 🚀 Now, your API is optimized, production-ready, and follows best practices for Lombok usage! 🚀
 Let me know if you need further refinements! 😊
