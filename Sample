@@ -1,483 +1,148 @@
-Here is the fully updated solution following best practices for Lombok in production and ensuring mandatory fields (id & addressCode) while keeping business logic explicit and clear. 🚀
-
-📌 Best Practices Applied in This Solution
-
-✅ Lombok is used only in DTOs and models to reduce boilerplate code.
-✅ Avoided @Data in JPA-like models (used @Getter and @Setter instead).
-✅ Service and Repository layers have explicit method definitions.
-✅ Ensured id and addressCode are mandatory using @NotNull.
-✅ No custom exceptions are used.
-✅ Uses IllegalArgumentException for missing fields.
-
-📂 Folder Structure
-
-src/main/java/jp/co/neofirst/servicing/
-│── config/
-│── controller/
-│    ├── AddressController.java ✅ (Updated)
-│── dto/
-│    ├── AddressDTO.java ✅ (Updated)
-│    ├── AddressDetailsDTO.java ✅ (Updated)
-│    ├── AddressSearchConditionsDTO.java ✅ (Updated)
-│── exception/
-│    ├── GlobalExceptionHandler.java ✅ (Updated)
-│── mapper/
-│    ├── AddressMapper.java ✅ (Updated)
-│── model/
-│    ├── AddressModel.java ✅ (Updated)
-│    ├── AddressDetailsModel.java ✅ (Updated)
-│    ├── CharacterSetType.java ✅ (Updated)
-│── repository/
-│    ├── AddressRepository.java ✅ (Updated)
-│    ├── CosmosDBRepository.java ✅ (Updated)
-│── service/
-│    ├── AddressService.java ✅ (Updated)
-│    ├── impl/
-│         ├── AddressServiceImpl.java ✅ (Updated)
-│── Application.java
-
-✅ 1. DTO Layer (Updated with Lombok Best Practices)
-
-📌 AddressDTO.java (Response)
-
-package jp.co.neofirst.servicing.dto;
-
-import com.fasterxml.jackson.annotation.JsonInclude;
-import jakarta.validation.constraints.NotNull;
-import lombok.Builder;
-import lombok.Getter;
-import lombok.Setter;
-
-import java.time.LocalDate;
-import java.util.List;
-
-/**
- * Data Transfer Object for Address response.
- */
-@Getter
-@Setter
-@Builder
-@JsonInclude(JsonInclude.Include.NON_NULL) // ✅ Excludes null fields from JSON
-public class AddressDTO {
-
-    @NotNull(message = "id must not be null") // ✅ Ensures id is mandatory
-    private String id;
-
-    @NotNull(message = "addressCode must not be null") // ✅ Ensures addressCode is mandatory
-    private String addressCode;
-
-    private List<AddressDetailsDTO> address;
-    private LocalDate effectiveDate;
-    private LocalDate terminationDate;
-}
-
-✅ Why?
-	•	Uses @Getter and @Setter instead of @Data to avoid unnecessary equals() and hashCode().
-	•	@Builder helps create immutable DTOs easily.
-	•	@NotNull ensures mandatory fields (id, addressCode).
-	•	@JsonInclude(JsonInclude.Include.NON_NULL) prevents returning null fields.
-
-📌 AddressDetailsDTO.java
-
-package jp.co.neofirst.servicing.dto;
-
-import lombok.Getter;
-import lombok.Setter;
-import jp.co.neofirst.servicing.model.CharacterSetType;
-
-/**
- * Data Transfer Object for detailed address response.
- */
-@Getter
-@Setter
-public class AddressDetailsDTO {
-    private CharacterSetType characterSetType;
-    private String postalCode;
-    private String country;
-    private String prefecture;
-    private String city;
-    private String town;
-    private String lane;
-}
-
-✅ Why?
-	•	Only @Getter and @Setter are used because no additional behavior is needed.
-
-✅ 2. Model Layer (Best Practices Applied)
-
-📌 AddressModel.java (Database Entity)
-
-package jp.co.neofirst.servicing.model;
-
-import lombok.Getter;
-import lombok.Setter;
-import java.util.List;
-
-/**
- * Represents an address record stored in the database.
- */
-@Getter
-@Setter
-public class AddressModel {
-    private String id;
-    private String addressCode;
-    private List<AddressDetailsModel> address;
-}
-
-📌 AddressDetailsModel.java
-
-package jp.co.neofirst.servicing.model;
-
-import lombok.Getter;
-import lombok.Setter;
-
-/**
- * Represents detailed address information stored in the database.
- */
-@Getter
-@Setter
-public class AddressDetailsModel {
-    private CharacterSetType characterSetType;
-    private String postalCode;
-    private String country;
-    private String prefecture;
-    private String city;
-    private String town;
-    private String lane;
-}
-
-✅ 3. Service Layer (Validating Mandatory Fields)
-
-📌 AddressServiceImpl.java
-
-package jp.co.neofirst.servicing.service.impl;
-
-import jp.co.neofirst.servicing.dto.AddressDTO;
-import jp.co.neofirst.servicing.dto.AddressSearchConditionsDTO;
-import jp.co.neofirst.servicing.mapper.AddressMapper;
-import jp.co.neofirst.servicing.model.AddressModel;
-import jp.co.neofirst.servicing.repository.AddressRepository;
-import jp.co.neofirst.servicing.service.AddressService;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Service;
-
-import java.util.List;
-import java.util.stream.Collectors;
-
-/**
- * Implementation of AddressService for searching addresses.
- */
-@Service
-public class AddressServiceImpl implements AddressService {
-
-    private static final Logger logger = LoggerFactory.getLogger(AddressServiceImpl.class);
-    private final AddressRepository addressRepository;
-    private final AddressMapper addressMapper;
-
-    public AddressServiceImpl(AddressRepository addressRepository, AddressMapper addressMapper) {
-        this.addressRepository = addressRepository;
-        this.addressMapper = addressMapper;
-    }
-
-    @Override
-    public List<AddressDTO> searchAddress(AddressSearchConditionsDTO searchConditions) {
-        logger.info("Searching for addresses with conditions: {}", searchConditions);
-
-        List<AddressModel> addressModels = addressRepository.searchWithDynamicQuery(searchConditions);
-
-        List<AddressDTO> resultList = addressModels.stream()
-                .map(addressMapper::toDTO)
-                .collect(Collectors.toList());
-
-        // ✅ Validate response before returning
-        for (AddressDTO dto : resultList) {
-            if (dto.getId() == null || dto.getAddressCode() == null) {
-                logger.error("Missing mandatory fields in response: {}", dto);
-                throw new IllegalArgumentException("id and addressCode must be present in response.");
-            }
-        }
-
-        logger.info("Address search returned {} results", resultList.size());
-        return resultList;
-    }
-}
-
-✅ Why?
-	•	Uses explicit validation instead of a custom exception.
-	•	Throws IllegalArgumentException if mandatory fields are missing.
-
-✅ 4. Global Exception Handling (Ensuring Proper Error Response)
-
-📌 GlobalExceptionHandler.java
-
-package jp.co.neofirst.servicing.exception;
-
-import jp.co.neofirst.servicing.dto.ErrorDTO;
-import jp.co.neofirst.servicing.dto.ErrorDetailDTO;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.ExceptionHandler;
-import org.springframework.web.bind.annotation.RestControllerAdvice;
-
-import java.util.Collections;
-
-/**
- * Global exception handler for API errors.
- */
-@RestControllerAdvice
-public class GlobalExceptionHandler {
-
-    /**
-     * Handles validation errors when mandatory fields are missing in response.
-     */
-    @ExceptionHandler(IllegalArgumentException.class)
-    public ResponseEntity<ErrorDTO> handleIllegalArgumentException(IllegalArgumentException ex) {
-        ErrorDTO error = new ErrorDTO();
-        error.setCode("400");
-        error.setMessage("Validation Error: Mandatory fields are missing.");
-        error.setDetails(Collections.singletonList(new ErrorDetailDTO("Validation", ex.getMessage())));
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(error);
-    }
-}
-
-✅ Why?
-	•	Handles IllegalArgumentException instead of using a custom exception.
-	•	Returns a 400 Bad Request response with proper error details.
-
-🚀 Final Summary
-
-Feature	Implemented?	Location
-✅ Use Lombok only where necessary	✅ Yes	DTOs, Models
-✅ Ensure id & addressCode are mandatory	✅ Yes	AddressDTO.java
-✅ Validate response before returning	✅ Yes	AddressServiceImpl.java
-✅ Throw IllegalArgumentException if validation fails	✅ Yes	Service Layer
-✅ Handle exceptions globally	✅ Yes	GlobalExceptionHandler.java
-
-=======
-
-📌 Solution: Using queries.properties for Query Templates While Keeping Dynamic Query Generation
-
-This solution fetches the base query from queries.properties while dynamically appending search conditions at runtime. This approach keeps queries configurable and flexible.
-
-✅ 1. Create queries.properties (Query Templates)
-
-Place this file in src/main/resources/queries.properties:
-
-# Base query for fetching addresses
-query.base=SELECT * FROM c WHERE 1=1
-
-# Filter conditions (placeholders for dynamic parameters)
-query.filter.addressCode=AND c.addressCode = @addressCode
-query.filter.postalCode=AND c.address.postalCode = @postalCode
-query.filter.country=AND c.address.country = @country
-query.filter.prefecture=AND c.address.prefecture = @prefecture
-
-✅ Why?
-	•	Keeps base query centralized (query.base).
-	•	Stores filter conditions separately so they can be dynamically appended.
-
-✅ 2. Create QueryPropertyFileConfig.java (Load Query Templates)
-
-package jp.co.neofirst.servicing.config;
-
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.context.annotation.Configuration;
-import java.util.Properties;
-import java.io.IOException;
-import java.io.InputStream;
-
-/**
- * Configuration class to load query properties from queries.properties.
- */
-@Configuration
-public class QueryPropertyFileConfig {
-
-    private final Properties queries = new Properties();
-
-    public QueryPropertyFileConfig(@Value("${queries.file.path:queries.properties}") String queryFilePath) {
-        try (InputStream inputStream = getClass().getClassLoader().getResourceAsStream(queryFilePath)) {
-            if (inputStream != null) {
-                queries.load(inputStream);
-            } else {
-                throw new RuntimeException("Failed to load queries.properties");
-            }
-        } catch (IOException e) {
-            throw new RuntimeException("Error reading queries.properties", e);
-        }
-    }
-
-    /**
-     * Fetches a query string by its key.
-     * @param key Query key from queries.properties
-     * @return SQL query as a string
-     */
-    public String getQuery(String key) {
-        return queries.getProperty(key);
-    }
-}
-
-✅ Why?
-	•	Loads queries from properties file.
-	•	Provides getQuery() method to retrieve query parts dynamically.
-
-✅ 3. Update AddressRepository.java (Build Dynamic Query with Properties)
-
-package jp.co.neofirst.servicing.repository;
+To handle multiple input criteria dynamically in your repository class and queries.properties, you should follow a structured approach:
+
+1️⃣ Queries in queries.properties
+
+Define query templates with placeholders ({}) for each dynamic condition. Example:
+
+baseQuery=SELECT * FROM c WHERE 1=1
+filterByAddressCode= AND c.addressCode = @addressCode
+filterByCharacterSet= AND c.characterSetType = @characterSetType
+filterByPostalCode= AND c.postalCode = @postalCode
+filterByCountry= AND c.country = @country
+filterByPrefecture= AND c.prefecture = @prefecture
+filterByCity= AND c.city = @city
+filterByTown= AND c.town = @town
+filterByLane= AND c.lane = @lane
+filterByEffectiveDate= AND c.effectiveDate = @effectiveDate
+filterByTerminationDate= AND c.terminationDate = @terminationDate
+
+2️⃣ Repository Class (AddressRepository.java)
+
+This class will dynamically build queries based on available criteria.
 
 import com.azure.cosmos.CosmosContainer;
-import com.azure.cosmos.CosmosQueryRequestOptions;
-import com.azure.cosmos.models.SqlParameter;
-import com.azure.cosmos.models.SqlParameterList;
 import com.azure.cosmos.models.SqlQuerySpec;
-import jp.co.neofirst.servicing.config.QueryPropertyFileConfig;
-import jp.co.neofirst.servicing.dto.AddressSearchConditionsDTO;
-import jp.co.neofirst.servicing.model.AddressModel;
+import com.azure.cosmos.models.SqlParameter;
+import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Repository;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.stream.Collectors;
 
-/**
- * Repository class for fetching address data from CosmosDB using dynamic queries.
- */
 @Repository
+@RequiredArgsConstructor
 public class AddressRepository {
 
-    private static final Logger logger = LoggerFactory.getLogger(AddressRepository.class);
     private final CosmosContainer cosmosContainer;
     private final QueryPropertyFileConfig queryConfig;
+    private static final Logger logger = LoggerFactory.getLogger(AddressRepository.class);
 
-    public AddressRepository(CosmosContainer cosmosContainer, QueryPropertyFileConfig queryConfig) {
-        this.cosmosContainer = cosmosContainer;
-        this.queryConfig = queryConfig;
-    }
+    public List<AddressModel> searchWithDynamicQuery(AddressSearchConditions searchConditions) {
+        logger.info("[QUERY START] Searching address with conditions: {}", searchConditions);
 
-    /**
-     * Fetches addresses dynamically based on search conditions.
-     *
-     * @param searchConditions The search criteria for filtering addresses.
-     * @return List of matching AddressModel records.
-     */
-    public List<AddressModel> searchWithDynamicQuery(AddressSearchConditionsDTO searchConditions) {
-        logger.info("Executing dynamic query for address search with conditions: {}", searchConditions);
+        StringBuilder queryBuilder = new StringBuilder(queryConfig.getQuery("baseQuery"));
+        List<SqlParameter> parameters = new ArrayList<>();
 
-        // ✅ Get base query from properties file
-        StringBuilder queryBuilder = new StringBuilder(queryConfig.getQuery("query.base"));
-
-        // ✅ Parameters list
-        List<SqlParameter> sqlParameters = new ArrayList<>();
-
-        // ✅ Append dynamic conditions based on provided search criteria
         if (searchConditions.getAddressCode() != null) {
-            queryBuilder.append(" ").append(queryConfig.getQuery("query.filter.addressCode"));
-            sqlParameters.add(new SqlParameter("@addressCode", searchConditions.getAddressCode()));
+            queryBuilder.append(queryConfig.getQuery("filterByAddressCode"));
+            parameters.add(new SqlParameter("@addressCode", searchConditions.getAddressCode()));
         }
 
         if (searchConditions.getAddress() != null) {
+            if (searchConditions.getAddress().getCharacterSetType() != null) {
+                queryBuilder.append(queryConfig.getQuery("filterByCharacterSet"));
+                parameters.add(new SqlParameter("@characterSetType", searchConditions.getAddress().getCharacterSetType()));
+            }
             if (searchConditions.getAddress().getPostalCode() != null) {
-                queryBuilder.append(" ").append(queryConfig.getQuery("query.filter.postalCode"));
-                sqlParameters.add(new SqlParameter("@postalCode", searchConditions.getAddress().getPostalCode()));
+                queryBuilder.append(queryConfig.getQuery("filterByPostalCode"));
+                parameters.add(new SqlParameter("@postalCode", searchConditions.getAddress().getPostalCode()));
             }
             if (searchConditions.getAddress().getCountry() != null) {
-                queryBuilder.append(" ").append(queryConfig.getQuery("query.filter.country"));
-                sqlParameters.add(new SqlParameter("@country", searchConditions.getAddress().getCountry()));
+                queryBuilder.append(queryConfig.getQuery("filterByCountry"));
+                parameters.add(new SqlParameter("@country", searchConditions.getAddress().getCountry()));
             }
             if (searchConditions.getAddress().getPrefecture() != null) {
-                queryBuilder.append(" ").append(queryConfig.getQuery("query.filter.prefecture"));
-                sqlParameters.add(new SqlParameter("@prefecture", searchConditions.getAddress().getPrefecture()));
+                queryBuilder.append(queryConfig.getQuery("filterByPrefecture"));
+                parameters.add(new SqlParameter("@prefecture", searchConditions.getAddress().getPrefecture()));
+            }
+            if (searchConditions.getAddress().getCity() != null) {
+                queryBuilder.append(queryConfig.getQuery("filterByCity"));
+                parameters.add(new SqlParameter("@city", searchConditions.getAddress().getCity()));
+            }
+            if (searchConditions.getAddress().getTown() != null) {
+                queryBuilder.append(queryConfig.getQuery("filterByTown"));
+                parameters.add(new SqlParameter("@town", searchConditions.getAddress().getTown()));
+            }
+            if (searchConditions.getAddress().getLane() != null) {
+                queryBuilder.append(queryConfig.getQuery("filterByLane"));
+                parameters.add(new SqlParameter("@lane", searchConditions.getAddress().getLane()));
             }
         }
 
-        // ✅ Log the dynamically constructed query
-        String finalQuery = queryBuilder.toString();
-        logger.info("Constructed Query: {}", finalQuery);
+        if (searchConditions.getEffectiveDate() != null) {
+            queryBuilder.append(queryConfig.getQuery("filterByEffectiveDate"));
+            parameters.add(new SqlParameter("@effectiveDate", searchConditions.getEffectiveDate().toString()));
+        }
 
-        // ✅ Execute the query with parameters
-        SqlQuerySpec querySpec = new SqlQuerySpec(finalQuery, new SqlParameterList(sqlParameters));
-        List<AddressModel> results = cosmosContainer.queryItems(querySpec, new CosmosQueryRequestOptions(), AddressModel.class)
+        if (searchConditions.getTerminationDate() != null) {
+            queryBuilder.append(queryConfig.getQuery("filterByTerminationDate"));
+            parameters.add(new SqlParameter("@terminationDate", searchConditions.getTerminationDate().toString()));
+        }
+
+        long queryStartTime = System.currentTimeMillis();
+        SqlQuerySpec querySpec = new SqlQuerySpec(queryBuilder.toString(), parameters);
+
+        List<AddressModel> results = cosmosContainer
+                .queryItems(querySpec, new CosmosQueryRequestOptions(), AddressModel.class)
                 .stream()
-                .collect(Collectors.toList());
+                .toList();
 
-        logger.info("Query executed successfully. Found {} records.", results.size());
+        logger.info("[QUERY END] Query executed. Results found: {}, Processing time: {} ms",
+                results.size(), System.currentTimeMillis() - queryStartTime);
+        logger.debug("Raw database response: {}", results);
+
         return results;
     }
 }
 
-✅ Why?
-	•	Dynamically constructs the query but fetches base query and filters from queries.properties.
-	•	Ensures flexibility (e.g., if more filters need to be added, they can be added to queries.properties).
-	•	Keeps code clean and configuration separate.
+3️⃣ Query Property Configuration Class (QueryPropertyFileConfig.java)
 
-✅ 4. Update AddressServiceImpl.java (Using Updated Repository)
+This will load the query properties.
 
-package jp.co.neofirst.servicing.service.impl;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Configuration;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.util.Properties;
 
-import jp.co.neofirst.servicing.dto.AddressDTO;
-import jp.co.neofirst.servicing.dto.AddressSearchConditionsDTO;
-import jp.co.neofirst.servicing.mapper.AddressMapper;
-import jp.co.neofirst.servicing.model.AddressModel;
-import jp.co.neofirst.servicing.repository.AddressRepository;
-import jp.co.neofirst.servicing.service.AddressService;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Service;
-import java.util.List;
-import java.util.stream.Collectors;
+@Configuration
+public class QueryPropertyFileConfig {
 
-/**
- * Implementation of AddressService for searching addresses dynamically.
- */
-@Service
-public class AddressServiceImpl implements AddressService {
+    @Value("${query.file.path}")
+    private String queriesResourcePath;
 
-    private static final Logger logger = LoggerFactory.getLogger(AddressServiceImpl.class);
-    private final AddressRepository addressRepository;
-    private final AddressMapper addressMapper;
+    private final Properties queries = new Properties();
 
-    public AddressServiceImpl(AddressRepository addressRepository, AddressMapper addressMapper) {
-        this.addressRepository = addressRepository;
-        this.addressMapper = addressMapper;
+    @PostConstruct
+    public void loadQueries() throws Exception {
+        try (InputStreamReader reader = new InputStreamReader(
+                getClass().getClassLoader().getResourceAsStream(queriesResourcePath),
+                StandardCharsets.UTF_8)) {
+            queries.load(reader);
+        }
     }
 
-    @Override
-    public List<AddressDTO> searchAddress(AddressSearchConditionsDTO searchConditions) {
-        logger.info("Searching for addresses with conditions: {}", searchConditions);
-
-        List<AddressModel> addressModels = addressRepository.searchWithDynamicQuery(searchConditions);
-
-        List<AddressDTO> resultList = addressModels.stream()
-                .map(addressMapper::toDTO)
-                .collect(Collectors.toList());
-
-        logger.info("Address search returned {} results", resultList.size());
-        return resultList;
+    public String getQuery(String key) {
+        return queries.getProperty(key, "");
     }
 }
 
-🚀 Final Summary
+✅ Key Takeaways
+	1.	Dynamic Queries → We only append conditions if values are present, avoiding unnecessary filters.
+	2.	Properties-Based Queries → The query structure is easily maintainable via queries.properties.
+	3.	Logging for Debugging → Info logs provide query execution details, and debug logs capture raw responses.
+	4.	Lombok for Simplicity → @RequiredArgsConstructor auto-generates a constructor for dependencies.
 
-Feature	Implemented?	Location
-✅ Queries stored in queries.properties	✅ Yes	queries.properties
-✅ Query templates loaded at runtime	✅ Yes	QueryPropertyFileConfig.java
-✅ Dynamically appends filters based on input	✅ Yes	AddressRepository.java
-✅ Efficient Cosmos Query Execution	✅ Yes	Only applies filters if values are provided
-✅ Flexible & Easy to Maintain	✅ Yes	Just update queries.properties to add more filters
-
-🚀 Now, your repository dynamically builds queries while fetching templates from queries.properties! 🚀
-Would you like any further refinements? 😊
-
-
-
-
-
-
-
-
-
-
-🚀 Now, your API is optimized, production-ready, and follows best practices for Lombok usage! 🚀
-Let me know if you need further refinements! 😊
+🚀 This approach ensures clean, maintainable, and flexible query handling. Let me know if you need modifications!
