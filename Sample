@@ -1,55 +1,34 @@
-It looks like the characterSetType field, which is an enum, might not be correctly handled during request deserialization and query building. Let’s ensure proper handling at all levels.
+Yes, I understand your concern. The problem is likely not just about null checks, but also about how AddressDetailsDTO is shared between both the search request (AddressSearchConditionsDTO) and the response (AddressDTO).
 
-🔹 Fix for Enum Handling in DTO
+🔍 Key Issues to Consider
+	1.	Search DTO (AddressSearchConditionsDTO) and Response DTO (AddressDTO) are different use cases.
+	•	AddressSearchConditionsDTO is for search filters, where fields can be empty.
+	•	AddressDTO is for returning results, where fields should have values.
+	•	Both use AddressDetailsDTO, which may not always have the same constraints.
+	2.	Enum Deserialization Issue
+	•	If characterSetType is an enum, but the request JSON does not include it, it might not be set correctly.
+	•	Empty object {} does not initialize characterSetType inside AddressDetailsDTO.
+	3.	Jackson Serialization and Deserialization Behavior
+	•	If characterSetType is missing from the request, the default behavior is to set it to null.
+	•	Spring will not convert a missing field into an empty object automatically unless you initialize it explicitly.
 
-Ensure that Jackson can properly map the JSON string to the enum.
+🔹 Solution: Differentiate Search and Response Models
 
-✅ Update CharacterSetType Enum
+Instead of using the same AddressDetailsDTO in both search and response, we can separate concerns.
 
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonValue;
+✅ Fix 1: Use a Separate AddressSearchDetailsDTO
+	•	Keep AddressDetailsDTO for response.
+	•	Create a new DTO for search, allowing optional fields.
 
-public enum CharacterSetType {
-    KANJI("kanji"),
-    KANA("kana");
+Updated AddressSearchDetailsDTO
 
-    private final String value;
-
-    CharacterSetType(String value) {
-        this.value = value;
-    }
-
-    @JsonValue
-    public String getValue() {
-        return value;
-    }
-
-    @JsonCreator
-    public static CharacterSetType fromValue(String value) {
-        for (CharacterSetType type : CharacterSetType.values()) {
-            if (type.value.equalsIgnoreCase(value)) {
-                return type;
-            }
-        }
-        throw new IllegalArgumentException("Invalid characterSetType: " + value);
-    }
-}
-
-	•	@JsonValue ensures that when returning responses, the JSON contains "kanji" or "kana", instead of "KANJI" or "KANA".
-	•	@JsonCreator allows deserialization from JSON string values.
-
-🔹 Fix in AddressDetailsDTO
-
-Ensure that Jackson correctly serializes and deserializes the enum.
-
-import jakarta.validation.constraints.NotNull;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.Data;
 
 @Data
-public class AddressDetailsDTO {
-    @NotNull(message = "CharacterSetType must not be null")
+@JsonInclude(JsonInclude.Include.NON_NULL) // Exclude null values from JSON response
+public class AddressSearchDetailsDTO {
     private CharacterSetType characterSetType;
-
     private String postalCode;
     private String country;
     private String prefecture;
@@ -58,78 +37,56 @@ public class AddressDetailsDTO {
     private String lane;
 }
 
-	•	Uses CharacterSetType enum instead of String.
+	•	This allows characterSetType to be missing in search without causing null issues.
+	•	Using @JsonInclude(JsonInclude.Include.NON_NULL) ensures that missing fields are ignored instead of explicitly setting them to null.
 
-🔹 Fix in Repository Query Handling
+✅ Fix 2: Update AddressSearchConditionsDTO to Use AddressSearchDetailsDTO
 
-The repository must correctly handle enum values while constructing the query.
+import lombok.Data;
 
-Before (Buggy Code)
-
-if (StringUtils.hasText(searchConditions.getAddress().getCharacterSetType())) {
-    queryBuilder.append(" ").append(queryConfig.getQuery("filterByCharacterSetType"));
-    parameters.add(new SqlParameter("@characterSetType", searchConditions.getAddress().getCharacterSetType()));
+@Data
+public class AddressSearchConditionsDTO {
+    private String addressCode;
+    private AddressSearchDetailsDTO address;  // Now uses a separate DTO
 }
 
-✅ After (Fixed Code)
+	•	This prevents AddressDTO constraints from affecting search logic.
+	•	AddressSearchConditionsDTO allows missing fields naturally without needing null checks.
 
-if (searchConditions.getAddress() != null && searchConditions.getAddress().getCharacterSetType() != null) {
-    queryBuilder.append(" ").append(queryConfig.getQuery("filterByCharacterSetType"));
-    parameters.add(new SqlParameter("@characterSetType", searchConditions.getAddress().getCharacterSetType().getValue()));
+✅ Fix 3: Keep AddressDetailsDTO Only for Response
+
+Modify AddressDetailsDTO so it remains strict for responses.
+
+import jakarta.validation.constraints.NotNull;
+import lombok.Data;
+
+@Data
+public class AddressDetailsDTO {
+    @NotNull(message = "CharacterSetType must not be null in response")
+    private CharacterSetType characterSetType;
+    
+    private String postalCode;
+    private String country;
+    private String prefecture;
+    private String city;
+    private String town;
+    private String lane;
 }
 
-	•	getCharacterSetType().getValue() ensures that the query uses the correct string value (kanji/kana) rather than the enum name (KANJI/KANA).
+	•	This ensures that when an address is returned, characterSetType is always set.
+	•	The search request does not enforce this since it’s a different DTO.
 
-🔹 Fix in Request Validation
+🔍 Why This Fix Works
 
-Ensure the controller properly validates incoming requests.
+✔ Prevents null exceptions in search queries
+✔ Allows optional fields in AddressSearchConditionsDTO
+✔ Enforces required fields only in responses (AddressDetailsDTO)
+✔ Fixes Cannot invoke ...getCharacterSetType() issue by ensuring correct deserialization
 
-Before (Missing Validation)
+🔍 Next Steps
 
-@PostMapping("/search")
-public ResponseEntity<List<AddressDTO>> searchAddress(@RequestBody AddressSearchConditionsDTO searchConditions) {
-    List<AddressDTO> results = addressService.searchAddress(searchConditions);
-    return ResponseEntity.ok(results);
-}
+1️⃣ Update the search repository code to use AddressSearchDetailsDTO.
+2️⃣ Run a test request without characterSetType in search to verify it doesn’t break.
+3️⃣ Ensure that in the response, AddressDetailsDTO enforces non-null values.
 
-✅ After (Fixed Validation)
-
-@PostMapping("/search")
-public ResponseEntity<List<AddressDTO>> searchAddress(
-    @Valid @RequestBody AddressSearchConditionsDTO searchConditions) {
-    List<AddressDTO> results = addressService.searchAddress(searchConditions);
-    return ResponseEntity.ok(results);
-}
-
-	•	Ensures automatic validation of characterSetType before calling the service.
-
-🔹 Fix in Test Cases
-
-Modify test cases to validate correct enum behavior.
-
-✅ Add Test Cases
-
-@Test
-void testValidCharacterSetType() {
-    String json = "{ \"addressCode\": \"123\", \"address\": { \"characterSetType\": \"kanji\" } }";
-    AddressSearchConditionsDTO dto = objectMapper.readValue(json, AddressSearchConditionsDTO.class);
-    assertEquals(CharacterSetType.KANJI, dto.getAddress().getCharacterSetType());
-}
-
-@Test
-void testInvalidCharacterSetType() {
-    String json = "{ \"addressCode\": \"123\", \"address\": { \"characterSetType\": \"invalidValue\" } }";
-    Exception exception = assertThrows(IllegalArgumentException.class, () ->
-        objectMapper.readValue(json, AddressSearchConditionsDTO.class)
-    );
-    assertTrue(exception.getMessage().contains("Invalid characterSetType"));
-}
-
-💡 Summary of Fixes
-
-✅ Fixed Enum Serialization/Deserialization
-✅ Fixed Null Checks in Repository Query Construction
-✅ Validated Enum Field in DTO and Controller
-✅ Ensured Proper Enum Handling in Test Cases
-
-Would you like me to update your log statements accordingly? 🚀
+Would you like me to generate the repository query update with this fix? 🚀
