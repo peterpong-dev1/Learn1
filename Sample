@@ -120,4 +120,209 @@ public ResponseEntity<ErrorResponseDTO> handleDataNotFoundException(
 	•	Should we include query execution time in the response for better debugging?
 	•	Would you like to apply the same logic for 400 - Bad Request errors?
 
+====6
+
+You’re welcome! Now, let’s apply the same logic for 400 (Bad Request) and 500 (Internal Server Error) so that error responses dynamically include the fields that were used in the request.
+
+🛠 Steps to Apply This Logic for 400 & 500 Errors
+	1.	Modify InvalidInputException to store input fields that caused validation errors.
+	2.	Modify GlobalExceptionHandler to extract inputs dynamically for 400 Bad Request.
+	3.	Modify GlobalExceptionHandler to extract inputs dynamically for 500 Internal Server Error.
+	4.	Ensure all errors follow the same structured format.
+
+1️⃣ Modify InvalidInputException to Store Input Fields
+
+Since validation errors (400) should also include which inputs were invalid, we update the exception to store input fields dynamically.
+
+import java.util.Map;
+
+public class InvalidInputException extends RuntimeException {
+    private final Map<String, Object> invalidFields;
+
+    public InvalidInputException(String message, Map<String, Object> invalidFields) {
+        super(message);
+        this.invalidFields = invalidFields;
+    }
+
+    public Map<String, Object> getInvalidFields() {
+        return invalidFields;
+    }
+}
+
+2️⃣ Throw InvalidInputException with Input Fields in Service Layer
+
+Whenever an input is missing or invalid, collect input fields dynamically and throw the exception.
+
+public void validateInput(AddressSearchConditionsDTO searchConditions) {
+    Map<String, Object> invalidInputs = new HashMap<>();
+
+    if (searchConditions.getAddressCode() == null || searchConditions.getAddressCode().trim().isEmpty()) {
+        invalidInputs.put("addressCode", "Must not be empty");
+    }
+    if (searchConditions.getAddress() == null) {
+        invalidInputs.put("address", "Address details are required");
+    } else {
+        if (searchConditions.getAddress().getPostalCode() == null || searchConditions.getAddress().getPostalCode().trim().isEmpty()) {
+            invalidInputs.put("postalCode", "Must not be empty");
+        }
+        if (searchConditions.getAddress().getCharacterSetType() == null) {
+            invalidInputs.put("characterSetType", "Invalid value");
+        }
+    }
+
+    if (!invalidInputs.isEmpty()) {
+        throw new InvalidInputException("Invalid input values", invalidInputs);
+    }
+}
+
+3️⃣ Modify Global Exception Handler for 400 Bad Request
+
+Extract only the fields that caused the issue dynamically from InvalidInputException.
+
+@ExceptionHandler(InvalidInputException.class)
+public ResponseEntity<ErrorResponseDTO> handleInvalidInputException(
+        InvalidInputException ex, HttpServletRequest request) {
+
+    // Convert invalid input fields dynamically into error details
+    List<ErrorDetailDTO> errors = ex.getInvalidFields().entrySet()
+            .stream()
+            .map(entry -> new ErrorDetailDTO(entry.getKey(), entry.getValue().toString()))
+            .collect(Collectors.toList());
+
+    return buildErrorResponse(HttpStatus.BAD_REQUEST, "Invalid input", errors, request);
+}
+
+4️⃣ Modify Global Exception Handler for 500 Internal Server Error
+
+When an unexpected error occurs, we try to extract input fields if they were captured before the failure.
+
+@ExceptionHandler(Exception.class)
+public ResponseEntity<ErrorResponseDTO> handleGenericException(
+        Exception ex, HttpServletRequest request) {
+
+    // Extract request attributes if available
+    Map<String, Object> requestParams = (Map<String, Object>) request.getAttribute("requestInputs");
+    List<ErrorDetailDTO> errors = new ArrayList<>();
+
+    if (requestParams != null) {
+        errors = requestParams.entrySet()
+                .stream()
+                .map(entry -> new ErrorDetailDTO(entry.getKey(), "Processed before failure"))
+                .collect(Collectors.toList());
+    } else {
+        errors.add(new ErrorDetailDTO("General", "Unexpected server error occurred"));
+    }
+
+    return buildErrorResponse(HttpStatus.INTERNAL_SERVER_ERROR, "Internal Server Error", errors, request);
+}
+
+5️⃣ Set Inputs as Request Attributes in Filter (Optional)
+
+If you want request parameters to always be available, even for unexpected errors (500), store them in a Spring Filter before calling the service.
+
+import jakarta.servlet.Filter;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletRequest;
+import jakarta.servlet.ServletResponse;
+import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.stereotype.Component;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import java.io.IOException;
+import java.util.Map;
+
+@Component
+public class RequestInputFilter implements Filter {
+
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    @Override
+    public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain) throws IOException {
+        if (request instanceof HttpServletRequest) {
+            HttpServletRequest httpRequest = (HttpServletRequest) request;
+            String requestBody = new String(httpRequest.getInputStream().readAllBytes());
+
+            if (!requestBody.isEmpty()) {
+                Map<String, Object> inputParams = objectMapper.readValue(requestBody, Map.class);
+                request.setAttribute("requestInputs", inputParams);
+            }
+        }
+        chain.doFilter(request, response);
+    }
+}
+
+📌 Example Request (400 - Invalid Input)
+
+{
+  "addressCode": "",
+  "address": {
+    "characterSetType": "",
+    "postalCode": ""
+  }
+}
+
+🚨 Error Response (400 - Bad Request)
+
+{
+  "error": {
+    "code": "400",
+    "message": "Invalid input",
+    "details": [
+      { "field": "addressCode", "issue": "Must not be empty" },
+      { "field": "characterSetType", "issue": "Invalid value" },
+      { "field": "postalCode", "issue": "Must not be empty" }
+    ],
+    "timestamp": "2025-03-04T16:45:00.123Z",
+    "requestId": "b5c8a2d3-6789-12ef-abcd-1234567890ff"
+  }
+}
+
+📌 Example Request (500 - Internal Server Error)
+
+(Simulated by causing an unexpected error)
+
+{
+  "addressCode": "12345",
+  "address": {
+    "characterSetType": "UNKNOWN_TYPE"
+  }
+}
+
+🚨 Error Response (500 - Internal Server Error)
+
+{
+  "error": {
+    "code": "500",
+    "message": "Internal Server Error",
+    "details": [
+      { "field": "addressCode", "issue": "Processed before failure" },
+      { "field": "characterSetType", "issue": "Processed before failure" }
+    ],
+    "timestamp": "2025-03-04T16:50:00.456Z",
+    "requestId": "c1d2e3f4-5678-90ab-cdef-abcdef123456"
+  }
+}
+
+🚀 Summary
+
+Step	Action
+1. Modify InvalidInputException	Store dynamically collected invalid fields.
+2. Modify Service Layer	Extract used input fields automatically.
+3. Modify GlobalExceptionHandler for 400	Dynamically create details array with invalid fields.
+4. Modify GlobalExceptionHandler for 500	Capture inputs processed before failure.
+5. Implement Request Filter (Optional)	Store input parameters globally for logging/debugging.
+
+✅ Now, all 400, 404, and 500 errors dynamically include request input fields.
+✅ Error responses are structured consistently across all failure scenarios.
+✅ Request attributes are stored before failure, even for unexpected crashes.
+
+🚀 Next Steps
+	•	Do you want to log requestInputs before executing the query?
+	•	Should we return stack traces only in debug mode for 500 errors?
+	•	Do you need this logic applied to query parameters as well?
+
+Let me know how you’d like to refine it further! 🚀
+
+
+
 Let me know what improvements you need! 🚀
