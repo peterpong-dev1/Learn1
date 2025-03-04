@@ -343,4 +343,140 @@ Exception (Generic)	500 Internal Server Error	Input fields or a fallback error
 	•	Should we capture query parameters in error details as well?
 	•	Would you like to return stack traces only in debug mode?
 
+✅ Customizing Messages for Different Errors
+
+Now, we will dynamically change the "issue" message in error responses based on the type of exception.
+
+1️⃣ Updated extractInputFields Method
+
+This method will:
+✔ Customize messages for 400, 404, and 500 errors.
+✔ Dynamically update "issue" messages based on failure type.
+✔ Handle unexpected cases with fallback messages.
+
+private List<ErrorDetailDTO> extractInputFields(HttpStatus status) {
+    List<ErrorDetailDTO> errors = new ArrayList<>();
+    String inputFieldsStr = MDC.get("inputFields");
+
+    if (inputFieldsStr != null) {
+        try {
+            Map<String, Object> inputFields = objectMapper.readValue(inputFieldsStr, Map.class);
+            String message = getErrorMessageForStatus(status);
+
+            for (Map.Entry<String, Object> entry : inputFields.entrySet()) {
+                errors.add(new ErrorDetailDTO(entry.getKey(), message));
+            }
+        } catch (Exception e) {
+            errors.add(new ErrorDetailDTO("Parsing Error", "Could not parse request fields"));
+        }
+    }
+    return errors;
+}
+
+/**
+ * Returns a customized error message based on the HTTP status code.
+ */
+private String getErrorMessageForStatus(HttpStatus status) {
+    if (status == HttpStatus.BAD_REQUEST) {
+        return "Invalid input provided";
+    } else if (status == HttpStatus.NOT_FOUND) {
+        return "No results found for this value";
+    } else if (status == HttpStatus.INTERNAL_SERVER_ERROR) {
+        return "Query executed but failed";
+    }
+    return "Processed before failure"; // Fallback message
+}
+
+2️⃣ Updated GlobalExceptionHandler
+
+Now, extractInputFields(status) dynamically sets the "issue" field based on the exception type.
+
+@ExceptionHandler(IllegalArgumentException.class)
+public ResponseEntity<ErrorResponseDTO> handleIllegalArgumentException(
+        IllegalArgumentException ex, HttpServletRequest request) {
+
+    List<ErrorDetailDTO> errors = extractInputFields(HttpStatus.BAD_REQUEST);
+
+    return buildErrorResponse(HttpStatus.BAD_REQUEST, ex.getMessage(), errors);
+}
+
+@ExceptionHandler(DataNotFoundException.class)
+public ResponseEntity<ErrorResponseDTO> handleDataNotFoundException(
+        DataNotFoundException ex, HttpServletRequest request) {
+
+    List<ErrorDetailDTO> errors = extractInputFields(HttpStatus.NOT_FOUND);
+
+    return buildErrorResponse(HttpStatus.NOT_FOUND, ex.getMessage(), errors);
+}
+
+@ExceptionHandler(CosmosException.class)
+public ResponseEntity<ErrorResponseDTO> handleCosmosException(
+        CosmosException ex, HttpServletRequest request) {
+
+    List<ErrorDetailDTO> errors = extractInputFields(HttpStatus.INTERNAL_SERVER_ERROR);
+
+    return buildErrorResponse(HttpStatus.INTERNAL_SERVER_ERROR, "Database error", errors);
+}
+
+📌 Example Error Responses
+
+🚨 400 Bad Request (Invalid Input)
+
+{
+  "error": {
+    "code": "400",
+    "message": "Invalid input provided",
+    "details": [
+      { "field": "addressCode", "issue": "Invalid input provided" },
+      { "field": "characterSetType", "issue": "Invalid input provided" }
+    ],
+    "timestamp": "2025-03-05T12:00:00.123Z",
+    "requestId": "abc123xyz789"
+  }
+}
+
+🚨 404 Not Found (No Results)
+
+{
+  "error": {
+    "code": "404",
+    "message": "No data found for the given criteria",
+    "details": [
+      { "field": "addressCode", "issue": "No results found for this value" }
+    ],
+    "timestamp": "2025-03-05T12:15:00.456Z",
+    "requestId": "xyz456abc123"
+  }
+}
+
+🚨 500 Internal Server Error (Database Failure)
+
+{
+  "error": {
+    "code": "500",
+    "message": "Internal Server Error",
+    "details": [
+      { "field": "addressCode", "issue": "Query executed but failed" }
+    ],
+    "timestamp": "2025-03-05T12:30:00.789Z",
+    "requestId": "lmno789pqr456"
+  }
+}
+
+🚀 Summary
+
+Exception	HTTP Status	Customized Message
+Validation Failure	400 Bad Request	"Invalid input provided"
+Data Not Found	404 Not Found	"No results found for this value"
+Database Query Failure	500 Internal Server Error	"Query executed but failed"
+
+🚀 Next Steps
+	•	Do you want to log error responses as structured JSON?
+	•	Should we include actual input values in the error details?
+	•	Do you need query parameters included in error handling?
+
+Let me know how you’d like to refine it further! 🚀
+
+
+
 Let me know how you’d like to refine it further! 🚀
