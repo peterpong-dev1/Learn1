@@ -89,4 +89,169 @@ public class AddressDetailsDTO {
 2️⃣ Run a test request without characterSetType in search to verify it doesn’t break.
 3️⃣ Ensure that in the response, AddressDetailsDTO enforces non-null values.
 
+🔹 Complete Updated Solution with ARRAY_CONTAINS for All AddressDetails Fields
+
+I have updated all fields inside addressDetails to use ARRAY_CONTAINS for filtering efficiently. This update affects:
+	1.	queries.properties - All relevant queries updated.
+	2.	AddressRepository.java - Updated dynamic query generation.
+	3.	AddressSearchConditionsDTO.java - Ensures proper request structure.
+	4.	AddressDTO.java - Updated response DTO for correct JSON mapping.
+
+🔹 1️⃣ Updated queries.properties
+
+filterByCharacterSetType=AND ARRAY_CONTAINS(c.addressDetails, {"characterSetType": @characterSetType}, true)
+filterByPostalCode=AND ARRAY_CONTAINS(c.addressDetails, {"postalCode": @postalCode}, true)
+filterByCountry=AND ARRAY_CONTAINS(c.addressDetails, {"country": @country}, true)
+filterByPrefecture=AND ARRAY_CONTAINS(c.addressDetails, {"prefecture": @prefecture}, true)
+filterByCity=AND ARRAY_CONTAINS(c.addressDetails, {"city": @city}, true)
+filterByTown=AND ARRAY_CONTAINS(c.addressDetails, {"town": @town}, true)
+filterByLane=AND ARRAY_CONTAINS(c.addressDetails, {"lane": @lane}, true)
+filterByEffectiveDate=AND ARRAY_CONTAINS(c.addressDetails, {"effectiveDate": @effectiveDate}, true)
+filterByTerminationDate=AND ARRAY_CONTAINS(c.addressDetails, {"terminationDate": @terminationDate}, true)
+
+🔹 Ensures all addressDetails fields are filtered dynamically without performance issues.
+
+🔹 2️⃣ Updated AddressRepository.java
+
+Dynamically Building the Query
+
+public List<AddressModel> searchWithDynamicQuery(AddressSearchConditionsDTO searchConditions) {
+    List<AddressModel> results = new ArrayList<>();
+    logger.info("[QUERY START] Searching addresses");
+
+    StringBuilder queryBuilder = new StringBuilder(queryConfig.getQuery("baseQuery"));
+    List<SqlParameter> parameters = new ArrayList<>();
+
+    if (searchConditions.getAddressCode() != null) {
+        queryBuilder.append(" ").append(queryConfig.getQuery("filterByAddressCode"));
+        parameters.add(new SqlParameter("@addressCode", searchConditions.getAddressCode()));
+        logger.debug("Added filter: addressCode = {}", searchConditions.getAddressCode());
+    }
+
+    if (searchConditions.getAddress() != null) {
+        AddressDetailsDTO address = searchConditions.getAddress();
+
+        if (address.getCharacterSetType() != null) {
+            queryBuilder.append(" ").append(queryConfig.getQuery("filterByCharacterSetType"));
+            parameters.add(new SqlParameter("@characterSetType", address.getCharacterSetType().getValue()));
+            logger.debug("Added filter: characterSetType = {}", address.getCharacterSetType().getValue());
+        }
+
+        if (address.getPostalCode() != null) {
+            queryBuilder.append(" ").append(queryConfig.getQuery("filterByPostalCode"));
+            parameters.add(new SqlParameter("@postalCode", address.getPostalCode()));
+            logger.debug("Added filter: postalCode = {}", address.getPostalCode());
+        }
+
+        if (address.getCountry() != null) {
+            queryBuilder.append(" ").append(queryConfig.getQuery("filterByCountry"));
+            parameters.add(new SqlParameter("@country", address.getCountry()));
+            logger.debug("Added filter: country = {}", address.getCountry());
+        }
+
+        if (address.getPrefecture() != null) {
+            queryBuilder.append(" ").append(queryConfig.getQuery("filterByPrefecture"));
+            parameters.add(new SqlParameter("@prefecture", address.getPrefecture()));
+            logger.debug("Added filter: prefecture = {}", address.getPrefecture());
+        }
+
+        if (address.getCity() != null) {
+            queryBuilder.append(" ").append(queryConfig.getQuery("filterByCity"));
+            parameters.add(new SqlParameter("@city", address.getCity()));
+            logger.debug("Added filter: city = {}", address.getCity());
+        }
+
+        if (address.getTown() != null) {
+            queryBuilder.append(" ").append(queryConfig.getQuery("filterByTown"));
+            parameters.add(new SqlParameter("@town", address.getTown()));
+            logger.debug("Added filter: town = {}", address.getTown());
+        }
+
+        if (address.getLane() != null) {
+            queryBuilder.append(" ").append(queryConfig.getQuery("filterByLane"));
+            parameters.add(new SqlParameter("@lane", address.getLane()));
+            logger.debug("Added filter: lane = {}", address.getLane());
+        }
+
+        if (address.getEffectiveDate() != null) {
+            queryBuilder.append(" ").append(queryConfig.getQuery("filterByEffectiveDate"));
+            parameters.add(new SqlParameter("@effectiveDate", address.getEffectiveDate().toString()));
+            logger.debug("Added filter: effectiveDate = {}", address.getEffectiveDate());
+        }
+
+        if (address.getTerminationDate() != null) {
+            queryBuilder.append(" ").append(queryConfig.getQuery("filterByTerminationDate"));
+            parameters.add(new SqlParameter("@terminationDate", address.getTerminationDate().toString()));
+            logger.debug("Added filter: terminationDate = {}", address.getTerminationDate());
+        }
+    }
+
+    long queryStartTime = System.currentTimeMillis();
+    SqlQuerySpec querySpec = new SqlQuerySpec(queryBuilder.toString(), parameters);
+    
+    results = cosmosContainer.queryItems(querySpec, new CosmosQueryRequestOptions(), AddressModel.class)
+            .stream()
+            .collect(Collectors.toList());
+
+    logger.info("[QUERY END] Query executed. Results found: {}, Processing time: {} ms",
+            results.size(), System.currentTimeMillis() - queryStartTime);
+    logger.debug("Raw database response: {}", results);
+
+    return results;
+}
+
+✅ Filters applied dynamically
+✅ Efficient query execution
+✅ Logs key steps for debugging
+
+🔹 3️⃣ Updated AddressSearchConditionsDTO.java
+
+Ensures that the request properly contains all possible search filters.
+
+@Data
+public class AddressSearchConditionsDTO {
+    private String addressCode;
+    private AddressDetailsDTO address;
+}
+
+🔹 4️⃣ Updated AddressDTO.java
+
+Ensuring Proper JSON Response Formatting
+
+@Data
+@JsonInclude(JsonInclude.Include.NON_NULL)
+public class AddressDTO {
+    @NotNull(message = "id must not be null")
+    private String id;
+
+    @NotNull(message = "addressCode must not be null")
+    private String addressCode;
+
+    private List<AddressDetailsDTO> address;
+    private LocalDate effectiveDate;
+    private LocalDate terminationDate;
+}
+
+🔹 Ensures id and addressCode are always returned.
+🔹 Null values (optional fields) are excluded from the JSON response.
+
+🔹 Summary of Fixes
+
+Component	Changes
+queries.properties	Updated with ARRAY_CONTAINS for all AddressDetailsDTO fields
+AddressRepository.java	Dynamically builds query using ARRAY_CONTAINS, avoids JOIN overhead
+AddressSearchConditionsDTO.java	Defines search criteria DTO to match Swagger input
+AddressDTO.java	Ensures proper JSON response formatting with mandatory fields
+
+🔹 Next Steps
+
+✅ Replace hardcoded query conditions with dynamic ARRAY_CONTAINS
+✅ Ensure all address fields are correctly included in the request & response
+✅ Verify response matches expected JSON format
+✅ Run queries against Cosmos DB & optimize further if needed
+
+🚀 This implementation is optimized for performance, correctness, and scalability. Let me know if you need any adjustments!
+
+
+
 Would you like me to generate the repository query update with this fix? 🚀
