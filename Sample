@@ -457,6 +457,160 @@ Step	Action
 	•	Should we include stack traces only in debug mode for 500 errors?
 	•	Do you need this logic applied to query parameters as well?
 
+
+🔹 Changes & Answer to Your Question
+	1.	Remove ContentCachingRequestWrapper
+	2.	Make ALLOWED_FIELDS configurable (from application.properties or application.yml)
+	3.	Yes, request ID and request fields can be implemented in the same filter
+
+✅ 1. Optimized Filter Without Wrapper & Configurable Allowed Fields
+
+Now, we:
+✔ Remove the unnecessary ContentCachingRequestWrapper
+✔ Load ALLOWED_FIELDS dynamically from application.properties
+✔ Extract both Request ID and Selected Fields in the same filter
+
+🛠 Updated RequestInputFilter
+
+import jakarta.servlet.Filter;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.ServletRequest;
+import jakarta.servlet.ServletResponse;
+import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Component;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import java.io.IOException;
+import java.util.*;
+
+@Component
+public class RequestInputFilter implements Filter {
+
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    // Load allowed fields from configuration
+    @Value("#{'${logging.allowedFields}'.split(',')}")
+    private List<String> allowedFields;
+
+    @Override
+    public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain)
+            throws IOException, ServletException {
+
+        if (request instanceof HttpServletRequest) {
+            HttpServletRequest httpRequest = (HttpServletRequest) request;
+
+            // Extract Request ID from headers (or generate if missing)
+            String requestId = httpRequest.getHeader("X-Request-ID");
+            if (requestId == null || requestId.isEmpty()) {
+                requestId = UUID.randomUUID().toString();
+            }
+            request.setAttribute("requestId", requestId);
+
+            // Extract request body and filter allowed fields
+            byte[] bodyBytes = request.getInputStream().readAllBytes();
+            if (bodyBytes.length > 0) {
+                String requestBody = new String(bodyBytes, httpRequest.getCharacterEncoding());
+                Map<String, Object> inputParams = objectMapper.readValue(requestBody, Map.class);
+
+                // Filter only allowed fields
+                Map<String, Object> filteredInputs = new HashMap<>();
+                for (String key : allowedFields) {
+                    if (inputParams.containsKey(key)) {
+                        filteredInputs.put(key, inputParams.get(key));
+                    }
+                }
+
+                // Store selected fields in request attributes
+                request.setAttribute("requestInputs", filteredInputs);
+            }
+        }
+
+        chain.doFilter(request, response);
+    }
+}
+
+✅ 2. Make Allowed Fields Configurable
+
+Modify application.properties (or application.yml) to define allowed fields dynamically.
+
+📌 For application.properties
+
+logging.allowedFields=addressCode,characterSetType,postalCode
+
+📌 For application.yml
+
+logging:
+  allowedFields: addressCode,characterSetType,postalCode
+
+✅ 3. Modify GlobalExceptionHandler to Use Both Request ID & Inputs
+
+Now, both Request ID and Input Fields are dynamically included in error responses.
+
+@ExceptionHandler(Exception.class)
+public ResponseEntity<ErrorResponseDTO> handleGenericException(
+        Exception ex, HttpServletRequest request) {
+
+    // Extract stored request fields
+    Map<String, Object> requestParams = (Map<String, Object>) request.getAttribute("requestInputs");
+    String requestId = (String) request.getAttribute("requestId");
+
+    List<ErrorDetailDTO> errors = new ArrayList<>();
+    if (requestParams != null) {
+        errors = requestParams.entrySet()
+                .stream()
+                .map(entry -> new ErrorDetailDTO(entry.getKey(), "Processed before failure"))
+                .collect(Collectors.toList());
+    } else {
+        errors.add(new ErrorDetailDTO("General", "Unexpected server error occurred"));
+    }
+
+    return buildErrorResponse(HttpStatus.INTERNAL_SERVER_ERROR, "Internal Server Error", errors, requestId);
+}
+
+📌 Example Request
+
+{
+  "addressCode": "12345",
+  "characterSetType": "KANJI",
+  "postalCode": "98765",
+  "otherField1": "Not Needed",
+  "otherField2": "Ignore This"
+}
+
+🚨 Error Response (500 - Internal Server Error)
+
+{
+  "error": {
+    "code": "500",
+    "message": "Internal Server Error",
+    "details": [
+      { "field": "addressCode", "issue": "Processed before failure" },
+      { "field": "characterSetType", "issue": "Processed before failure" }
+    ],
+    "timestamp": "2025-03-04T17:30:00.123Z",
+    "requestId": "ab12cd34-ef56-7890-gh12-ijk345lmno67"
+  }
+}
+
+🚀 Final Summary
+
+Feature	Updated Implementation
+Remove ContentCachingRequestWrapper	✅ Done (reading request directly)
+Make ALLOWED_FIELDS configurable	✅ Done (reads from application.properties or application.yml)
+Extract Request ID in same filter	✅ Done (stores X-Request-ID or generates one)
+Store request inputs as attributes	✅ Done (only logs selected fields)
+
+🚀 Next Steps
+	•	Should we log request inputs & request ID in application logs too?
+	•	Do you want to filter out sensitive fields like passwords or tokens?
+	•	Would you like to apply this logic to query parameters as well?
+
+Let me know how you’d like to refine it further! 🚀
+
+
+
 Let me know how you’d like to refine it further! 🚀
 
 Let me know what improvements you need! 🚀
