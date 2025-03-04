@@ -1,19 +1,136 @@
-✅ How to Use inputFields from MDC in Global Exception Handler & Elsewhere
+📌 Updated Solution: Create Multiple ErrorDetailsDTO Based on Non-Null Fields in the Map
 
-Now that we’re storing inputFields in MDC in the filter, let’s make sure it is used correctly in the Global Exception Handler and elsewhere.
+Now, the error response will dynamically generate multiple ErrorDetailsDTO if multiple non-null fields exist in the extracted input fields. If there are 4 non-null fields, the error response will contain 4 details.
 
-1️⃣ Using MDC in Global Exception Handler
+✅ 1️⃣ Extract Non-Null Fields in Controller & Pass to Service
 
-✅ Updated GlobalExceptionHandler
+Modify your controller to extract non-null fields and pass them to the service.
 
-Modify the Global Exception Handler to fetch requestId and inputFields from MDC and include them in the error response.
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RestController;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Objects;
 
-import org.slf4j.MDC;
+@RestController
+public class AddressController {
+
+    private static final Logger logger = LoggerFactory.getLogger(AddressController.class);
+
+    @PostMapping("/common/address/search")
+    public ResponseEntity<?> searchAddress(@RequestBody AddressSearchConditionsDTO request) {
+        // ✅ Extract non-null fields from request
+        Map<String, Object> inputFields = extractNonNullFields(request);
+
+        return addressService.search(request, inputFields);
+    }
+
+    // ✅ Extract Non-Null Fields from SearchConditionsDTO
+    private Map<String, Object> extractNonNullFields(AddressSearchConditionsDTO request) {
+        Map<String, Object> fieldMap = new HashMap<>();
+
+        if (Objects.nonNull(request.getAddressCode())) {
+            fieldMap.put("addressCode", request.getAddressCode());
+        }
+        if (Objects.nonNull(request.getAddress())) {
+            if (Objects.nonNull(request.getAddress().getCharacterSetType())) {
+                fieldMap.put("characterSetType", request.getAddress().getCharacterSetType().getValue());
+            }
+            if (Objects.nonNull(request.getAddress().getPostalCode())) {
+                fieldMap.put("postalCode", request.getAddress().getPostalCode());
+            }
+        }
+        return fieldMap;
+    }
+}
+
+✅ 2️⃣ Pass Extracted Fields to Service & Throw Custom Exceptions
+
+Modify your service layer to use extracted fields in custom exceptions.
+
+import org.springframework.http.ResponseEntity;
+import org.springframework.stereotype.Service;
+import java.util.List;
+import java.util.Map;
+
+@Service
+public class AddressService {
+
+    private final AddressRepository addressRepository;
+
+    public AddressService(AddressRepository addressRepository) {
+        this.addressRepository = addressRepository;
+    }
+
+    public ResponseEntity<?> search(AddressSearchConditionsDTO request, Map<String, Object> inputFields) {
+        // ✅ Validation Error (400)
+        if (request.getAddressCode() == null || request.getAddressCode().isEmpty()) {
+            throw new ValidationException("Validation failed", inputFields);
+        }
+
+        List<AddressDTO> results = addressRepository.findAddress(request);
+
+        // ✅ Data Not Found Error (400)
+        if (results.isEmpty()) {
+            throw new DataNotFoundException("No matching data found", inputFields);
+        }
+
+        return ResponseEntity.ok(results);
+    }
+}
+
+✅ 3️⃣ Modify Custom Exceptions to Store Input Fields
+
+Modify custom exceptions to store input fields from SearchConditionsDTO.
+
+Validation Exception (400)
+
+import java.util.Map;
+
+public class ValidationException extends RuntimeException {
+    private final Map<String, Object> inputFields;
+
+    public ValidationException(String message, Map<String, Object> inputFields) {
+        super(message);
+        this.inputFields = inputFields;
+    }
+
+    public Map<String, Object> getInputFields() {
+        return inputFields;
+    }
+}
+
+Data Not Found Exception (400)
+
+import java.util.Map;
+
+public class DataNotFoundException extends RuntimeException {
+    private final Map<String, Object> inputFields;
+
+    public DataNotFoundException(String message, Map<String, Object> inputFields) {
+        super(message);
+        this.inputFields = inputFields;
+    }
+
+    public Map<String, Object> getInputFields() {
+        return inputFields;
+    }
+}
+
+✅ 4️⃣ Modify Global Exception Handler to Convert Map to Multiple ErrorDetailsDTO
+
+Modify Global Exception Handler to generate multiple error details dynamically.
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
-import jakarta.servlet.http.HttpServletRequest;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -21,462 +138,302 @@ import java.util.Map;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
-    @ExceptionHandler(Exception.class)
-    public ResponseEntity<ErrorResponseDTO> handleGenericException(Exception ex, HttpServletRequest request) {
-        // Retrieve request ID and input fields from MDC
-        String requestId = MDC.get("requestId");
-        String inputFieldsStr = MDC.get("inputFields");
+    private static final Logger logger = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
-        // Convert inputFields from String to structured List (if available)
-        List<ErrorDetailDTO> errors = new ArrayList<>();
-        if (inputFieldsStr != null) {
-            Map<String, Object> inputFields = parseJsonToMap(inputFieldsStr);
-            for (Map.Entry<String, Object> entry : inputFields.entrySet()) {
-                errors.add(new ErrorDetailDTO(entry.getKey(), "Processed before failure"));
-            }
-        } else {
-            errors.add(new ErrorDetailDTO("General", "Unexpected server error occurred"));
-        }
-
-        // Build and return error response
-        return buildErrorResponse(HttpStatus.INTERNAL_SERVER_ERROR, "Internal Server Error", errors, requestId);
+    // ✅ Handle Validation Errors (400 Bad Request)
+    @ExceptionHandler(ValidationException.class)
+    public ResponseEntity<ErrorContainer> handleValidationException(ValidationException ex) {
+        return buildErrorResponse(HttpStatus.BAD_REQUEST, "Validation Error", ex.getInputFields());
     }
 
-    private Map<String, Object> parseJsonToMap(String jsonString) {
-        try {
-            return new ObjectMapper().readValue(jsonString, Map.class);
-        } catch (Exception e) {
-            return Map.of();
-        }
-    }
-
-    private ResponseEntity<ErrorResponseDTO> buildErrorResponse(
-            HttpStatus status, String message, List<ErrorDetailDTO> details, String requestId) {
-        ErrorResponseDTO errorResponse = new ErrorResponseDTO(
-                status.value(), message, details, requestId);
-        return ResponseEntity.status(status).body(errorResponse);
-    }
-}
-
-2️⃣ Using MDC in Logging Across Controller, Service, and Repository
-
-Now that MDC.put("requestId", ...) and MDC.put("inputFields", ...) are available in logs, all logs across the application will automatically include these values.
-
-✅ Example Usage in Controller
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.slf4j.MDC;
-import org.springframework.web.bind.annotation.*;
-
-@RestController
-@RequestMapping("/api/address")
-public class AddressController {
-
-    private static final Logger logger = LoggerFactory.getLogger(AddressController.class);
-    private final AddressService addressService;
-
-    public AddressController(AddressService addressService) {
-        this.addressService = addressService;
-    }
-
-    @PostMapping("/search")
-    public AddressDTO searchAddress(@RequestBody AddressSearchConditionsDTO searchConditions) {
-        logger.info("Received request to search address");
-        return addressService.processAddress(searchConditions);
-    }
-}
-
-✅ Since MDC.put("requestId", requestId) is already set in the filter, it will automatically be added to all logs.
-
-✅ Example Usage in Service Layer
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.slf4j.MDC;
-import org.springframework.stereotype.Service;
-
-@Service
-public class AddressService {
-
-    private static final Logger logger = LoggerFactory.getLogger(AddressService.class);
-
-    public AddressDTO processAddress(AddressSearchConditionsDTO searchConditions) {
-        logger.info("Processing request for address with search criteria: {}", MDC.get("inputFields"));
-
-        // Business logic...
-
-        return new AddressDTO(); // Replace with actual result
-    }
-}
-
-✅ Example Usage in Repository Layer
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.slf4j.MDC;
-import org.springframework.stereotype.Repository;
-
-@Repository
-public class AddressRepository {
-
-    private static final Logger logger = LoggerFactory.getLogger(AddressRepository.class);
-
-    public void queryDatabase() {
-        logger.info("Executing query for input criteria: {}", MDC.get("inputFields"));
-
-        // Query execution logic...
-    }
-}
-
-📌 Example Log Output with MDC
-
-Now, all logs (Controller, Service, Repository) automatically include the requestId and inputFields:
-
-INFO [requestId=123e4567-e89b-12d3-a456-426614174000] [inputFields={addressCode=12345, address.postalCode=98765}]
-Controller - Received request to search address
-INFO [requestId=123e4567-e89b-12d3-a456-426614174000] [inputFields={addressCode=12345, address.postalCode=98765}]
-Service - Processing request for address with search criteria: {addressCode=12345, address.postalCode=98765}
-INFO [requestId=123e4567-e89b-12d3-a456-426614174000] [inputFields={addressCode=12345, address.postalCode=98765}]
-Repository - Executing query for input criteria: {addressCode=12345, address.postalCode=98765}
-
-**
-
-✅ Updated Global Exception Handler for All 6 Exceptions
-
-This will ensure all exceptions return an array of fields in the error response, following the same structured format.
-
-🔹 Key Enhancements
-
-✔ Handles all 6 exceptions with consistent error response structure.
-✔ Dynamically extracts request inputs from MDC.
-✔ Includes an array of fields in the details section for every error.
-
-📌 Updated GlobalExceptionHandler
-
-import com.fasterxml.jackson.databind.ObjectMapper;
-import org.slf4j.MDC;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
-import org.springframework.validation.FieldError;
-import org.springframework.web.bind.MethodArgumentNotValidException;
-import org.springframework.web.bind.annotation.ExceptionHandler;
-import org.springframework.web.bind.annotation.RestControllerAdvice;
-import com.azure.cosmos.CosmosException;
-import jakarta.servlet.http.HttpServletRequest;
-
-import java.util.*;
-import java.util.stream.Collectors;
-
-@RestControllerAdvice
-public class GlobalExceptionHandler {
-
-    private final ObjectMapper objectMapper = new ObjectMapper();
-
-    /**
-     * Handle MethodArgumentNotValidException (Validation Errors)
-     */
-    @ExceptionHandler(MethodArgumentNotValidException.class)
-    public ResponseEntity<ErrorResponseDTO> handleValidationException(
-            MethodArgumentNotValidException ex, HttpServletRequest request) {
-
-        List<ErrorDetailDTO> errors = ex.getBindingResult().getFieldErrors().stream()
-                .map(fieldError -> new ErrorDetailDTO(fieldError.getField(), fieldError.getDefaultMessage()))
-                .collect(Collectors.toList());
-
-        return buildErrorResponse(HttpStatus.BAD_REQUEST, "Validation error", errors);
-    }
-
-    /**
-     * Handle IllegalArgumentException (Invalid input cases)
-     */
-    @ExceptionHandler(IllegalArgumentException.class)
-    public ResponseEntity<ErrorResponseDTO> handleIllegalArgumentException(
-            IllegalArgumentException ex, HttpServletRequest request) {
-
-        List<ErrorDetailDTO> errors = extractInputFields();
-
-        return buildErrorResponse(HttpStatus.BAD_REQUEST, ex.getMessage(), errors);
-    }
-
-    /**
-     * Handle DataNotFoundException (Custom Exception for no data found)
-     */
+    // ✅ Handle Data Not Found Errors (400 Bad Request)
     @ExceptionHandler(DataNotFoundException.class)
-    public ResponseEntity<ErrorResponseDTO> handleDataNotFoundException(
-            DataNotFoundException ex, HttpServletRequest request) {
-
-        List<ErrorDetailDTO> errors = extractInputFields();
-
-        return buildErrorResponse(HttpStatus.NOT_FOUND, ex.getMessage(), errors);
+    public ResponseEntity<ErrorContainer> handleDataNotFoundException(DataNotFoundException ex) {
+        return buildErrorResponse(HttpStatus.BAD_REQUEST, "Data Not Found", ex.getInputFields());
     }
 
-    /**
-     * Handle CosmosException (Database-related errors)
-     */
-    @ExceptionHandler(CosmosException.class)
-    public ResponseEntity<ErrorResponseDTO> handleCosmosException(
-            CosmosException ex, HttpServletRequest request) {
-
-        List<ErrorDetailDTO> errors = extractInputFields();
-
-        return buildErrorResponse(HttpStatus.INTERNAL_SERVER_ERROR, "Database error", errors);
-    }
-
-    /**
-     * Handle InvalidFormatException (JSON parsing issues)
-     */
-    @ExceptionHandler(com.fasterxml.jackson.databind.exc.InvalidFormatException.class)
-    public ResponseEntity<ErrorResponseDTO> handleInvalidFormatException(
-            com.fasterxml.jackson.databind.exc.InvalidFormatException ex, HttpServletRequest request) {
-
-        List<ErrorDetailDTO> errors = ex.getPath().stream()
-                .map(ref -> new ErrorDetailDTO(ref.getFieldName(), "Invalid value format"))
-                .collect(Collectors.toList());
-
-        return buildErrorResponse(HttpStatus.BAD_REQUEST, "Invalid input format", errors);
-    }
-
-    /**
-     * Handle Generic Exception (Fallback for all unhandled errors)
-     */
+    // ✅ Handle Unexpected Internal Server Errors (500)
     @ExceptionHandler(Exception.class)
-    public ResponseEntity<ErrorResponseDTO> handleGenericException(
-            Exception ex, HttpServletRequest request) {
-
-        List<ErrorDetailDTO> errors = extractInputFields();
-        if (errors.isEmpty()) {
-            errors.add(new ErrorDetailDTO("General", "Unexpected server error occurred"));
-        }
-
-        return buildErrorResponse(HttpStatus.INTERNAL_SERVER_ERROR, "Internal Server Error", errors);
+    public ResponseEntity<ErrorContainer> handleGenericException(Exception ex) {
+        logger.error("Unhandled Exception: {}", ex.getMessage(), ex);
+        return buildErrorResponse(HttpStatus.INTERNAL_SERVER_ERROR, "Internal Server Error", null);
     }
 
-    /**
-     * Extract input fields dynamically from MDC (logged request attributes)
-     */
-    private List<ErrorDetailDTO> extractInputFields() {
-        List<ErrorDetailDTO> errors = new ArrayList<>();
-        String inputFieldsStr = MDC.get("inputFields");
+    // ✅ Build Unified Error Response with Multiple ErrorDetailsDTO
+    private ResponseEntity<ErrorContainer> buildErrorResponse(HttpStatus status, String message, Map<String, Object> details) {
+        logger.error("Error Response: Status={} Message={} Details={}", status.value(), message, details);
 
-        if (inputFieldsStr != null) {
-            try {
-                Map<String, Object> inputFields = objectMapper.readValue(inputFieldsStr, Map.class);
-                for (Map.Entry<String, Object> entry : inputFields.entrySet()) {
-                    errors.add(new ErrorDetailDTO(entry.getKey(), "Processed before failure"));
-                }
-            } catch (Exception e) {
-                errors.add(new ErrorDetailDTO("Parsing Error", "Could not parse request fields"));
-            }
+        List<ErrorDetailsDTO> errorDetailsList = new ArrayList<>();
+
+        if (details != null) {
+            details.forEach((key, value) -> {
+                errorDetailsList.add(new ErrorDetailsDTO(
+                        String.valueOf(status.value()),
+                        "Invalid or missing field: " + key,
+                        Map.of(key, value)
+                ));
+            });
+        } else {
+            errorDetailsList.add(new ErrorDetailsDTO(
+                    String.valueOf(status.value()),
+                    message,
+                    null
+            ));
         }
+
+        return new ResponseEntity<>(new ErrorContainer(errorDetailsList), status);
+    }
+}
+
+✅ 5️⃣ Define ErrorContainer & ErrorDetailsDTO to Support Multiple Errors
+
+Modify error response structure to allow multiple ErrorDetailsDTO inside ErrorContainer.
+
+Error Container
+
+import java.util.List;
+
+public class ErrorContainer {
+    private List<ErrorDetailsDTO> errors;
+
+    public ErrorContainer(List<ErrorDetailsDTO> errors) {
+        this.errors = errors;
+    }
+
+    public List<ErrorDetailsDTO> getErrors() {
         return errors;
     }
+}
 
-    /**
-     * Helper method to build structured error response
-     */
-    private ResponseEntity<ErrorResponseDTO> buildErrorResponse(
-            HttpStatus status, String message, List<ErrorDetailDTO> details) {
+Error Details DTO
 
-        String requestId = MDC.get("requestId"); // Fetch request ID from MDC
+import java.util.Map;
 
-        ErrorResponseDTO errorResponse = new ErrorResponseDTO(
-                status.value(), message, details, requestId);
-        return ResponseEntity.status(status).body(errorResponse);
+public class ErrorDetailsDTO {
+    private String code;
+    private String message;
+    private Map<String, Object> details;
+
+    public ErrorDetailsDTO(String code, String message, Map<String, Object> details) {
+        this.code = code;
+        this.message = message;
+        this.details = details;
     }
+
+    // Getters & Setters
 }
 
-✅ Expected Error Response Format (With Array of Fields)
+📌 Expected JSON Outputs
 
-📌 Example 1: 400 Bad Request (Validation Error)
+📌 Case 1: Multiple Fields Validation Errors (400)
 
-Request:
+If addressCode, postalCode, and characterSetType are provided in the request, but are invalid, the response will include multiple ErrorDetailsDTO:
 
 {
-  "addressCode": "",
-  "characterSetType": "INVALID",
-  "postalCode": ""
-}
-
-Response:
-
-{
-  "error": {
-    "code": "400",
-    "message": "Validation error",
-    "details": [
-      { "field": "addressCode", "issue": "Must not be empty" },
-      { "field": "characterSetType", "issue": "Invalid value" },
-      { "field": "postalCode", "issue": "Must not be empty" }
-    ],
-    "timestamp": "2025-03-05T10:30:00.456Z",
-    "requestId": "b5c8a2d3-6789-12ef-abcd-1234567890ff"
-  }
-}
-
-📌 Example 2: 404 Data Not Found
-
-{
-  "error": {
-    "code": "404",
-    "message": "No data found for the given criteria",
-    "details": [
-      { "field": "addressCode", "issue": "Processed before failure" }
-    ],
-    "timestamp": "2025-03-05T10:45:00.789Z",
-    "requestId": "a1b2c3d4-5678-90ab-cdef-abcdef123456"
-  }
-}
-
-🚀 Summary
-
-Exception	HTTP Status	Details Field Includes
-MethodArgumentNotValidException	400 Bad Request	Fields that failed validation
-IllegalArgumentException	400 Bad Request	Extracted request fields
-DataNotFoundException	404 Not Found	Input fields used in the query
-CosmosException	500 Internal Server Error	Input fields used before failure
-InvalidFormatException	400 Bad Request	Fields with incorrect data format
-Exception (Generic)	500 Internal Server Error	Input fields or a fallback error
-
-🚀 Next Steps
-	•	Do you need logging of error responses in structured JSON format?
-	•	Should we capture query parameters in error details as well?
-	•	Would you like to return stack traces only in debug mode?
-
-✅ Customizing Messages for Different Errors
-
-Now, we will dynamically change the "issue" message in error responses based on the type of exception.
-
-1️⃣ Updated extractInputFields Method
-
-This method will:
-✔ Customize messages for 400, 404, and 500 errors.
-✔ Dynamically update "issue" messages based on failure type.
-✔ Handle unexpected cases with fallback messages.
-
-private List<ErrorDetailDTO> extractInputFields(HttpStatus status) {
-    List<ErrorDetailDTO> errors = new ArrayList<>();
-    String inputFieldsStr = MDC.get("inputFields");
-
-    if (inputFieldsStr != null) {
-        try {
-            Map<String, Object> inputFields = objectMapper.readValue(inputFieldsStr, Map.class);
-            String message = getErrorMessageForStatus(status);
-
-            for (Map.Entry<String, Object> entry : inputFields.entrySet()) {
-                errors.add(new ErrorDetailDTO(entry.getKey(), message));
-            }
-        } catch (Exception e) {
-            errors.add(new ErrorDetailDTO("Parsing Error", "Could not parse request fields"));
+    "errors": [
+        {
+            "code": "400",
+            "message": "Invalid or missing field: addressCode",
+            "details": { "addressCode": "01101043028" }
+        },
+        {
+            "code": "400",
+            "message": "Invalid or missing field: characterSetType",
+            "details": { "characterSetType": "KANA" }
+        },
+        {
+            "code": "400",
+            "message": "Invalid or missing field: postalCode",
+            "details": { "postalCode": "0640804" }
         }
+    ]
+}
+
+📌 Case 2: Data Not Found (400)
+
+{
+    "errors": [
+        {
+            "code": "400",
+            "message": "Invalid or missing field: addressCode",
+            "details": { "addressCode": "01101043028" }
+        }
+    ]
+}
+
+🚀 Final Summary
+
+✅ Supports Dynamic Multiple Error Details – Generates multiple ErrorDetailsDTO from input fields.
+✅ Returns Structured JSON Error Responses – Uses ErrorContainer to wrap multiple errors.
+✅ Ensures Best Practices – Follows real-world REST API error handling standards.
+
+🚀 Now your API properly supports multiple error details for multiple input fields! Let me know if you need modifications! 🚀
+
+I’ll check the Swagger file you uploaded and modify the response structure to match it exactly. Let me process the file and provide only the necessary changes.
+
+Based on your Swagger file, I have updated the response structure to match the expected format. Here are the required changes:
+
+📌 1️⃣ Modify ErrorContainer to Match Swagger Response Format
+
+Your Swagger file defines error as an object, not an array. Modify ErrorContainer accordingly.
+
+🔹 Before (List<ErrorDetailsDTO>)
+
+public class ErrorContainer {
+    private List<ErrorDetailsDTO> errors;
+}
+
+✅ After (Match Swagger Format)
+
+public class ErrorContainer {
+    private ErrorDetailsDTO error;
+
+    public ErrorContainer(ErrorDetailsDTO error) {
+        this.error = error;
     }
-    return errors;
-}
 
-/**
- * Returns a customized error message based on the HTTP status code.
- */
-private String getErrorMessageForStatus(HttpStatus status) {
-    if (status == HttpStatus.BAD_REQUEST) {
-        return "Invalid input provided";
-    } else if (status == HttpStatus.NOT_FOUND) {
-        return "No results found for this value";
-    } else if (status == HttpStatus.INTERNAL_SERVER_ERROR) {
-        return "Query executed but failed";
+    public ErrorDetailsDTO getError() {
+        return error;
     }
-    return "Processed before failure"; // Fallback message
 }
 
-2️⃣ Updated GlobalExceptionHandler
+📌 2️⃣ Modify ErrorDetailsDTO to Match Swagger
 
-Now, extractInputFields(status) dynamically sets the "issue" field based on the exception type.
+Your Swagger file uses a nested object structure. Change ErrorDetailsDTO accordingly.
 
-@ExceptionHandler(IllegalArgumentException.class)
-public ResponseEntity<ErrorResponseDTO> handleIllegalArgumentException(
-        IllegalArgumentException ex, HttpServletRequest request) {
+🔹 Before
 
-    List<ErrorDetailDTO> errors = extractInputFields(HttpStatus.BAD_REQUEST);
-
-    return buildErrorResponse(HttpStatus.BAD_REQUEST, ex.getMessage(), errors);
+public class ErrorDetailsDTO {
+    private String code;
+    private String message;
+    private Map<String, Object> details;
 }
 
-@ExceptionHandler(DataNotFoundException.class)
-public ResponseEntity<ErrorResponseDTO> handleDataNotFoundException(
-        DataNotFoundException ex, HttpServletRequest request) {
+✅ After (Swagger-Compatible Format)
 
-    List<ErrorDetailDTO> errors = extractInputFields(HttpStatus.NOT_FOUND);
+import java.util.List;
 
-    return buildErrorResponse(HttpStatus.NOT_FOUND, ex.getMessage(), errors);
+public class ErrorDetailsDTO {
+    private String code;
+    private String message;
+    private List<FieldErrorDTO> details;
+
+    public ErrorDetailsDTO(String code, String message, List<FieldErrorDTO> details) {
+        this.code = code;
+        this.message = message;
+        this.details = details;
+    }
+
+    public List<FieldErrorDTO> getDetails() {
+        return details;
+    }
 }
 
-@ExceptionHandler(CosmosException.class)
-public ResponseEntity<ErrorResponseDTO> handleCosmosException(
-        CosmosException ex, HttpServletRequest request) {
+📌 3️⃣ Create FieldErrorDTO to Handle Multiple Field Errors
 
-    List<ErrorDetailDTO> errors = extractInputFields(HttpStatus.INTERNAL_SERVER_ERROR);
+Your Swagger file expects details as an array of field-specific errors, not a map.
 
-    return buildErrorResponse(HttpStatus.INTERNAL_SERVER_ERROR, "Database error", errors);
+public class FieldErrorDTO {
+    private String field;
+    private String message;
+
+    public FieldErrorDTO(String field, String message) {
+        this.field = field;
+        this.message = message;
+    }
+
+    public String getField() {
+        return field;
+    }
+
+    public String getMessage() {
+        return message;
+    }
 }
 
-📌 Example Error Responses
+📌 4️⃣ Modify Global Exception Handler to Use FieldErrorDTO
 
-🚨 400 Bad Request (Invalid Input)
+Your Swagger response format requires multiple field errors inside a single error object.
+
+🔹 Before (Returning List of Errors)
+
+List<ErrorDetailsDTO> errorDetailsList = new ArrayList<>();
+details.forEach((key, value) -> {
+    errorDetailsList.add(new ErrorDetailsDTO(
+        "400",
+        "Invalid or missing field: " + key,
+        Map.of(key, value)
+    ));
+});
+
+✅ After (Swagger-Compatible Response)
+
+private ResponseEntity<ErrorContainer> buildErrorResponse(HttpStatus status, String message, Map<String, Object> details) {
+    logger.error("Error Response: Status={} Message={} Details={}", status.value(), message, details);
+
+    List<FieldErrorDTO> fieldErrors = new ArrayList<>();
+
+    if (details != null) {
+        details.forEach((key, value) -> {
+            fieldErrors.add(new FieldErrorDTO(
+                    key,
+                    "Invalid or missing value"
+            ));
+        });
+    }
+
+    ErrorDetailsDTO errorDetails = new ErrorDetailsDTO(
+            String.valueOf(status.value()),
+            message,
+            fieldErrors
+    );
+
+    return new ResponseEntity<>(new ErrorContainer(errorDetails), status);
+}
+
+📌 Expected Swagger-Compatible JSON Output
+
+✅ Case 1: Multiple Validation Errors (400)
 
 {
-  "error": {
-    "code": "400",
-    "message": "Invalid input provided",
-    "details": [
-      { "field": "addressCode", "issue": "Invalid input provided" },
-      { "field": "characterSetType", "issue": "Invalid input provided" }
-    ],
-    "timestamp": "2025-03-05T12:00:00.123Z",
-    "requestId": "abc123xyz789"
-  }
+    "error": {
+        "code": "400",
+        "message": "Validation Error",
+        "details": [
+            {
+                "field": "addressCode",
+                "message": "Invalid or missing value"
+            },
+            {
+                "field": "postalCode",
+                "message": "Invalid or missing value"
+            }
+        ]
+    }
 }
 
-🚨 404 Not Found (No Results)
+✅ Case 2: Data Not Found (400)
 
 {
-  "error": {
-    "code": "404",
-    "message": "No data found for the given criteria",
-    "details": [
-      { "field": "addressCode", "issue": "No results found for this value" }
-    ],
-    "timestamp": "2025-03-05T12:15:00.456Z",
-    "requestId": "xyz456abc123"
-  }
+    "error": {
+        "code": "400",
+        "message": "Data Not Found",
+        "details": [
+            {
+                "field": "addressCode",
+                "message": "Invalid or missing value"
+            }
+        ]
+    }
 }
 
-🚨 500 Internal Server Error (Database Failure)
+🚀 Final Summary of Changes
 
-{
-  "error": {
-    "code": "500",
-    "message": "Internal Server Error",
-    "details": [
-      { "field": "addressCode", "issue": "Query executed but failed" }
-    ],
-    "timestamp": "2025-03-05T12:30:00.789Z",
-    "requestId": "lmno789pqr456"
-  }
-}
+Change	Description
+Modify ErrorContainer ✅	Changed List<ErrorDetailsDTO> to single error object
+Modify ErrorDetailsDTO ✅	Changed details to a list of field errors
+Create FieldErrorDTO ✅	Introduced new DTO for field-specific validation errors
+Modify Exception Handler ✅	Changed details from Map<String, Object> to List of FieldErrorDTO
 
-🚀 Summary
+🚀 Now your API returns error responses exactly as per your Swagger specification! Let me know if you need further modifications! 🚀
 
-Exception	HTTP Status	Customized Message
-Validation Failure	400 Bad Request	"Invalid input provided"
-Data Not Found	404 Not Found	"No results found for this value"
-Database Query Failure	500 Internal Server Error	"Query executed but failed"
-
-🚀 Next Steps
-	•	Do you want to log error responses as structured JSON?
-	•	Should we include actual input values in the error details?
-	•	Do you need query parameters included in error handling?
-
-Let me know how you’d like to refine it further! 🚀
-
-
-
-Let me know how you’d like to refine it further! 🚀
