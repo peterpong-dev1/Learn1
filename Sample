@@ -1,11 +1,12 @@
-The current filter only extracts top-level fields from the request body. If you need to extract specific fields inside nested objects (e.g., address.postalCode), we need to modify the logic to handle nested JSON structures dynamically.
+Yes, you can use MDC (Mapped Diagnostic Context) like in the previous project to store and log Request ID and Filtered Input Fields dynamically.
 
-✅ Updated Code: Extract Nested Fields from Objects (Like address.postalCode)
+Using MDC allows the request information to be available across logs in all classes (Controller, Service, Repository), which is useful for tracking requests end-to-end.
 
-We will:
-	1.	Check if a field is nested (e.g., address.postalCode).
-	2.	Recursively extract values from nested objects.
-	3.	Store only non-null values.
+✅ Updated RequestInputFilter with MDC
+
+This will:
+✔ Store requestId and only selected fields in MDC for logging.
+✔ Ensure MDC values are cleared after request processing.
 
 import jakarta.servlet.Filter;
 import jakarta.servlet.FilterChain;
@@ -13,6 +14,7 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.ServletRequest;
 import jakarta.servlet.ServletResponse;
 import jakarta.servlet.http.HttpServletRequest;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -25,7 +27,7 @@ public class RequestInputFilter implements Filter {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    // Load allowed fields from config (supports nested fields like "address.postalCode")
+    // Load allowed fields from configuration (supports nested fields)
     @Value("#{'${logging.allowedFields}'.split(',')}")
     private List<String> allowedFields;
 
@@ -36,28 +38,41 @@ public class RequestInputFilter implements Filter {
         if (request instanceof HttpServletRequest) {
             HttpServletRequest httpRequest = (HttpServletRequest) request;
 
-            // Extract Request ID
-            String requestId = httpRequest.getHeader("X-Request-ID");
-            if (requestId == null || requestId.isEmpty()) {
-                requestId = UUID.randomUUID().toString();
+            try {
+                // Extract Request ID (from header or generate if missing)
+                String requestId = httpRequest.getHeader("X-Request-ID");
+                if (requestId == null || requestId.isEmpty()) {
+                    requestId = UUID.randomUUID().toString();
+                }
+
+                // Store requestId in MDC for logging
+                MDC.put("requestId", requestId);
+                request.setAttribute("requestId", requestId);
+
+                // Read request body and filter allowed fields
+                byte[] bodyBytes = request.getInputStream().readAllBytes();
+                if (bodyBytes.length > 0) {
+                    String requestBody = new String(bodyBytes, httpRequest.getCharacterEncoding());
+                    Map<String, Object> inputParams = objectMapper.readValue(requestBody, Map.class);
+
+                    // Extract only allowed fields (including nested ones)
+                    Map<String, Object> filteredInputs = extractAllowedFields(inputParams, allowedFields);
+
+                    // Store filtered input fields in request attributes
+                    request.setAttribute("requestInputs", filteredInputs);
+
+                    // Store selected fields in MDC for logging
+                    MDC.put("inputFields", filteredInputs.toString());
+                }
+
+                chain.doFilter(request, response);
+            } finally {
+                // Ensure MDC is cleared after request processing
+                MDC.clear();
             }
-            request.setAttribute("requestId", requestId);
-
-            // Read request body
-            byte[] bodyBytes = request.getInputStream().readAllBytes();
-            if (bodyBytes.length > 0) {
-                String requestBody = new String(bodyBytes, httpRequest.getCharacterEncoding());
-                Map<String, Object> inputParams = objectMapper.readValue(requestBody, Map.class);
-
-                // Extract only allowed fields (including nested ones)
-                Map<String, Object> filteredInputs = extractAllowedFields(inputParams, allowedFields);
-
-                // Store selected fields in request attributes
-                request.setAttribute("requestInputs", filteredInputs);
-            }
+        } else {
+            chain.doFilter(request, response);
         }
-
-        chain.doFilter(request, response);
     }
 
     /**
@@ -105,11 +120,39 @@ public class RequestInputFilter implements Filter {
     }
 }
 
-✅ Configurable Nested Fields in application.properties
+✅ Configurable Fields in application.properties
 
-Now, you can specify nested fields dynamically.
+Now, we can configure which fields should be logged.
 
 logging.allowedFields=addressCode,characterSetType,address.postalCode,address.city
+
+✅ How MDC Will Be Used in Logs
+
+Now, logs in Controller, Service, and Repository will automatically have requestId and inputFields.
+
+Example log format:
+
+INFO [requestId=123e4567-e89b-12d3-a456-426614174000] [inputFields={addressCode=12345, address.postalCode=98765}]
+ServiceClass - Processing request for addressCode 12345
+
+✅ Example Usage in Logging (Controller, Service, Repository)
+
+Now, when logging, MDC fields will be automatically included in every log entry.
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
+import org.springframework.stereotype.Service;
+
+@Service
+public class AddressService {
+
+    private static final Logger logger = LoggerFactory.getLogger(AddressService.class);
+
+    public void processAddress(String addressCode) {
+        logger.info("Processing address request for {}", addressCode);
+    }
+}
 
 📌 Example Request JSON
 
@@ -120,16 +163,14 @@ logging.allowedFields=addressCode,characterSetType,address.postalCode,address.ci
     "postalCode": "98765",
     "city": "Tokyo",
     "country": "Japan"
-  },
-  "otherField1": "Not Needed",
-  "otherField2": "Ignore This"
+  }
 }
 
-🚨 Extracted Fields in Request Attributes
+🚨 Extracted MDC Context for Logging
 
 {
   "requestId": "b5c8a2d3-6789-12ef-abcd-1234567890ff",
-  "requestInputs": {
+  "inputFields": {
     "addressCode": "12345",
     "characterSetType": "KANJI",
     "address.postalCode": "98765",
@@ -137,12 +178,14 @@ logging.allowedFields=addressCode,characterSetType,address.postalCode,address.ci
   }
 }
 
-🚀 Key Features
+🚀 Benefits of This Approach
 
-✅ Handles both top-level and nested fields dynamically
-✅ Extracts only non-null values
-✅ Configurable allowed fields from application.properties
-✅ Prevents unnecessary logging of irrelevant fields
+Feature	Benefit
+✅ Stores Request ID in MDC	Automatically available in all logs.
+✅ Filters only selected fields	Reduces memory usage and logs only useful data.
+✅ Supports nested JSON fields	Extracts specific fields from objects like address.postalCode.
+✅ Ensures MDC is cleared after request	Prevents data leaks across requests.
+✅ Configurable fields via properties	No hardcoding required.
 
 🚀 Next Steps
 	•	Do you want to log only selected fields in logs instead of full request?
