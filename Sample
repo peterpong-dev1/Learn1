@@ -1,143 +1,95 @@
-Yes, you can use MDC (Mapped Diagnostic Context) like in the previous project to store and log Request ID and Filtered Input Fields dynamically.
+✅ How to Use inputFields from MDC in Global Exception Handler & Elsewhere
 
-Using MDC allows the request information to be available across logs in all classes (Controller, Service, Repository), which is useful for tracking requests end-to-end.
+Now that we’re storing inputFields in MDC in the filter, let’s make sure it is used correctly in the Global Exception Handler and elsewhere.
 
-✅ Updated RequestInputFilter with MDC
+1️⃣ Using MDC in Global Exception Handler
 
-This will:
-✔ Store requestId and only selected fields in MDC for logging.
-✔ Ensure MDC values are cleared after request processing.
+✅ Updated GlobalExceptionHandler
 
-import jakarta.servlet.Filter;
-import jakarta.servlet.FilterChain;
-import jakarta.servlet.ServletException;
-import jakarta.servlet.ServletRequest;
-import jakarta.servlet.ServletResponse;
-import jakarta.servlet.http.HttpServletRequest;
+Modify the Global Exception Handler to fetch requestId and inputFields from MDC and include them in the error response.
+
 import org.slf4j.MDC;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.stereotype.Component;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+import jakarta.servlet.http.HttpServletRequest;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 
-import java.io.IOException;
-import java.util.*;
+@RestControllerAdvice
+public class GlobalExceptionHandler {
 
-@Component
-public class RequestInputFilter implements Filter {
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<ErrorResponseDTO> handleGenericException(Exception ex, HttpServletRequest request) {
+        // Retrieve request ID and input fields from MDC
+        String requestId = MDC.get("requestId");
+        String inputFieldsStr = MDC.get("inputFields");
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
-
-    // Load allowed fields from configuration (supports nested fields)
-    @Value("#{'${logging.allowedFields}'.split(',')}")
-    private List<String> allowedFields;
-
-    @Override
-    public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain)
-            throws IOException, ServletException {
-
-        if (request instanceof HttpServletRequest) {
-            HttpServletRequest httpRequest = (HttpServletRequest) request;
-
-            try {
-                // Extract Request ID (from header or generate if missing)
-                String requestId = httpRequest.getHeader("X-Request-ID");
-                if (requestId == null || requestId.isEmpty()) {
-                    requestId = UUID.randomUUID().toString();
-                }
-
-                // Store requestId in MDC for logging
-                MDC.put("requestId", requestId);
-                request.setAttribute("requestId", requestId);
-
-                // Read request body and filter allowed fields
-                byte[] bodyBytes = request.getInputStream().readAllBytes();
-                if (bodyBytes.length > 0) {
-                    String requestBody = new String(bodyBytes, httpRequest.getCharacterEncoding());
-                    Map<String, Object> inputParams = objectMapper.readValue(requestBody, Map.class);
-
-                    // Extract only allowed fields (including nested ones)
-                    Map<String, Object> filteredInputs = extractAllowedFields(inputParams, allowedFields);
-
-                    // Store filtered input fields in request attributes
-                    request.setAttribute("requestInputs", filteredInputs);
-
-                    // Store selected fields in MDC for logging
-                    MDC.put("inputFields", filteredInputs.toString());
-                }
-
-                chain.doFilter(request, response);
-            } finally {
-                // Ensure MDC is cleared after request processing
-                MDC.clear();
+        // Convert inputFields from String to structured List (if available)
+        List<ErrorDetailDTO> errors = new ArrayList<>();
+        if (inputFieldsStr != null) {
+            Map<String, Object> inputFields = parseJsonToMap(inputFieldsStr);
+            for (Map.Entry<String, Object> entry : inputFields.entrySet()) {
+                errors.add(new ErrorDetailDTO(entry.getKey(), "Processed before failure"));
             }
         } else {
-            chain.doFilter(request, response);
+            errors.add(new ErrorDetailDTO("General", "Unexpected server error occurred"));
+        }
+
+        // Build and return error response
+        return buildErrorResponse(HttpStatus.INTERNAL_SERVER_ERROR, "Internal Server Error", errors, requestId);
+    }
+
+    private Map<String, Object> parseJsonToMap(String jsonString) {
+        try {
+            return new ObjectMapper().readValue(jsonString, Map.class);
+        } catch (Exception e) {
+            return Map.of();
         }
     }
 
-    /**
-     * Extracts allowed fields (including nested ones) from a given JSON map.
-     */
-    private Map<String, Object> extractAllowedFields(Map<String, Object> inputParams, List<String> allowedFields) {
-        Map<String, Object> filteredInputs = new HashMap<>();
-
-        for (String field : allowedFields) {
-            if (field.contains(".")) { // Handle nested fields
-                String[] fieldParts = field.split("\\.");
-                Object value = extractNestedValue(inputParams, fieldParts, 0);
-                if (value != null) {
-                    filteredInputs.put(field, value);
-                }
-            } else { // Handle top-level fields
-                if (inputParams.containsKey(field) && inputParams.get(field) != null) {
-                    filteredInputs.put(field, inputParams.get(field));
-                }
-            }
-        }
-
-        return filteredInputs;
-    }
-
-    /**
-     * Recursively extracts a nested value from a JSON map based on field path.
-     */
-    private Object extractNestedValue(Map<String, Object> json, String[] fieldParts, int index) {
-        if (index >= fieldParts.length || json == null) {
-            return null;
-        }
-
-        Object value = json.get(fieldParts[index]);
-
-        if (index == fieldParts.length - 1) {
-            return value; // Found the final value
-        }
-
-        if (value instanceof Map) {
-            return extractNestedValue((Map<String, Object>) value, fieldParts, index + 1);
-        }
-
-        return null;
+    private ResponseEntity<ErrorResponseDTO> buildErrorResponse(
+            HttpStatus status, String message, List<ErrorDetailDTO> details, String requestId) {
+        ErrorResponseDTO errorResponse = new ErrorResponseDTO(
+                status.value(), message, details, requestId);
+        return ResponseEntity.status(status).body(errorResponse);
     }
 }
 
-✅ Configurable Fields in application.properties
+2️⃣ Using MDC in Logging Across Controller, Service, and Repository
 
-Now, we can configure which fields should be logged.
+Now that MDC.put("requestId", ...) and MDC.put("inputFields", ...) are available in logs, all logs across the application will automatically include these values.
 
-logging.allowedFields=addressCode,characterSetType,address.postalCode,address.city
+✅ Example Usage in Controller
 
-✅ How MDC Will Be Used in Logs
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
+import org.springframework.web.bind.annotation.*;
 
-Now, logs in Controller, Service, and Repository will automatically have requestId and inputFields.
+@RestController
+@RequestMapping("/api/address")
+public class AddressController {
 
-Example log format:
+    private static final Logger logger = LoggerFactory.getLogger(AddressController.class);
+    private final AddressService addressService;
 
-INFO [requestId=123e4567-e89b-12d3-a456-426614174000] [inputFields={addressCode=12345, address.postalCode=98765}]
-ServiceClass - Processing request for addressCode 12345
+    public AddressController(AddressService addressService) {
+        this.addressService = addressService;
+    }
 
-✅ Example Usage in Logging (Controller, Service, Repository)
+    @PostMapping("/search")
+    public AddressDTO searchAddress(@RequestBody AddressSearchConditionsDTO searchConditions) {
+        logger.info("Received request to search address");
+        return addressService.processAddress(searchConditions);
+    }
+}
 
-Now, when logging, MDC fields will be automatically included in every log entry.
+✅ Since MDC.put("requestId", requestId) is already set in the filter, it will automatically be added to all logs.
+
+✅ Example Usage in Service Layer
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -149,47 +101,246 @@ public class AddressService {
 
     private static final Logger logger = LoggerFactory.getLogger(AddressService.class);
 
-    public void processAddress(String addressCode) {
-        logger.info("Processing address request for {}", addressCode);
+    public AddressDTO processAddress(AddressSearchConditionsDTO searchConditions) {
+        logger.info("Processing request for address with search criteria: {}", MDC.get("inputFields"));
+
+        // Business logic...
+
+        return new AddressDTO(); // Replace with actual result
     }
 }
 
-📌 Example Request JSON
+✅ Example Usage in Repository Layer
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
+import org.springframework.stereotype.Repository;
+
+@Repository
+public class AddressRepository {
+
+    private static final Logger logger = LoggerFactory.getLogger(AddressRepository.class);
+
+    public void queryDatabase() {
+        logger.info("Executing query for input criteria: {}", MDC.get("inputFields"));
+
+        // Query execution logic...
+    }
+}
+
+📌 Example Log Output with MDC
+
+Now, all logs (Controller, Service, Repository) automatically include the requestId and inputFields:
+
+INFO [requestId=123e4567-e89b-12d3-a456-426614174000] [inputFields={addressCode=12345, address.postalCode=98765}]
+Controller - Received request to search address
+INFO [requestId=123e4567-e89b-12d3-a456-426614174000] [inputFields={addressCode=12345, address.postalCode=98765}]
+Service - Processing request for address with search criteria: {addressCode=12345, address.postalCode=98765}
+INFO [requestId=123e4567-e89b-12d3-a456-426614174000] [inputFields={addressCode=12345, address.postalCode=98765}]
+Repository - Executing query for input criteria: {addressCode=12345, address.postalCode=98765}
+
+**
+
+✅ Updated Global Exception Handler for All 6 Exceptions
+
+This will ensure all exceptions return an array of fields in the error response, following the same structured format.
+
+🔹 Key Enhancements
+
+✔ Handles all 6 exceptions with consistent error response structure.
+✔ Dynamically extracts request inputs from MDC.
+✔ Includes an array of fields in the details section for every error.
+
+📌 Updated GlobalExceptionHandler
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.MDC;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.validation.FieldError;
+import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+import com.azure.cosmos.CosmosException;
+import jakarta.servlet.http.HttpServletRequest;
+
+import java.util.*;
+import java.util.stream.Collectors;
+
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    /**
+     * Handle MethodArgumentNotValidException (Validation Errors)
+     */
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<ErrorResponseDTO> handleValidationException(
+            MethodArgumentNotValidException ex, HttpServletRequest request) {
+
+        List<ErrorDetailDTO> errors = ex.getBindingResult().getFieldErrors().stream()
+                .map(fieldError -> new ErrorDetailDTO(fieldError.getField(), fieldError.getDefaultMessage()))
+                .collect(Collectors.toList());
+
+        return buildErrorResponse(HttpStatus.BAD_REQUEST, "Validation error", errors);
+    }
+
+    /**
+     * Handle IllegalArgumentException (Invalid input cases)
+     */
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<ErrorResponseDTO> handleIllegalArgumentException(
+            IllegalArgumentException ex, HttpServletRequest request) {
+
+        List<ErrorDetailDTO> errors = extractInputFields();
+
+        return buildErrorResponse(HttpStatus.BAD_REQUEST, ex.getMessage(), errors);
+    }
+
+    /**
+     * Handle DataNotFoundException (Custom Exception for no data found)
+     */
+    @ExceptionHandler(DataNotFoundException.class)
+    public ResponseEntity<ErrorResponseDTO> handleDataNotFoundException(
+            DataNotFoundException ex, HttpServletRequest request) {
+
+        List<ErrorDetailDTO> errors = extractInputFields();
+
+        return buildErrorResponse(HttpStatus.NOT_FOUND, ex.getMessage(), errors);
+    }
+
+    /**
+     * Handle CosmosException (Database-related errors)
+     */
+    @ExceptionHandler(CosmosException.class)
+    public ResponseEntity<ErrorResponseDTO> handleCosmosException(
+            CosmosException ex, HttpServletRequest request) {
+
+        List<ErrorDetailDTO> errors = extractInputFields();
+
+        return buildErrorResponse(HttpStatus.INTERNAL_SERVER_ERROR, "Database error", errors);
+    }
+
+    /**
+     * Handle InvalidFormatException (JSON parsing issues)
+     */
+    @ExceptionHandler(com.fasterxml.jackson.databind.exc.InvalidFormatException.class)
+    public ResponseEntity<ErrorResponseDTO> handleInvalidFormatException(
+            com.fasterxml.jackson.databind.exc.InvalidFormatException ex, HttpServletRequest request) {
+
+        List<ErrorDetailDTO> errors = ex.getPath().stream()
+                .map(ref -> new ErrorDetailDTO(ref.getFieldName(), "Invalid value format"))
+                .collect(Collectors.toList());
+
+        return buildErrorResponse(HttpStatus.BAD_REQUEST, "Invalid input format", errors);
+    }
+
+    /**
+     * Handle Generic Exception (Fallback for all unhandled errors)
+     */
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<ErrorResponseDTO> handleGenericException(
+            Exception ex, HttpServletRequest request) {
+
+        List<ErrorDetailDTO> errors = extractInputFields();
+        if (errors.isEmpty()) {
+            errors.add(new ErrorDetailDTO("General", "Unexpected server error occurred"));
+        }
+
+        return buildErrorResponse(HttpStatus.INTERNAL_SERVER_ERROR, "Internal Server Error", errors);
+    }
+
+    /**
+     * Extract input fields dynamically from MDC (logged request attributes)
+     */
+    private List<ErrorDetailDTO> extractInputFields() {
+        List<ErrorDetailDTO> errors = new ArrayList<>();
+        String inputFieldsStr = MDC.get("inputFields");
+
+        if (inputFieldsStr != null) {
+            try {
+                Map<String, Object> inputFields = objectMapper.readValue(inputFieldsStr, Map.class);
+                for (Map.Entry<String, Object> entry : inputFields.entrySet()) {
+                    errors.add(new ErrorDetailDTO(entry.getKey(), "Processed before failure"));
+                }
+            } catch (Exception e) {
+                errors.add(new ErrorDetailDTO("Parsing Error", "Could not parse request fields"));
+            }
+        }
+        return errors;
+    }
+
+    /**
+     * Helper method to build structured error response
+     */
+    private ResponseEntity<ErrorResponseDTO> buildErrorResponse(
+            HttpStatus status, String message, List<ErrorDetailDTO> details) {
+
+        String requestId = MDC.get("requestId"); // Fetch request ID from MDC
+
+        ErrorResponseDTO errorResponse = new ErrorResponseDTO(
+                status.value(), message, details, requestId);
+        return ResponseEntity.status(status).body(errorResponse);
+    }
+}
+
+✅ Expected Error Response Format (With Array of Fields)
+
+📌 Example 1: 400 Bad Request (Validation Error)
+
+Request:
 
 {
-  "addressCode": "12345",
-  "characterSetType": "KANJI",
-  "address": {
-    "postalCode": "98765",
-    "city": "Tokyo",
-    "country": "Japan"
+  "addressCode": "",
+  "characterSetType": "INVALID",
+  "postalCode": ""
+}
+
+Response:
+
+{
+  "error": {
+    "code": "400",
+    "message": "Validation error",
+    "details": [
+      { "field": "addressCode", "issue": "Must not be empty" },
+      { "field": "characterSetType", "issue": "Invalid value" },
+      { "field": "postalCode", "issue": "Must not be empty" }
+    ],
+    "timestamp": "2025-03-05T10:30:00.456Z",
+    "requestId": "b5c8a2d3-6789-12ef-abcd-1234567890ff"
   }
 }
 
-🚨 Extracted MDC Context for Logging
+📌 Example 2: 404 Data Not Found
 
 {
-  "requestId": "b5c8a2d3-6789-12ef-abcd-1234567890ff",
-  "inputFields": {
-    "addressCode": "12345",
-    "characterSetType": "KANJI",
-    "address.postalCode": "98765",
-    "address.city": "Tokyo"
+  "error": {
+    "code": "404",
+    "message": "No data found for the given criteria",
+    "details": [
+      { "field": "addressCode", "issue": "Processed before failure" }
+    ],
+    "timestamp": "2025-03-05T10:45:00.789Z",
+    "requestId": "a1b2c3d4-5678-90ab-cdef-abcdef123456"
   }
 }
 
-🚀 Benefits of This Approach
+🚀 Summary
 
-Feature	Benefit
-✅ Stores Request ID in MDC	Automatically available in all logs.
-✅ Filters only selected fields	Reduces memory usage and logs only useful data.
-✅ Supports nested JSON fields	Extracts specific fields from objects like address.postalCode.
-✅ Ensures MDC is cleared after request	Prevents data leaks across requests.
-✅ Configurable fields via properties	No hardcoding required.
+Exception	HTTP Status	Details Field Includes
+MethodArgumentNotValidException	400 Bad Request	Fields that failed validation
+IllegalArgumentException	400 Bad Request	Extracted request fields
+DataNotFoundException	404 Not Found	Input fields used in the query
+CosmosException	500 Internal Server Error	Input fields used before failure
+InvalidFormatException	400 Bad Request	Fields with incorrect data format
+Exception (Generic)	500 Internal Server Error	Input fields or a fallback error
 
 🚀 Next Steps
-	•	Do you want to log only selected fields in logs instead of full request?
-	•	Should we filter out sensitive fields like passwords or tokens?
-	•	Would you like to apply this logic to query parameters as well?
+	•	Do you need logging of error responses in structured JSON format?
+	•	Should we capture query parameters in error details as well?
+	•	Would you like to return stack traces only in debug mode?
 
 Let me know how you’d like to refine it further! 🚀
