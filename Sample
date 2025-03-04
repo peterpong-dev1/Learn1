@@ -1,476 +1,11 @@
-Yes! We can dynamically collect only the non-null, non-empty input fields at the start, store them, and then use them when throwing the exception.
+The current filter only extracts top-level fields from the request body. If you need to extract specific fields inside nested objects (e.g., address.postalCode), we need to modify the logic to handle nested JSON structures dynamically.
 
-This approach ensures:
-	1.	No hardcoded field extraction – it works for any request structure.
-	2.	Reusability – store inputs once and use them in logs or exceptions.
-	3.	Cleaner code – avoid redundancy.
+✅ Updated Code: Extract Nested Fields from Objects (Like address.postalCode)
 
-🛠 Steps to Implement
-	1.	Collect non-null, non-empty input fields dynamically at the start in AddressServiceImpl.
-	2.	Pass this map to exception handling, so the same inputs are available in case of errors.
-	3.	Modify the exception class to hold the input fields.
-	4.	Modify the global exception handler to use these inputs.
-
-1️⃣ Collect Inputs Dynamically in Service Layer
-
-Instead of extracting manually, we dynamically collect all used inputs into a Map<String, Object>.
-
-public List<AddressModel> searchAddress(AddressSearchConditionsDTO searchConditions) {
-    // Collect non-null and non-empty input fields
-    Map<String, Object> usedInputs = new HashMap<>();
-
-    if (searchConditions.getAddressCode() != null && !searchConditions.getAddressCode().isEmpty()) {
-        usedInputs.put("addressCode", searchConditions.getAddressCode());
-    }
-    if (searchConditions.getAddress() != null) {
-        if (searchConditions.getAddress().getPostalCode() != null && 
-            !searchConditions.getAddress().getPostalCode().isEmpty()) {
-            usedInputs.put("postalCode", searchConditions.getAddress().getPostalCode());
-        }
-        if (searchConditions.getAddress().getCharacterSetType() != null) {
-            usedInputs.put("characterSetType", searchConditions.getAddress().getCharacterSetType());
-        }
-    }
-
-    // Perform the search
-    List<AddressModel> results = cosmosContainer.queryItems(
-        buildQuery(searchConditions),
-        new CosmosQueryRequestOptions(),
-        AddressModel.class)
-        .stream()
-        .collect(Collectors.toList());
-
-    // If no results, throw exception with collected inputs
-    if (results.isEmpty()) {
-        throw new DataNotFoundException("No records found for the given criteria", usedInputs);
-    }
-
-    return results;
-}
-
-2️⃣ Modify DataNotFoundException to Store Input Fields
-
-import java.util.Map;
-
-public class DataNotFoundException extends RuntimeException {
-    private final Map<String, Object> usedInputs;
-
-    public DataNotFoundException(String message, Map<String, Object> usedInputs) {
-        super(message);
-        this.usedInputs = usedInputs;
-    }
-
-    public Map<String, Object> getUsedInputs() {
-        return usedInputs;
-    }
-}
-
-3️⃣ Modify GlobalExceptionHandler to Include Inputs in Error Response
-
-Extract only the inputs that were actually used dynamically from DataNotFoundException.
-
-@ExceptionHandler(DataNotFoundException.class)
-public ResponseEntity<ErrorResponseDTO> handleDataNotFoundException(
-        DataNotFoundException ex, HttpServletRequest request) {
-
-    // Convert input parameters into error details dynamically
-    List<ErrorDetailDTO> errors = ex.getUsedInputs().entrySet()
-            .stream()
-            .map(entry -> new ErrorDetailDTO(entry.getKey(), "Used in query but no records found"))
-            .collect(Collectors.toList());
-
-    return buildErrorResponse(HttpStatus.NOT_FOUND, "Data not found", errors, request);
-}
-
-📌 Example Request
-
-{
-  "addressCode": "12345",
-  "address": {
-    "characterSetType": "KANJI",
-    "postalCode": "98765"
-  }
-}
-
-🚨 Error Response (404 - Data Not Found)
-
-{
-  "error": {
-    "code": "404",
-    "message": "Data not found",
-    "details": [
-      { "field": "addressCode", "issue": "Used in query but no records found" },
-      { "field": "postalCode", "issue": "Used in query but no records found" },
-      { "field": "characterSetType", "issue": "Used in query but no records found" }
-    ],
-    "timestamp": "2025-03-04T16:30:00.123Z",
-    "requestId": "a1b2c3d4-5678-90ab-cdef-1234567890ab"
-  }
-}
-
-🔹 Key Benefits
-
-✅ No hardcoding of input field extraction – works dynamically.
-✅ Single place for collecting input fields – ensures maintainability.
-✅ Works for all cases (whether 400 or 404) – just pass usedInputs.
-✅ Improved debugging – error message now contains actual query inputs.
-
-🚀 Next Steps
-	•	Do you want to log usedInputs before executing the query?
-	•	Should we include query execution time in the response for better debugging?
-	•	Would you like to apply the same logic for 400 - Bad Request errors?
-
-====6
-
-You’re welcome! Now, let’s apply the same logic for 400 (Bad Request) and 500 (Internal Server Error) so that error responses dynamically include the fields that were used in the request.
-
-🛠 Steps to Apply This Logic for 400 & 500 Errors
-	1.	Modify InvalidInputException to store input fields that caused validation errors.
-	2.	Modify GlobalExceptionHandler to extract inputs dynamically for 400 Bad Request.
-	3.	Modify GlobalExceptionHandler to extract inputs dynamically for 500 Internal Server Error.
-	4.	Ensure all errors follow the same structured format.
-
-1️⃣ Modify InvalidInputException to Store Input Fields
-
-Since validation errors (400) should also include which inputs were invalid, we update the exception to store input fields dynamically.
-
-import java.util.Map;
-
-public class InvalidInputException extends RuntimeException {
-    private final Map<String, Object> invalidFields;
-
-    public InvalidInputException(String message, Map<String, Object> invalidFields) {
-        super(message);
-        this.invalidFields = invalidFields;
-    }
-
-    public Map<String, Object> getInvalidFields() {
-        return invalidFields;
-    }
-}
-
-2️⃣ Throw InvalidInputException with Input Fields in Service Layer
-
-Whenever an input is missing or invalid, collect input fields dynamically and throw the exception.
-
-public void validateInput(AddressSearchConditionsDTO searchConditions) {
-    Map<String, Object> invalidInputs = new HashMap<>();
-
-    if (searchConditions.getAddressCode() == null || searchConditions.getAddressCode().trim().isEmpty()) {
-        invalidInputs.put("addressCode", "Must not be empty");
-    }
-    if (searchConditions.getAddress() == null) {
-        invalidInputs.put("address", "Address details are required");
-    } else {
-        if (searchConditions.getAddress().getPostalCode() == null || searchConditions.getAddress().getPostalCode().trim().isEmpty()) {
-            invalidInputs.put("postalCode", "Must not be empty");
-        }
-        if (searchConditions.getAddress().getCharacterSetType() == null) {
-            invalidInputs.put("characterSetType", "Invalid value");
-        }
-    }
-
-    if (!invalidInputs.isEmpty()) {
-        throw new InvalidInputException("Invalid input values", invalidInputs);
-    }
-}
-
-3️⃣ Modify Global Exception Handler for 400 Bad Request
-
-Extract only the fields that caused the issue dynamically from InvalidInputException.
-
-@ExceptionHandler(InvalidInputException.class)
-public ResponseEntity<ErrorResponseDTO> handleInvalidInputException(
-        InvalidInputException ex, HttpServletRequest request) {
-
-    // Convert invalid input fields dynamically into error details
-    List<ErrorDetailDTO> errors = ex.getInvalidFields().entrySet()
-            .stream()
-            .map(entry -> new ErrorDetailDTO(entry.getKey(), entry.getValue().toString()))
-            .collect(Collectors.toList());
-
-    return buildErrorResponse(HttpStatus.BAD_REQUEST, "Invalid input", errors, request);
-}
-
-4️⃣ Modify Global Exception Handler for 500 Internal Server Error
-
-When an unexpected error occurs, we try to extract input fields if they were captured before the failure.
-
-@ExceptionHandler(Exception.class)
-public ResponseEntity<ErrorResponseDTO> handleGenericException(
-        Exception ex, HttpServletRequest request) {
-
-    // Extract request attributes if available
-    Map<String, Object> requestParams = (Map<String, Object>) request.getAttribute("requestInputs");
-    List<ErrorDetailDTO> errors = new ArrayList<>();
-
-    if (requestParams != null) {
-        errors = requestParams.entrySet()
-                .stream()
-                .map(entry -> new ErrorDetailDTO(entry.getKey(), "Processed before failure"))
-                .collect(Collectors.toList());
-    } else {
-        errors.add(new ErrorDetailDTO("General", "Unexpected server error occurred"));
-    }
-
-    return buildErrorResponse(HttpStatus.INTERNAL_SERVER_ERROR, "Internal Server Error", errors, request);
-}
-
-5️⃣ Set Inputs as Request Attributes in Filter (Optional)
-
-If you want request parameters to always be available, even for unexpected errors (500), store them in a Spring Filter before calling the service.
-
-import jakarta.servlet.Filter;
-import jakarta.servlet.FilterChain;
-import jakarta.servlet.ServletRequest;
-import jakarta.servlet.ServletResponse;
-import jakarta.servlet.http.HttpServletRequest;
-import org.springframework.stereotype.Component;
-import com.fasterxml.jackson.databind.ObjectMapper;
-
-import java.io.IOException;
-import java.util.Map;
-
-@Component
-public class RequestInputFilter implements Filter {
-
-    private final ObjectMapper objectMapper = new ObjectMapper();
-
-    @Override
-    public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain) throws IOException {
-        if (request instanceof HttpServletRequest) {
-            HttpServletRequest httpRequest = (HttpServletRequest) request;
-            String requestBody = new String(httpRequest.getInputStream().readAllBytes());
-
-            if (!requestBody.isEmpty()) {
-                Map<String, Object> inputParams = objectMapper.readValue(requestBody, Map.class);
-                request.setAttribute("requestInputs", inputParams);
-            }
-        }
-        chain.doFilter(request, response);
-    }
-}
-
-📌 Example Request (400 - Invalid Input)
-
-{
-  "addressCode": "",
-  "address": {
-    "characterSetType": "",
-    "postalCode": ""
-  }
-}
-
-🚨 Error Response (400 - Bad Request)
-
-{
-  "error": {
-    "code": "400",
-    "message": "Invalid input",
-    "details": [
-      { "field": "addressCode", "issue": "Must not be empty" },
-      { "field": "characterSetType", "issue": "Invalid value" },
-      { "field": "postalCode", "issue": "Must not be empty" }
-    ],
-    "timestamp": "2025-03-04T16:45:00.123Z",
-    "requestId": "b5c8a2d3-6789-12ef-abcd-1234567890ff"
-  }
-}
-
-📌 Example Request (500 - Internal Server Error)
-
-(Simulated by causing an unexpected error)
-
-{
-  "addressCode": "12345",
-  "address": {
-    "characterSetType": "UNKNOWN_TYPE"
-  }
-}
-
-🚨 Error Response (500 - Internal Server Error)
-
-{
-  "error": {
-    "code": "500",
-    "message": "Internal Server Error",
-    "details": [
-      { "field": "addressCode", "issue": "Processed before failure" },
-      { "field": "characterSetType", "issue": "Processed before failure" }
-    ],
-    "timestamp": "2025-03-04T16:50:00.456Z",
-    "requestId": "c1d2e3f4-5678-90ab-cdef-abcdef123456"
-  }
-}
-
-🚀 Summary
-
-Step	Action
-1. Modify InvalidInputException	Store dynamically collected invalid fields.
-2. Modify Service Layer	Extract used input fields automatically.
-3. Modify GlobalExceptionHandler for 400	Dynamically create details array with invalid fields.
-4. Modify GlobalExceptionHandler for 500	Capture inputs processed before failure.
-5. Implement Request Filter (Optional)	Store input parameters globally for logging/debugging.
-
-✅ Now, all 400, 404, and 500 errors dynamically include request input fields.
-✅ Error responses are structured consistently across all failure scenarios.
-✅ Request attributes are stored before failure, even for unexpected crashes.
-
-🚀 Next Steps
-	•	Do you want to log requestInputs before executing the query?
-	•	Should we return stack traces only in debug mode for 500 errors?
-	•	Do you need this logic applied to query parameters as well?
-
-Let me know how you’d like to refine it further! 🚀
-
-=======
-
-Got it! Since you’re using IllegalArgumentException instead of a custom InvalidInputException, we’ll modify the Global Exception Handler to dynamically capture all invalid fields and send them in the error response.
-
-🛠 Steps to Modify
-	1.	Modify GlobalExceptionHandler to handle IllegalArgumentException properly.
-	2.	Ensure the service layer throws IllegalArgumentException with input fields.
-	3.	Format error response to include used input fields.
-
-1️⃣ Modify Global Exception Handler for IllegalArgumentException (400 Bad Request)
-
-Instead of using InvalidInputException, we will handle IllegalArgumentException directly and extract the input fields dynamically.
-
-@ExceptionHandler(IllegalArgumentException.class)
-public ResponseEntity<ErrorResponseDTO> handleIllegalArgumentException(
-        IllegalArgumentException ex, HttpServletRequest request) {
-
-    // Extract request attributes (inputs used before failure)
-    Map<String, Object> requestParams = (Map<String, Object>) request.getAttribute("requestInputs");
-
-    // Convert input parameters into error details dynamically
-    List<ErrorDetailDTO> errors = (requestParams != null)
-            ? requestParams.entrySet()
-                .stream()
-                .map(entry -> new ErrorDetailDTO(entry.getKey(), "Invalid or missing value"))
-                .collect(Collectors.toList())
-            : List.of(new ErrorDetailDTO("General", ex.getMessage()));
-
-    return buildErrorResponse(HttpStatus.BAD_REQUEST, "Invalid input", errors, request);
-}
-
-2️⃣ Throw IllegalArgumentException in Service Layer
-
-Whenever a required input is missing or invalid, collect input fields dynamically and throw IllegalArgumentException.
-
-public void validateInput(AddressSearchConditionsDTO searchConditions) {
-    Map<String, Object> invalidInputs = new HashMap<>();
-
-    if (searchConditions.getAddressCode() == null || searchConditions.getAddressCode().trim().isEmpty()) {
-        invalidInputs.put("addressCode", "Must not be empty");
-    }
-    if (searchConditions.getAddress() == null) {
-        invalidInputs.put("address", "Address details are required");
-    } else {
-        if (searchConditions.getAddress().getPostalCode() == null || searchConditions.getAddress().getPostalCode().trim().isEmpty()) {
-            invalidInputs.put("postalCode", "Must not be empty");
-        }
-        if (searchConditions.getAddress().getCharacterSetType() == null) {
-            invalidInputs.put("characterSetType", "Invalid value");
-        }
-    }
-
-    if (!invalidInputs.isEmpty()) {
-        throw new IllegalArgumentException("Invalid input values: " + invalidInputs.keySet());
-    }
-}
-
-3️⃣ Set Inputs as Request Attributes in Filter (Optional)
-
-This will ensure that request inputs are always available, even in 500 Internal Server Error cases.
-
-import jakarta.servlet.Filter;
-import jakarta.servlet.FilterChain;
-import jakarta.servlet.ServletRequest;
-import jakarta.servlet.ServletResponse;
-import jakarta.servlet.http.HttpServletRequest;
-import org.springframework.stereotype.Component;
-import com.fasterxml.jackson.databind.ObjectMapper;
-
-import java.io.IOException;
-import java.util.Map;
-
-@Component
-public class RequestInputFilter implements Filter {
-
-    private final ObjectMapper objectMapper = new ObjectMapper();
-
-    @Override
-    public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain) throws IOException {
-        if (request instanceof HttpServletRequest) {
-            HttpServletRequest httpRequest = (HttpServletRequest) request;
-            String requestBody = new String(httpRequest.getInputStream().readAllBytes());
-
-            if (!requestBody.isEmpty()) {
-                Map<String, Object> inputParams = objectMapper.readValue(requestBody, Map.class);
-                request.setAttribute("requestInputs", inputParams);
-            }
-        }
-        chain.doFilter(request, response);
-    }
-}
-
-📌 Example Request (400 - Invalid Input)
-
-{
-  "addressCode": "",
-  "address": {
-    "characterSetType": "",
-    "postalCode": ""
-  }
-}
-
-🚨 Error Response (400 - Bad Request)
-
-{
-  "error": {
-    "code": "400",
-    "message": "Invalid input",
-    "details": [
-      { "field": "addressCode", "issue": "Invalid or missing value" },
-      { "field": "characterSetType", "issue": "Invalid or missing value" },
-      { "field": "postalCode", "issue": "Invalid or missing value" }
-    ],
-    "timestamp": "2025-03-04T16:45:00.123Z",
-    "requestId": "b5c8a2d3-6789-12ef-abcd-1234567890ff"
-  }
-}
-
-🚀 Summary
-
-Step	Action
-1. Modify GlobalExceptionHandler	Dynamically extract invalid input fields from IllegalArgumentException
-2. Modify Service Layer	Collect missing/invalid input fields and throw IllegalArgumentException
-3. Implement Request Filter (Optional)	Store input parameters globally for logging/debugging
-
-✅ Now, 400 Bad Request errors dynamically include request input fields.
-✅ No need for a separate InvalidInputException – using IllegalArgumentException.
-✅ Ensures structured error responses for debugging.
-
-🚀 Next Steps
-	•	Do you want to log requestInputs before executing the query?
-	•	Should we include stack traces only in debug mode for 500 errors?
-	•	Do you need this logic applied to query parameters as well?
-
-
-🔹 Changes & Answer to Your Question
-	1.	Remove ContentCachingRequestWrapper
-	2.	Make ALLOWED_FIELDS configurable (from application.properties or application.yml)
-	3.	Yes, request ID and request fields can be implemented in the same filter
-
-✅ 1. Optimized Filter Without Wrapper & Configurable Allowed Fields
-
-Now, we:
-✔ Remove the unnecessary ContentCachingRequestWrapper
-✔ Load ALLOWED_FIELDS dynamically from application.properties
-✔ Extract both Request ID and Selected Fields in the same filter
-
-🛠 Updated RequestInputFilter
+We will:
+	1.	Check if a field is nested (e.g., address.postalCode).
+	2.	Recursively extract values from nested objects.
+	3.	Store only non-null values.
 
 import jakarta.servlet.Filter;
 import jakarta.servlet.FilterChain;
@@ -490,7 +25,7 @@ public class RequestInputFilter implements Filter {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    // Load allowed fields from configuration
+    // Load allowed fields from config (supports nested fields like "address.postalCode")
     @Value("#{'${logging.allowedFields}'.split(',')}")
     private List<String> allowedFields;
 
@@ -501,26 +36,21 @@ public class RequestInputFilter implements Filter {
         if (request instanceof HttpServletRequest) {
             HttpServletRequest httpRequest = (HttpServletRequest) request;
 
-            // Extract Request ID from headers (or generate if missing)
+            // Extract Request ID
             String requestId = httpRequest.getHeader("X-Request-ID");
             if (requestId == null || requestId.isEmpty()) {
                 requestId = UUID.randomUUID().toString();
             }
             request.setAttribute("requestId", requestId);
 
-            // Extract request body and filter allowed fields
+            // Read request body
             byte[] bodyBytes = request.getInputStream().readAllBytes();
             if (bodyBytes.length > 0) {
                 String requestBody = new String(bodyBytes, httpRequest.getCharacterEncoding());
                 Map<String, Object> inputParams = objectMapper.readValue(requestBody, Map.class);
 
-                // Filter only allowed fields
-                Map<String, Object> filteredInputs = new HashMap<>();
-                for (String key : allowedFields) {
-                    if (inputParams.containsKey(key)) {
-                        filteredInputs.put(key, inputParams.get(key));
-                    }
-                }
+                // Extract only allowed fields (including nested ones)
+                Map<String, Object> filteredInputs = extractAllowedFields(inputParams, allowedFields);
 
                 // Store selected fields in request attributes
                 request.setAttribute("requestInputs", filteredInputs);
@@ -529,88 +59,94 @@ public class RequestInputFilter implements Filter {
 
         chain.doFilter(request, response);
     }
-}
 
-✅ 2. Make Allowed Fields Configurable
+    /**
+     * Extracts allowed fields (including nested ones) from a given JSON map.
+     */
+    private Map<String, Object> extractAllowedFields(Map<String, Object> inputParams, List<String> allowedFields) {
+        Map<String, Object> filteredInputs = new HashMap<>();
 
-Modify application.properties (or application.yml) to define allowed fields dynamically.
+        for (String field : allowedFields) {
+            if (field.contains(".")) { // Handle nested fields
+                String[] fieldParts = field.split("\\.");
+                Object value = extractNestedValue(inputParams, fieldParts, 0);
+                if (value != null) {
+                    filteredInputs.put(field, value);
+                }
+            } else { // Handle top-level fields
+                if (inputParams.containsKey(field) && inputParams.get(field) != null) {
+                    filteredInputs.put(field, inputParams.get(field));
+                }
+            }
+        }
 
-📌 For application.properties
-
-logging.allowedFields=addressCode,characterSetType,postalCode
-
-📌 For application.yml
-
-logging:
-  allowedFields: addressCode,characterSetType,postalCode
-
-✅ 3. Modify GlobalExceptionHandler to Use Both Request ID & Inputs
-
-Now, both Request ID and Input Fields are dynamically included in error responses.
-
-@ExceptionHandler(Exception.class)
-public ResponseEntity<ErrorResponseDTO> handleGenericException(
-        Exception ex, HttpServletRequest request) {
-
-    // Extract stored request fields
-    Map<String, Object> requestParams = (Map<String, Object>) request.getAttribute("requestInputs");
-    String requestId = (String) request.getAttribute("requestId");
-
-    List<ErrorDetailDTO> errors = new ArrayList<>();
-    if (requestParams != null) {
-        errors = requestParams.entrySet()
-                .stream()
-                .map(entry -> new ErrorDetailDTO(entry.getKey(), "Processed before failure"))
-                .collect(Collectors.toList());
-    } else {
-        errors.add(new ErrorDetailDTO("General", "Unexpected server error occurred"));
+        return filteredInputs;
     }
 
-    return buildErrorResponse(HttpStatus.INTERNAL_SERVER_ERROR, "Internal Server Error", errors, requestId);
+    /**
+     * Recursively extracts a nested value from a JSON map based on field path.
+     */
+    private Object extractNestedValue(Map<String, Object> json, String[] fieldParts, int index) {
+        if (index >= fieldParts.length || json == null) {
+            return null;
+        }
+
+        Object value = json.get(fieldParts[index]);
+
+        if (index == fieldParts.length - 1) {
+            return value; // Found the final value
+        }
+
+        if (value instanceof Map) {
+            return extractNestedValue((Map<String, Object>) value, fieldParts, index + 1);
+        }
+
+        return null;
+    }
 }
 
-📌 Example Request
+✅ Configurable Nested Fields in application.properties
+
+Now, you can specify nested fields dynamically.
+
+logging.allowedFields=addressCode,characterSetType,address.postalCode,address.city
+
+📌 Example Request JSON
 
 {
   "addressCode": "12345",
   "characterSetType": "KANJI",
-  "postalCode": "98765",
+  "address": {
+    "postalCode": "98765",
+    "city": "Tokyo",
+    "country": "Japan"
+  },
   "otherField1": "Not Needed",
   "otherField2": "Ignore This"
 }
 
-🚨 Error Response (500 - Internal Server Error)
+🚨 Extracted Fields in Request Attributes
 
 {
-  "error": {
-    "code": "500",
-    "message": "Internal Server Error",
-    "details": [
-      { "field": "addressCode", "issue": "Processed before failure" },
-      { "field": "characterSetType", "issue": "Processed before failure" }
-    ],
-    "timestamp": "2025-03-04T17:30:00.123Z",
-    "requestId": "ab12cd34-ef56-7890-gh12-ijk345lmno67"
+  "requestId": "b5c8a2d3-6789-12ef-abcd-1234567890ff",
+  "requestInputs": {
+    "addressCode": "12345",
+    "characterSetType": "KANJI",
+    "address.postalCode": "98765",
+    "address.city": "Tokyo"
   }
 }
 
-🚀 Final Summary
+🚀 Key Features
 
-Feature	Updated Implementation
-Remove ContentCachingRequestWrapper	✅ Done (reading request directly)
-Make ALLOWED_FIELDS configurable	✅ Done (reads from application.properties or application.yml)
-Extract Request ID in same filter	✅ Done (stores X-Request-ID or generates one)
-Store request inputs as attributes	✅ Done (only logs selected fields)
+✅ Handles both top-level and nested fields dynamically
+✅ Extracts only non-null values
+✅ Configurable allowed fields from application.properties
+✅ Prevents unnecessary logging of irrelevant fields
 
 🚀 Next Steps
-	•	Should we log request inputs & request ID in application logs too?
-	•	Do you want to filter out sensitive fields like passwords or tokens?
+	•	Do you want to log only selected fields in logs instead of full request?
+	•	Should we filter out sensitive fields like passwords or tokens?
 	•	Would you like to apply this logic to query parameters as well?
 
 Let me know how you’d like to refine it further! 🚀
-
-
-
-Let me know how you’d like to refine it further! 🚀
-
-Let me know what improvements you need! 🚀
