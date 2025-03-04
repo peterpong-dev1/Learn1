@@ -323,6 +323,140 @@ Step	Action
 
 Let me know how you’d like to refine it further! 🚀
 
+=======
 
+Got it! Since you’re using IllegalArgumentException instead of a custom InvalidInputException, we’ll modify the Global Exception Handler to dynamically capture all invalid fields and send them in the error response.
+
+🛠 Steps to Modify
+	1.	Modify GlobalExceptionHandler to handle IllegalArgumentException properly.
+	2.	Ensure the service layer throws IllegalArgumentException with input fields.
+	3.	Format error response to include used input fields.
+
+1️⃣ Modify Global Exception Handler for IllegalArgumentException (400 Bad Request)
+
+Instead of using InvalidInputException, we will handle IllegalArgumentException directly and extract the input fields dynamically.
+
+@ExceptionHandler(IllegalArgumentException.class)
+public ResponseEntity<ErrorResponseDTO> handleIllegalArgumentException(
+        IllegalArgumentException ex, HttpServletRequest request) {
+
+    // Extract request attributes (inputs used before failure)
+    Map<String, Object> requestParams = (Map<String, Object>) request.getAttribute("requestInputs");
+
+    // Convert input parameters into error details dynamically
+    List<ErrorDetailDTO> errors = (requestParams != null)
+            ? requestParams.entrySet()
+                .stream()
+                .map(entry -> new ErrorDetailDTO(entry.getKey(), "Invalid or missing value"))
+                .collect(Collectors.toList())
+            : List.of(new ErrorDetailDTO("General", ex.getMessage()));
+
+    return buildErrorResponse(HttpStatus.BAD_REQUEST, "Invalid input", errors, request);
+}
+
+2️⃣ Throw IllegalArgumentException in Service Layer
+
+Whenever a required input is missing or invalid, collect input fields dynamically and throw IllegalArgumentException.
+
+public void validateInput(AddressSearchConditionsDTO searchConditions) {
+    Map<String, Object> invalidInputs = new HashMap<>();
+
+    if (searchConditions.getAddressCode() == null || searchConditions.getAddressCode().trim().isEmpty()) {
+        invalidInputs.put("addressCode", "Must not be empty");
+    }
+    if (searchConditions.getAddress() == null) {
+        invalidInputs.put("address", "Address details are required");
+    } else {
+        if (searchConditions.getAddress().getPostalCode() == null || searchConditions.getAddress().getPostalCode().trim().isEmpty()) {
+            invalidInputs.put("postalCode", "Must not be empty");
+        }
+        if (searchConditions.getAddress().getCharacterSetType() == null) {
+            invalidInputs.put("characterSetType", "Invalid value");
+        }
+    }
+
+    if (!invalidInputs.isEmpty()) {
+        throw new IllegalArgumentException("Invalid input values: " + invalidInputs.keySet());
+    }
+}
+
+3️⃣ Set Inputs as Request Attributes in Filter (Optional)
+
+This will ensure that request inputs are always available, even in 500 Internal Server Error cases.
+
+import jakarta.servlet.Filter;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletRequest;
+import jakarta.servlet.ServletResponse;
+import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.stereotype.Component;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import java.io.IOException;
+import java.util.Map;
+
+@Component
+public class RequestInputFilter implements Filter {
+
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    @Override
+    public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain) throws IOException {
+        if (request instanceof HttpServletRequest) {
+            HttpServletRequest httpRequest = (HttpServletRequest) request;
+            String requestBody = new String(httpRequest.getInputStream().readAllBytes());
+
+            if (!requestBody.isEmpty()) {
+                Map<String, Object> inputParams = objectMapper.readValue(requestBody, Map.class);
+                request.setAttribute("requestInputs", inputParams);
+            }
+        }
+        chain.doFilter(request, response);
+    }
+}
+
+📌 Example Request (400 - Invalid Input)
+
+{
+  "addressCode": "",
+  "address": {
+    "characterSetType": "",
+    "postalCode": ""
+  }
+}
+
+🚨 Error Response (400 - Bad Request)
+
+{
+  "error": {
+    "code": "400",
+    "message": "Invalid input",
+    "details": [
+      { "field": "addressCode", "issue": "Invalid or missing value" },
+      { "field": "characterSetType", "issue": "Invalid or missing value" },
+      { "field": "postalCode", "issue": "Invalid or missing value" }
+    ],
+    "timestamp": "2025-03-04T16:45:00.123Z",
+    "requestId": "b5c8a2d3-6789-12ef-abcd-1234567890ff"
+  }
+}
+
+🚀 Summary
+
+Step	Action
+1. Modify GlobalExceptionHandler	Dynamically extract invalid input fields from IllegalArgumentException
+2. Modify Service Layer	Collect missing/invalid input fields and throw IllegalArgumentException
+3. Implement Request Filter (Optional)	Store input parameters globally for logging/debugging
+
+✅ Now, 400 Bad Request errors dynamically include request input fields.
+✅ No need for a separate InvalidInputException – using IllegalArgumentException.
+✅ Ensures structured error responses for debugging.
+
+🚀 Next Steps
+	•	Do you want to log requestInputs before executing the query?
+	•	Should we include stack traces only in debug mode for 500 errors?
+	•	Do you need this logic applied to query parameters as well?
+
+Let me know how you’d like to refine it further! 🚀
 
 Let me know what improvements you need! 🚀
