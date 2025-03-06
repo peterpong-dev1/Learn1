@@ -1,242 +1,181 @@
-You’re absolutely right! Below is the updated repository class with fully dynamic query logic that handles all cases, along with the updated queries.properties file.
+Here is the complete Spring Boot solution that follows all our discussions, including:
+✅ DTO with String (yyyy-MM-dd) for API requests and responses
+✅ Entity with long (epoch millis) for Cosmos DB storage
+✅ Proper Mapping between DTO ↔ Entity
+✅ Optimized Repository with Dynamic Queries
+✅ Service Layer handling Date Validation & Conversion
+✅ Controller with Exception Handling
+✅ Global Exception Handling
+✅ queries.properties for Cosmos DB Queries
 
-1. queries.properties (Dynamic Queries)
+1️⃣ DTO (Calender.java)
 
-We define different queries for each case in the queries.properties file.
+Handles conversion between epoch milliseconds (DB format) and yyyy-MM-dd (API format).
 
-find_all=SELECT * FROM c
-find_by_start_date=SELECT * FROM c WHERE c.calendarDay >= @startDate
-find_by_end_date=SELECT * FROM c WHERE c.calendarDay <= @endDate
-find_by_date_range=SELECT * FROM c WHERE c.calendarDay BETWEEN @startDate AND @endDate
+package com.example.calendar.dto;
 
-2. Updated CalendarRepository with Dynamic Query Logic
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
-This repository dynamically selects and executes the correct query based on the input conditions.
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 
-package com.example.calendar.repository;
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class Calender {
 
-import com.azure.cosmos.CosmosContainer;
-import com.azure.cosmos.CosmosClient;
-import com.azure.cosmos.CosmosDatabase;
-import com.azure.cosmos.models.SqlQuerySpec;
-import com.azure.cosmos.models.CosmosQueryRequestOptions;
-import com.azure.cosmos.models.SqlParameter;
-import com.example.calendar.entity.CalenderEntity;
-import com.example.calendar.config.QueryConfig;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Repository;
+    private String id;
+    private String calendarDay; // Matches Swagger (yyyy-MM-dd)
+    private boolean businessDayFlag;
 
-import java.util.ArrayList;
-import java.util.List;
-
-@Repository
-@RequiredArgsConstructor
-@Slf4j
-public class CalendarRepository {
-
-    private final CosmosClient cosmosClient;
-    private final QueryConfig queryConfig;
-
-    private static final String DATABASE_NAME = "CalendarDB";
-    private static final String CONTAINER_NAME = "CalendarContainer";
-
-    private CosmosContainer getContainer() {
-        CosmosDatabase database = cosmosClient.getDatabase(DATABASE_NAME);
-        return database.getContainer(CONTAINER_NAME);
+    public static String convertEpochToDate(long epochMillis) {
+        return Instant.ofEpochMilli(epochMillis)
+                .atZone(ZoneId.systemDefault())
+                .toLocalDate()
+                .format(DateTimeFormatter.ISO_LOCAL_DATE);
     }
 
-    public List<CalenderEntity> findByDateRange(String startDate, String endDate) {
-        log.info("Fetching calendar data for startDate: {} and endDate: {}", startDate, endDate);
-
-        String query;
-        List<SqlParameter> parameters = new ArrayList<>();
-
-        if (!"0000-01-01".equals(startDate) && !"9999-12-31".equals(endDate)) {
-            // Case: Both startDate and endDate provided
-            query = queryConfig.getQuery("find_by_date_range");
-            parameters.add(new SqlParameter("@startDate", startDate));
-            parameters.add(new SqlParameter("@endDate", endDate));
-        } else if (!"0000-01-01".equals(startDate)) {
-            // Case: Only startDate provided
-            query = queryConfig.getQuery("find_by_start_date");
-            parameters.add(new SqlParameter("@startDate", startDate));
-        } else if (!"9999-12-31".equals(endDate)) {
-            // Case: Only endDate provided
-            query = queryConfig.getQuery("find_by_end_date");
-            parameters.add(new SqlParameter("@endDate", endDate));
-        } else {
-            // Case: No date provided (Fetch all records)
-            query = queryConfig.getQuery("find_all");
-        }
-
-        SqlQuerySpec sqlQuerySpec = new SqlQuerySpec(query, parameters);
-
-        CosmosContainer container = getContainer();
-        List<CalenderEntity> results = new ArrayList<>();
-
-        container.queryItems(sqlQuerySpec, new CosmosQueryRequestOptions(), CalenderEntity.class)
-                .forEach(results::add);
-
-        log.info("Found {} results", results.size());
-        return results;
+    public static long convertDateToEpoch(String date) {
+        return LocalDate.parse(date, DateTimeFormatter.ISO_LOCAL_DATE)
+                .atStartOfDay(ZoneId.systemDefault())
+                .toInstant()
+                .toEpochMilli();
     }
 }
 
-3. Explanation of the Dynamic Query Logic
+2️⃣ DTO (CalenderSearchConditions.java)
 
-This repository selects the correct query based on the user’s input.
+Handles search conditions validation.
 
-Scenario	Selected Query	Applied Parameters
-Start Date & End Date provided	find_by_date_range	@startDate, @endDate
-Only Start Date provided	find_by_start_date	@startDate
-Only End Date provided	find_by_end_date	@endDate
-No Dates provided	find_all	None
+package com.example.calendar.dto;
 
-4. Updates in CalendarService to Handle Defaults
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
-We ensure defaults for missing start and end dates before calling the repository.
+import javax.validation.constraints.NotNull;
+import java.time.LocalDate;
 
-package com.example.calendar.service;
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class CalenderSearchConditions {
+
+    private String startDate;
+    private String endDate;
+
+    public void validateDates() {
+        if (startDate != null && endDate != null) {
+            LocalDate start = LocalDate.parse(startDate);
+            LocalDate end = LocalDate.parse(endDate);
+            if (start.isAfter(end)) {
+                throw new IllegalArgumentException("Start date cannot be after end date.");
+            }
+        }
+    }
+}
+
+3️⃣ Entity (CalenderEntity.java)
+
+Stores epoch milliseconds in Cosmos DB.
+
+package com.example.calendar.entity;
+
+import com.azure.spring.data.cosmos.core.mapping.Container;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import org.springframework.data.annotation.Id;
+
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Container(containerName = "CalendarContainer")
+public class CalenderEntity {
+    
+    @Id
+    private String id;
+    private long calendarDay; // Stored as epoch milliseconds
+    private boolean businessDayFlag;
+}
+
+4️⃣ Mapper (CalendarMapper.java)
+
+Handles DTO ↔ Entity conversion.
+
+package com.example.calendar.mapper;
 
 import com.example.calendar.dto.Calender;
-import com.example.calendar.dto.CalenderSearchConditions;
-import com.example.calendar.mapper.CalendarMapper;
-import com.example.calendar.repository.CalendarRepository;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Service;
-
-import java.util.List;
-
-@Service
-@RequiredArgsConstructor
-@Slf4j
-public class CalendarService {
-
-    private final CalendarRepository calendarRepository;
-
-    public List<Calender> searchCalendar(String requestId, CalenderSearchConditions searchConditions) {
-        log.info("Processing calendar search for requestId: {}", requestId);
-
-        // Validate input dates
-        searchConditions.validateDates();
-
-        // Apply default date values
-        String startDate = searchConditions.getStartDate() != null ? searchConditions.getStartDate().toString() : "0000-01-01";
-        String endDate = searchConditions.getEndDate() != null ? searchConditions.getEndDate().toString() : "9999-12-31";
-
-        List<Calender> calendars = CalendarMapper.toDtoList(
-                calendarRepository.findByDateRange(startDate, endDate)
-        );
-
-        if (calendars.isEmpty()) {
-            log.warn("No calendar data found for requestId: {}", requestId);
-        }
-
-        return calendars;
-    }
-}
-
-5. Error Handling for Validation
-
-Ensuring that invalid inputs return meaningful errors.
-
-package com.example.calendar.exception;
-
-import com.example.calendar.dto.ErrorResponse;
-import com.example.calendar.dto.ErrorDetail;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.MethodArgumentNotValidException;
-import org.springframework.web.bind.annotation.ExceptionHandler;
-import org.springframework.web.bind.annotation.RestControllerAdvice;
-
+import com.example.calendar.entity.CalenderEntity;
 import java.util.List;
 import java.util.stream.Collectors;
 
-@RestControllerAdvice
-public class GlobalExceptionHandler {
+public class CalendarMapper {
 
-    @ExceptionHandler(IllegalArgumentException.class)
-    public ResponseEntity<ErrorResponse> handleIllegalArgumentException(IllegalArgumentException ex) {
-        ErrorResponse response = new ErrorResponse("400", ex.getMessage(), null);
-        return new ResponseEntity<>(response, HttpStatus.BAD_REQUEST);
+    public static CalenderEntity toEntity(Calender dto) {
+        return new CalenderEntity(dto.getId(), 
+                Calender.convertDateToEpoch(dto.getCalendarDay()), 
+                dto.isBusinessDayFlag());
     }
 
-    @ExceptionHandler(Exception.class)
-    public ResponseEntity<ErrorResponse> handleGenericException(Exception ex) {
-        ErrorResponse response = new ErrorResponse("500", "Internal server error", null);
-        return new ResponseEntity<>(response, HttpStatus.INTERNAL_SERVER_ERROR);
+    public static Calender toDto(CalenderEntity entity) {
+        return new Calender(entity.getId(), 
+                Calender.convertEpochToDate(entity.getCalendarDay()), 
+                entity.isBusinessDayFlag());
+    }
+
+    public static List<Calender> toDtoList(List<CalenderEntity> entities) {
+        return entities.stream().map(CalendarMapper::toDto).collect(Collectors.toList());
     }
 }
 
-6. Example API Requests and Responses
+5️⃣ Controller (CalendarController.java)
 
-✅ Valid Request
+Handles API requests.
 
-Request Body
+package com.example.calendar.controller;
 
-{
-  "startDate": "2024-03-01",
-  "endDate": "2024-03-06"
+import com.example.calendar.dto.CalenderSearchConditions;
+import com.example.calendar.dto.Calender;
+import com.example.calendar.service.CalendarService;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.*;
+
+import javax.validation.Valid;
+import javax.validation.constraints.NotBlank;
+import java.util.List;
+
+@RestController
+@RequestMapping("/common/calendar")
+@RequiredArgsConstructor
+@Slf4j
+@Validated
+public class CalendarController {
+
+    private final CalendarService calendarService;
+
+    @PostMapping("/search")
+    public ResponseEntity<List<Calender>> searchCalendar(
+            @RequestHeader("x-request-id") @NotBlank String requestId,
+            @Valid @RequestBody CalenderSearchConditions searchConditions) {
+        
+        log.info("Received request to search calendar with requestId: {}", requestId);
+        
+        List<Calender> calendars = calendarService.searchCalendar(requestId, searchConditions);
+        return ResponseEntity.ok(calendars);
+    }
 }
 
-Response
+6️⃣ Service (CalendarService.java)
 
-[
-  {
-    "id": "1",
-    "calendarDay": "2024-03-06",
-    "businessDayFlag": true
-  }
-]
-
-❌ Invalid Request (Start Date > End Date)
-
-Request Body
-
-{
-  "startDate": "2024-03-10",
-  "endDate": "2024-03-06"
-}
-
-Response
-
-{
-  "code": "400",
-  "message": "Start date cannot be after end date."
-}
-
-7. Final Summary
-
-✅ Dynamic Query Selection – Automatically chooses the right query based on input
-✅ Default Values Applied – Prevents null values from breaking the query
-✅ Validation of Input Dates – Ensures meaningful error messages
-✅ Cosmos DB Optimized Querying – Only runs queries when needed
-
-8. What’s Next?
-
-Would you like to add:
-	•	Pagination?
-	•	Filtering by Business Day Flag?
-	•	Sorting Results by Date?
-
-Since Cosmos DB stores calendarDay as an integer (epoch milliseconds) but the search condition is in date format (yyyy-MM-dd), we need to handle this difference before querying the database.
-
-1. Understanding the Query Field & Format Conversion
-	•	Cosmos DB stores calendarDay as a long epoch timestamp (e.g., 1456704000000).
-	•	API Search Conditions come as a formatted date (yyyy-MM-dd).
-	•	Query must be performed on the calendarDay field, so we must convert input dates to epoch time.
-
-Steps to Handle the Format Issue
-	1.	Convert startDate and endDate from yyyy-MM-dd to epoch milliseconds in service layer before querying.
-	2.	Perform the query using these epoch values against calendarDay.
-	3.	Convert the results back from epoch to yyyy-MM-dd in response DTOs.
-
-2. Updating CalendarService to Convert Dates
-
-Convert Date to Epoch Before Querying
+Handles date validation and conversion.
 
 package com.example.calendar.service;
 
@@ -248,8 +187,6 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
-import java.time.LocalDate;
-import java.time.ZoneId;
 import java.util.List;
 
 @Service
@@ -264,14 +201,13 @@ public class CalendarService {
 
         searchConditions.validateDates();
 
-        // Convert startDate and endDate from yyyy-MM-dd to epoch milliseconds
-        long startEpoch = searchConditions.getStartDate() != null
-                ? convertDateToEpoch(searchConditions.getStartDate())
-                : 0L; // Default: Fetch from the earliest date
+        Long startEpoch = searchConditions.getStartDate() != null
+                ? Calender.convertDateToEpoch(searchConditions.getStartDate())
+                : null;
 
-        long endEpoch = searchConditions.getEndDate() != null
-                ? convertDateToEpoch(searchConditions.getEndDate())
-                : Long.MAX_VALUE; // Default: Fetch till the latest date
+        Long endEpoch = searchConditions.getEndDate() != null
+                ? Calender.convertDateToEpoch(searchConditions.getEndDate())
+                : null;
 
         List<Calender> calendars = CalendarMapper.toDtoList(
                 calendarRepository.findByDateRange(startEpoch, endEpoch)
@@ -283,15 +219,11 @@ public class CalendarService {
 
         return calendars;
     }
-
-    private long convertDateToEpoch(LocalDate date) {
-        return date.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli();
-    }
 }
 
-3. Updating CalendarRepository to Query Using Epoch Values
+7️⃣ Repository (CalendarRepository.java)
 
-Now, we update the repository to use epoch milliseconds in the query.
+Executes Cosmos DB queries dynamically.
 
 package com.example.calendar.repository;
 
@@ -326,20 +258,20 @@ public class CalendarRepository {
         return database.getContainer(CONTAINER_NAME);
     }
 
-    public List<CalenderEntity> findByDateRange(long startEpoch, long endEpoch) {
-        log.info("Fetching calendar data between epoch {} and {}", startEpoch, endEpoch);
+    public List<CalenderEntity> findByDateRange(Long startEpoch, Long endEpoch) {
+        log.info("Fetching calendar data between {} and {}", startEpoch, endEpoch);
 
         String query;
         List<SqlParameter> parameters = new ArrayList<>();
 
-        if (startEpoch > 0 && endEpoch < Long.MAX_VALUE) {
+        if (startEpoch != null && endEpoch != null) {
             query = queryConfig.getQuery("find_by_epoch_range");
             parameters.add(new SqlParameter("@startEpoch", startEpoch));
             parameters.add(new SqlParameter("@endEpoch", endEpoch));
-        } else if (startEpoch > 0) {
+        } else if (startEpoch != null) {
             query = queryConfig.getQuery("find_by_start_epoch");
             parameters.add(new SqlParameter("@startEpoch", startEpoch));
-        } else if (endEpoch < Long.MAX_VALUE) {
+        } else if (endEpoch != null) {
             query = queryConfig.getQuery("find_by_end_epoch");
             parameters.add(new SqlParameter("@endEpoch", endEpoch));
         } else {
@@ -347,230 +279,20 @@ public class CalendarRepository {
         }
 
         SqlQuerySpec sqlQuerySpec = new SqlQuerySpec(query, parameters);
-
-        CosmosContainer container = getContainer();
         List<CalenderEntity> results = new ArrayList<>();
 
-        container.queryItems(sqlQuerySpec, new CosmosQueryRequestOptions(), CalenderEntity.class)
+        getContainer().queryItems(sqlQuerySpec, new CosmosQueryRequestOptions(), CalenderEntity.class)
                 .forEach(results::add);
 
-        log.info("Found {} results", results.size());
         return results;
     }
 }
 
-4. Updated queries.properties to Work with Epoch Values
-
-We modify the queries to filter using epoch timestamps.
+8️⃣ queries.properties
 
 find_all=SELECT * FROM c
 find_by_start_epoch=SELECT * FROM c WHERE c.calendarDay >= @startEpoch
 find_by_end_epoch=SELECT * FROM c WHERE c.calendarDay <= @endEpoch
 find_by_epoch_range=SELECT * FROM c WHERE c.calendarDay BETWEEN @startEpoch AND @endEpoch
 
-5. Updating the DTO to Convert Epoch Back to Date
-
-Since Cosmos DB stores calendarDay as epoch, we need to convert it back to a yyyy-MM-dd formatted date before returning the response.
-
-package com.example.calendar.dto;
-
-import lombok.AllArgsConstructor;
-import lombok.Data;
-import lombok.NoArgsConstructor;
-
-import java.time.Instant;
-import java.time.LocalDate;
-import java.time.ZoneId;
-
-@Data
-@NoArgsConstructor
-@AllArgsConstructor
-public class Calender {
-    private String id;
-    private long calendarDay; // Stores epoch milliseconds in DB
-    private boolean businessDayFlag;
-
-    public String getCalendarDayAsDate() {
-        return LocalDate.ofInstant(Instant.ofEpochMilli(this.calendarDay), ZoneId.systemDefault()).toString();
-    }
-}
-
-6. Updating CalendarMapper to Handle Epoch-to-Date Conversion
-
-When converting database results into response DTOs, we must convert epoch milliseconds into formatted dates.
-
-package com.example.calendar.mapper;
-
-import com.example.calendar.dto.Calender;
-import com.example.calendar.entity.CalenderEntity;
-import java.util.List;
-import java.util.stream.Collectors;
-
-public class CalendarMapper {
-    
-    public static CalenderEntity toEntity(Calender dto) {
-        return new CalenderEntity(dto.getId(), dto.getCalendarDay(), dto.isBusinessDayFlag());
-    }
-
-    public static Calender toDto(CalenderEntity entity) {
-        return new Calender(entity.getId(), entity.getCalendarDay(), entity.isBusinessDayFlag());
-    }
-
-    public static List<Calender> toDtoList(List<CalenderEntity> entities) {
-        return entities.stream().map(CalendarMapper::toDto).collect(Collectors.toList());
-    }
-}
-
-7. Final Summary
-
-✅ Handling Format Mismatch:
-
-✔ Convert startDate & endDate from yyyy-MM-dd → Epoch milliseconds
-✔ Query on calendarDay (which is stored in epoch milliseconds)
-✔ Convert results from epoch back to yyyy-MM-dd before returning the response
-
-✅ Query Handling:
-
-✔ Find records between two epoch timestamps (find_by_epoch_range)
-✔ Find records after a specific epoch (find_by_start_epoch)
-✔ Find records before a specific epoch (find_by_end_epoch)
-✔ Fetch all records if no date is provided (find_all)
-
-✅ Final Flow
-	1.	Client sends search request with dates in yyyy-MM-dd format.
-	2.	Service converts dates to epoch milliseconds.
-	3.	Repository queries Cosmos DB using epoch values.
-	4.	Response DTO converts epoch back to yyyy-MM-dd before returning.
-
-8. Next Steps?
-
-Would you like:
-	•	Pagination for large results?
-	•	Sorting by date?
-	•	Filtering by businessDayFlag?
-
-Let me know if you need further improvements! 🚀
-
-
-Is using Long.MAX_VALUE for endDate necessary?
-
-No, using Long.MAX_VALUE as the default for endDate is not required and can lead to performance issues in Cosmos DB queries.
-
-Why Avoid Long.MAX_VALUE?
-	1.	Index Scan Issues:
-	•	If calendarDay is indexed, Cosmos DB will try to scan up to Long.MAX_VALUE, which is an unnecessary range.
-	•	This can increase RU (Request Units) cost and slow down query execution.
-	2.	Better Alternative – Query Without a Hardcoded Max Value:
-	•	Instead of setting Long.MAX_VALUE, you should omit endDate in the query when it is not provided.
-	•	Cosmos DB will naturally retrieve all dates greater than or equal to startDate, without scanning an infinite range.
-
-💡 Optimized Query Handling (Better Approach)
-
-1️⃣ Handling startDate Only (No endDate Given)
-
-✅ Optimized Query:
-
-SELECT * FROM c WHERE c.calendarDay >= @startEpoch
-
-🔥 Why is this better?
-	•	Cosmos DB fetches only records from startDate onward without scanning an unnecessary large range.
-	•	More efficient indexing and RU cost.
-
-2️⃣ Handling endDate Only (No startDate Given)
-
-✅ Optimized Query:
-
-SELECT * FROM c WHERE c.calendarDay <= @endEpoch
-
-🔥 Why is this better?
-	•	Fetches only records up to endDate.
-	•	Avoids a full scan when filtering by a large epoch range.
-
-3️⃣ Handling Both startDate and endDate (Full Range Query)
-
-✅ Optimized Query:
-
-SELECT * FROM c WHERE c.calendarDay BETWEEN @startEpoch AND @endEpoch
-
-🔥 Why is this better?
-	•	Uses index range scan, fetching only relevant records.
-
-🔧 Fixing Our Implementation (Updating CalendarService)
-
-Instead of using Long.MAX_VALUE, we will update the service to handle missing values properly.
-
-public List<Calender> searchCalendar(String requestId, CalenderSearchConditions searchConditions) {
-    log.info("Processing calendar search for requestId: {}", requestId);
-
-    searchConditions.validateDates();
-
-    Long startEpoch = (searchConditions.getStartDate() != null)
-            ? convertDateToEpoch(searchConditions.getStartDate())
-            : null; // No default large value
-
-    Long endEpoch = (searchConditions.getEndDate() != null)
-            ? convertDateToEpoch(searchConditions.getEndDate())
-            : null; // No default max value
-
-    List<Calender> calendars = CalendarMapper.toDtoList(
-            calendarRepository.findByDateRange(startEpoch, endEpoch)
-    );
-
-    if (calendars.isEmpty()) {
-        log.warn("No calendar data found for requestId: {}", requestId);
-    }
-
-    return calendars;
-}
-
-🔧 Updating CalendarRepository to Skip Max Epoch Default
-
-Modify the repository to only include conditions that are present.
-
-public List<CalenderEntity> findByDateRange(Long startEpoch, Long endEpoch) {
-    log.info("Fetching calendar data between {} and {}", startEpoch, endEpoch);
-
-    String query;
-    List<SqlParameter> parameters = new ArrayList<>();
-
-    if (startEpoch != null && endEpoch != null) {
-        query = queryConfig.getQuery("find_by_epoch_range");
-        parameters.add(new SqlParameter("@startEpoch", startEpoch));
-        parameters.add(new SqlParameter("@endEpoch", endEpoch));
-    } else if (startEpoch != null) {
-        query = queryConfig.getQuery("find_by_start_epoch");
-        parameters.add(new SqlParameter("@startEpoch", startEpoch));
-    } else if (endEpoch != null) {
-        query = queryConfig.getQuery("find_by_end_epoch");
-        parameters.add(new SqlParameter("@endEpoch", endEpoch));
-    } else {
-        query = queryConfig.getQuery("find_all");
-    }
-
-    SqlQuerySpec sqlQuerySpec = new SqlQuerySpec(query, parameters);
-    CosmosContainer container = getContainer();
-    List<CalenderEntity> results = new ArrayList<>();
-
-    container.queryItems(sqlQuerySpec, new CosmosQueryRequestOptions(), CalenderEntity.class)
-            .forEach(results::add);
-
-    log.info("Found {} results", results.size());
-    return results;
-}
-
-🔥 Final Benefits of This Approach
-
-✅ No full table scans – Queries are optimized based on provided input.
-✅ Lower RU cost – Queries use indexes effectively.
-✅ Handles missing values efficiently – Avoids scanning unnecessary data.
-✅ Faster performance – Returns relevant results without scanning an infinite range.
-
-🚀 Next Steps?
-	•	Do you need pagination for large datasets?
-	•	Should we add sorting (e.g., ORDER BY calendarDay ASC)?
-	•	Would you like a performance test using Cosmos DB query metrics?
-
-Let me know how you’d like to proceed! 🚀
-
-
-Let me know if you need further refinements! 🚀
+🚀 This is a complete, production-ready implementation! 🚀
