@@ -452,7 +452,125 @@ Would you like:
 Let me know if you need further improvements! 🚀
 
 
+Is using Long.MAX_VALUE for endDate necessary?
 
+No, using Long.MAX_VALUE as the default for endDate is not required and can lead to performance issues in Cosmos DB queries.
+
+Why Avoid Long.MAX_VALUE?
+	1.	Index Scan Issues:
+	•	If calendarDay is indexed, Cosmos DB will try to scan up to Long.MAX_VALUE, which is an unnecessary range.
+	•	This can increase RU (Request Units) cost and slow down query execution.
+	2.	Better Alternative – Query Without a Hardcoded Max Value:
+	•	Instead of setting Long.MAX_VALUE, you should omit endDate in the query when it is not provided.
+	•	Cosmos DB will naturally retrieve all dates greater than or equal to startDate, without scanning an infinite range.
+
+💡 Optimized Query Handling (Better Approach)
+
+1️⃣ Handling startDate Only (No endDate Given)
+
+✅ Optimized Query:
+
+SELECT * FROM c WHERE c.calendarDay >= @startEpoch
+
+🔥 Why is this better?
+	•	Cosmos DB fetches only records from startDate onward without scanning an unnecessary large range.
+	•	More efficient indexing and RU cost.
+
+2️⃣ Handling endDate Only (No startDate Given)
+
+✅ Optimized Query:
+
+SELECT * FROM c WHERE c.calendarDay <= @endEpoch
+
+🔥 Why is this better?
+	•	Fetches only records up to endDate.
+	•	Avoids a full scan when filtering by a large epoch range.
+
+3️⃣ Handling Both startDate and endDate (Full Range Query)
+
+✅ Optimized Query:
+
+SELECT * FROM c WHERE c.calendarDay BETWEEN @startEpoch AND @endEpoch
+
+🔥 Why is this better?
+	•	Uses index range scan, fetching only relevant records.
+
+🔧 Fixing Our Implementation (Updating CalendarService)
+
+Instead of using Long.MAX_VALUE, we will update the service to handle missing values properly.
+
+public List<Calender> searchCalendar(String requestId, CalenderSearchConditions searchConditions) {
+    log.info("Processing calendar search for requestId: {}", requestId);
+
+    searchConditions.validateDates();
+
+    Long startEpoch = (searchConditions.getStartDate() != null)
+            ? convertDateToEpoch(searchConditions.getStartDate())
+            : null; // No default large value
+
+    Long endEpoch = (searchConditions.getEndDate() != null)
+            ? convertDateToEpoch(searchConditions.getEndDate())
+            : null; // No default max value
+
+    List<Calender> calendars = CalendarMapper.toDtoList(
+            calendarRepository.findByDateRange(startEpoch, endEpoch)
+    );
+
+    if (calendars.isEmpty()) {
+        log.warn("No calendar data found for requestId: {}", requestId);
+    }
+
+    return calendars;
+}
+
+🔧 Updating CalendarRepository to Skip Max Epoch Default
+
+Modify the repository to only include conditions that are present.
+
+public List<CalenderEntity> findByDateRange(Long startEpoch, Long endEpoch) {
+    log.info("Fetching calendar data between {} and {}", startEpoch, endEpoch);
+
+    String query;
+    List<SqlParameter> parameters = new ArrayList<>();
+
+    if (startEpoch != null && endEpoch != null) {
+        query = queryConfig.getQuery("find_by_epoch_range");
+        parameters.add(new SqlParameter("@startEpoch", startEpoch));
+        parameters.add(new SqlParameter("@endEpoch", endEpoch));
+    } else if (startEpoch != null) {
+        query = queryConfig.getQuery("find_by_start_epoch");
+        parameters.add(new SqlParameter("@startEpoch", startEpoch));
+    } else if (endEpoch != null) {
+        query = queryConfig.getQuery("find_by_end_epoch");
+        parameters.add(new SqlParameter("@endEpoch", endEpoch));
+    } else {
+        query = queryConfig.getQuery("find_all");
+    }
+
+    SqlQuerySpec sqlQuerySpec = new SqlQuerySpec(query, parameters);
+    CosmosContainer container = getContainer();
+    List<CalenderEntity> results = new ArrayList<>();
+
+    container.queryItems(sqlQuerySpec, new CosmosQueryRequestOptions(), CalenderEntity.class)
+            .forEach(results::add);
+
+    log.info("Found {} results", results.size());
+    return results;
+}
+
+🔥 Final Benefits of This Approach
+
+✅ No full table scans – Queries are optimized based on provided input.
+✅ Lower RU cost – Queries use indexes effectively.
+✅ Handles missing values efficiently – Avoids scanning unnecessary data.
+✅ Faster performance – Returns relevant results without scanning an infinite range.
+
+🚀 Next Steps?
+	•	Do you need pagination for large datasets?
+	•	Should we add sorting (e.g., ORDER BY calendarDay ASC)?
+	•	Would you like a performance test using Cosmos DB query metrics?
+
+Let me know how you’d like to proceed! 🚀
 
 
 Let me know if you need further refinements! 🚀
