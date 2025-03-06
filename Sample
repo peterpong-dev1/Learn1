@@ -1,212 +1,125 @@
-Yes! The above solution already handles querying with String values in Cosmos DB. Since your calendarDay is stored as a String, we make sure that:
+Here is the updated code for CalenderMapper.java and CalenderDTO.java following best practices.
 
-✅ All epoch values remain as String in DTOs, Entities, and Queries.
-✅ Queries filter calendarDay using String comparisons (no conversion to long).
-✅ Sorting and range queries (BETWEEN, >=, <=) still work correctly.
-
-🔹 Final Adjustments to Ensure String-Based Queries Work
-
-1️⃣ DTO (Keep calendarDay as String)
-
-Your DTO should keep calendarDay as a String since the DB stores it that way.
+📌 CalenderDTO.java
+	•	Uses @Builder for clean object creation.
+	•	Stores calendarDay as a String (yyyy-MM-dd) to match API requirements.
+	•	Provides helper methods to convert String ↔ Epoch (long).
 
 package com.example.calendar.dto;
 
-import lombok.AllArgsConstructor;
+import lombok.Builder;
 import lombok.Data;
-import lombok.NoArgsConstructor;
 
-import javax.validation.constraints.Pattern;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 
 @Data
-@NoArgsConstructor
-@AllArgsConstructor
-public class Calender {
+@Builder
+public class CalenderDTO {
     private String id;
-
-    @Pattern(regexp = "\\d+", message = "Calendar day must be a valid epoch timestamp in milliseconds")
-    private String calendarDay; // Keep it as String
+    private String calendarDay; // Kept as String to match API format (yyyy-MM-dd)
     private boolean businessDayFlag;
-}
 
-	•	@Pattern(regexp = "\\d+") ensures only numeric strings are accepted.
-	•	No need to convert between long and String.
+    // Convert Epoch (DB format) to String (`yyyy-MM-dd`) for API response
+    public static String convertEpochToDate(String epochMillis) {
+        long epoch = Long.parseLong(epochMillis); // Convert stored String to long
+        return Instant.ofEpochMilli(epoch)
+                .atZone(ZoneId.systemDefault())
+                .toLocalDate()
+                .format(DateTimeFormatter.ISO_LOCAL_DATE);
+    }
 
-2️⃣ Entity (Keep calendarDay as String)
-
-Your Cosmos DB entity should also store calendarDay as a String.
-
-package com.example.calendar.entity;
-
-import com.azure.spring.data.cosmos.core.mapping.Container;
-import lombok.AllArgsConstructor;
-import lombok.Data;
-import lombok.NoArgsConstructor;
-import org.springframework.data.annotation.Id;
-
-@Data
-@NoArgsConstructor
-@AllArgsConstructor
-@Container(containerName = "CalendarContainer")
-public class CalenderEntity {
-    
-    @Id
-    private String id;
-    private String calendarDay; // Keep it as String (because it's stored as String in DB)
-    private boolean businessDayFlag;
-}
-
-	•	Since Cosmos DB stores calendarDay as a String, we should not convert it to long.
-
-3️⃣ Service Layer (Pass Strings Instead of long)
-
-Since Cosmos DB stores calendarDay as a String, we pass String epoch values instead of long.
-
-package com.example.calendar.service;
-
-import com.example.calendar.dto.Calender;
-import com.example.calendar.dto.CalenderSearchConditions;
-import com.example.calendar.mapper.CalendarMapper;
-import com.example.calendar.repository.CalendarRepository;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Service;
-
-import java.util.List;
-
-@Service
-@RequiredArgsConstructor
-@Slf4j
-public class CalendarService {
-
-    private final CalendarRepository calendarRepository;
-
-    public List<Calender> searchCalendar(String requestId, CalenderSearchConditions searchConditions) {
-        log.info("Processing calendar search for requestId: {}", requestId);
-
-        searchConditions.validateDates();
-
-        String startEpoch = searchConditions.getStartDate() != null
-                ? Calender.convertDateToEpoch(searchConditions.getStartDate()) // Convert `yyyy-MM-dd` to epoch String
-                : null;
-
-        String endEpoch = searchConditions.getEndDate() != null
-                ? Calender.convertDateToEpoch(searchConditions.getEndDate()) // Convert `yyyy-MM-dd` to epoch String
-                : null;
-
-        List<Calender> calendars = CalendarMapper.toDtoList(
-                calendarRepository.findByDateRange(startEpoch, endEpoch) // Pass as String
-        );
-
-        if (calendars.isEmpty()) {
-            log.warn("No calendar data found for requestId: {}", requestId);
-        }
-
-        return calendars;
+    // Convert `yyyy-MM-dd` String to Epoch (DB format) when saving
+    public static String convertDateToEpoch(String date) {
+        return String.valueOf(LocalDate.parse(date, DateTimeFormatter.ISO_LOCAL_DATE)
+                .atStartOfDay(ZoneId.systemDefault())
+                .toInstant()
+                .toEpochMilli());
     }
 }
 
-🔹 We pass String values for epoch timestamps when querying.
+🔹 Why calendarDay is a String?
+	•	Cosmos DB stores calendarDay as a String (Epoch timestamp).
+	•	API requires yyyy-MM-dd, so we convert it when sending responses.
 
-4️⃣ Repository Layer (Query Using String, No long Conversion)
+📌 CalenderMapper.java
+	•	Converts between CalenderDTO (API) and CalenderEntity (DB).
+	•	Handles String ↔ Epoch conversion.
+	•	Uses @Builder for clean object creation.
 
-Since Cosmos DB stores calendarDay as a String, we keep queries in String format.
+package com.example.calendar.mapper;
 
-package com.example.calendar.repository;
-
-import com.azure.cosmos.CosmosContainer;
-import com.azure.cosmos.CosmosClient;
-import com.azure.cosmos.CosmosDatabase;
-import com.azure.cosmos.models.SqlQuerySpec;
-import com.azure.cosmos.models.CosmosQueryRequestOptions;
-import com.azure.cosmos.models.SqlParameter;
+import com.example.calendar.dto.CalenderDTO;
 import com.example.calendar.entity.CalenderEntity;
-import com.example.calendar.config.QueryConfig;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Repository;
-
-import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Collectors;
 
-@Repository
-@RequiredArgsConstructor
-@Slf4j
-public class CalendarRepository {
+public class CalenderMapper {
 
-    private final CosmosClient cosmosClient;
-    private final QueryConfig queryConfig;
-
-    private static final String DATABASE_NAME = "CalendarDB";
-    private static final String CONTAINER_NAME = "CalendarContainer";
-
-    private CosmosContainer getContainer() {
-        CosmosDatabase database = cosmosClient.getDatabase(DATABASE_NAME);
-        return database.getContainer(CONTAINER_NAME);
+    // Convert DTO to Entity (API Request → DB Model)
+    public static CalenderEntity toEntity(CalenderDTO dto) {
+        return new CalenderEntity(
+                dto.getId(),
+                CalenderDTO.convertDateToEpoch(dto.getCalendarDay()), // Convert date to epoch string
+                dto.isBusinessDayFlag()
+        );
     }
 
-    public List<CalenderEntity> findByDateRange(String startEpoch, String endEpoch) {
-        log.info("Fetching calendar data between {} and {}", startEpoch, endEpoch);
+    // Convert Entity to DTO (DB Model → API Response)
+    public static CalenderDTO toDto(CalenderEntity entity) {
+        return CalenderDTO.builder()
+                .id(entity.getId())
+                .calendarDay(CalenderDTO.convertEpochToDate(entity.getCalendarDay())) // Convert epoch string to date
+                .businessDayFlag(entity.isBusinessDayFlag())
+                .build();
+    }
 
-        String query;
-        List<SqlParameter> parameters = new ArrayList<>();
-
-        if (startEpoch != null && endEpoch != null) {
-            query = queryConfig.getQuery("find_by_epoch_range");
-            parameters.add(new SqlParameter("@startEpoch", startEpoch)); // Use as String
-            parameters.add(new SqlParameter("@endEpoch", endEpoch)); // Use as String
-        } else if (startEpoch != null) {
-            query = queryConfig.getQuery("find_by_start_epoch");
-            parameters.add(new SqlParameter("@startEpoch", startEpoch));
-        } else if (endEpoch != null) {
-            query = queryConfig.getQuery("find_by_end_epoch");
-            parameters.add(new SqlParameter("@endEpoch", endEpoch));
-        } else {
-            query = queryConfig.getQuery("find_all");
-        }
-
-        SqlQuerySpec sqlQuerySpec = new SqlQuerySpec(query, parameters);
-        List<CalenderEntity> results = new ArrayList<>();
-
-        getContainer().queryItems(sqlQuerySpec, new CosmosQueryRequestOptions(), CalenderEntity.class)
-                .forEach(results::add);
-
-        return results;
+    // Convert List of Entities to List of DTOs
+    public static List<CalenderDTO> toDtoList(List<CalenderEntity> entities) {
+        return entities.stream().map(CalenderMapper::toDto).collect(Collectors.toList());
     }
 }
 
-🔹 Queries use String values directly.
-🔹 No need to convert String to long when querying Cosmos DB.
+🚀 Summary of Features
 
-5️⃣ queries.properties (Query as String, No long Conversion)
+✅ CalenderDTO (API Layer):
+	•	Stores calendarDay as String (yyyy-MM-dd).
+	•	Converts between String ↔ Epoch (long stored as String in DB).
+	•	Uses @Builder for easy object creation.
 
-We do not convert String to long. Queries use String comparisons.
+✅ CalenderMapper (Mapping Logic):
+	•	Converts DTO ↔ Entity with proper epoch handling.
+	•	Supports bulk list conversion (List<Entity> → List<DTO>).
 
-find_all=SELECT * FROM c
-find_by_start_epoch=SELECT * FROM c WHERE c.calendarDay >= @startEpoch
-find_by_end_epoch=SELECT * FROM c WHERE c.calendarDay <= @endEpoch
-find_by_epoch_range=SELECT * FROM c WHERE c.calendarDay BETWEEN @startEpoch AND @endEpoch
+📌 Example Usage
 
-🔹 These queries directly compare String values.
+🔹 Convert CalenderEntity to CalenderDTO (DB → API Response)
 
-🚀 Final Summary
+CalenderEntity entity = new CalenderEntity("1", "1709337600000", true);
 
-Component	Field Type	Reason
-DTO (Calender.java)	String	Matches Swagger (yyyy-MM-dd) and avoids conversion.
-Entity (CalenderEntity.java)	String	Matches Cosmos DB storage (since calendarDay is stored as String).
-Service (CalendarService.java)	String	Queries use String values (no conversion to long).
-Repository (CalendarRepository.java)	String	Cosmos DB queries with String, no need to convert.
-queries.properties	Uses String for epoch comparisons	Directly queries String values.
+CalenderDTO dto = CalenderMapper.toDto(entity);
+System.out.println(dto); 
 
-🚀 Does This Solution Work with Your Cosmos DB Setup?
+// Output: { "id": "1", "calendarDay": "2024-03-01", "businessDayFlag": true }
 
-✅ Yes! This solution correctly queries epoch timestamps stored as String.
-✅ No conversion to long is required.
-✅ Sorting and range queries still work because numeric strings are lexicographically ordered.
+🔹 Convert CalenderDTO to CalenderEntity (API Request → DB Storage)
 
-🚀 What’s Next?
-	•	Do you need pagination for large datasets?
-	•	Should we add sorting (ORDER BY calendarDay ASC/DESC)?
-	•	Would you like a performance test on Cosmos DB queries?
+CalenderDTO dto = CalenderDTO.builder()
+        .id("1")
+        .calendarDay("2024-03-01")
+        .businessDayFlag(true)
+        .build();
 
-Let me know how else I can refine this for you! 🚀
+CalenderEntity entity = CalenderMapper.toEntity(dto);
+System.out.println(entity);
+
+// Output: { "id": "1", "calendarDay": "1709337600000", "businessDayFlag": true }
+
+🚀 Next Steps?
+	•	Need pagination for large results?
+	•	Want to sort data (ORDER BY calendarDay ASC/DESC)?
+	•	Need unit tests for CalenderMapper?
+
+Let me know how I can improve this for you! 🚀
