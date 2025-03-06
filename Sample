@@ -1,439 +1,225 @@
-📌 Updated Solution: Create Multiple ErrorDetailsDTO Based on Non-Null Fields in the Map
+You’re absolutely right! Below is the updated repository class with fully dynamic query logic that handles all cases, along with the updated queries.properties file.
 
-Now, the error response will dynamically generate multiple ErrorDetailsDTO if multiple non-null fields exist in the extracted input fields. If there are 4 non-null fields, the error response will contain 4 details.
+1. queries.properties (Dynamic Queries)
 
-✅ 1️⃣ Extract Non-Null Fields in Controller & Pass to Service
+We define different queries for each case in the queries.properties file.
 
-Modify your controller to extract non-null fields and pass them to the service.
+find_all=SELECT * FROM c
+find_by_start_date=SELECT * FROM c WHERE c.calendarDay >= @startDate
+find_by_end_date=SELECT * FROM c WHERE c.calendarDay <= @endDate
+find_by_date_range=SELECT * FROM c WHERE c.calendarDay BETWEEN @startDate AND @endDate
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RestController;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Objects;
+2. Updated CalendarRepository with Dynamic Query Logic
 
-@RestController
-public class AddressController {
+This repository dynamically selects and executes the correct query based on the input conditions.
 
-    private static final Logger logger = LoggerFactory.getLogger(AddressController.class);
+package com.example.calendar.repository;
 
-    @PostMapping("/common/address/search")
-    public ResponseEntity<?> searchAddress(@RequestBody AddressSearchConditionsDTO request) {
-        // ✅ Extract non-null fields from request
-        Map<String, Object> inputFields = extractNonNullFields(request);
+import com.azure.cosmos.CosmosContainer;
+import com.azure.cosmos.CosmosClient;
+import com.azure.cosmos.CosmosDatabase;
+import com.azure.cosmos.models.SqlQuerySpec;
+import com.azure.cosmos.models.CosmosQueryRequestOptions;
+import com.azure.cosmos.models.SqlParameter;
+import com.example.calendar.entity.CalenderEntity;
+import com.example.calendar.config.QueryConfig;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Repository;
 
-        return addressService.search(request, inputFields);
-    }
-
-    // ✅ Extract Non-Null Fields from SearchConditionsDTO
-    private Map<String, Object> extractNonNullFields(AddressSearchConditionsDTO request) {
-        Map<String, Object> fieldMap = new HashMap<>();
-
-        if (Objects.nonNull(request.getAddressCode())) {
-            fieldMap.put("addressCode", request.getAddressCode());
-        }
-        if (Objects.nonNull(request.getAddress())) {
-            if (Objects.nonNull(request.getAddress().getCharacterSetType())) {
-                fieldMap.put("characterSetType", request.getAddress().getCharacterSetType().getValue());
-            }
-            if (Objects.nonNull(request.getAddress().getPostalCode())) {
-                fieldMap.put("postalCode", request.getAddress().getPostalCode());
-            }
-        }
-        return fieldMap;
-    }
-}
-
-✅ 2️⃣ Pass Extracted Fields to Service & Throw Custom Exceptions
-
-Modify your service layer to use extracted fields in custom exceptions.
-
-import org.springframework.http.ResponseEntity;
-import org.springframework.stereotype.Service;
-import java.util.List;
-import java.util.Map;
-
-@Service
-public class AddressService {
-
-    private final AddressRepository addressRepository;
-
-    public AddressService(AddressRepository addressRepository) {
-        this.addressRepository = addressRepository;
-    }
-
-    public ResponseEntity<?> search(AddressSearchConditionsDTO request, Map<String, Object> inputFields) {
-        // ✅ Validation Error (400)
-        if (request.getAddressCode() == null || request.getAddressCode().isEmpty()) {
-            throw new ValidationException("Validation failed", inputFields);
-        }
-
-        List<AddressDTO> results = addressRepository.findAddress(request);
-
-        // ✅ Data Not Found Error (400)
-        if (results.isEmpty()) {
-            throw new DataNotFoundException("No matching data found", inputFields);
-        }
-
-        return ResponseEntity.ok(results);
-    }
-}
-
-✅ 3️⃣ Modify Custom Exceptions to Store Input Fields
-
-Modify custom exceptions to store input fields from SearchConditionsDTO.
-
-Validation Exception (400)
-
-import java.util.Map;
-
-public class ValidationException extends RuntimeException {
-    private final Map<String, Object> inputFields;
-
-    public ValidationException(String message, Map<String, Object> inputFields) {
-        super(message);
-        this.inputFields = inputFields;
-    }
-
-    public Map<String, Object> getInputFields() {
-        return inputFields;
-    }
-}
-
-Data Not Found Exception (400)
-
-import java.util.Map;
-
-public class DataNotFoundException extends RuntimeException {
-    private final Map<String, Object> inputFields;
-
-    public DataNotFoundException(String message, Map<String, Object> inputFields) {
-        super(message);
-        this.inputFields = inputFields;
-    }
-
-    public Map<String, Object> getInputFields() {
-        return inputFields;
-    }
-}
-
-✅ 4️⃣ Modify Global Exception Handler to Convert Map to Multiple ErrorDetailsDTO
-
-Modify Global Exception Handler to generate multiple error details dynamically.
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.ExceptionHandler;
-import org.springframework.web.bind.annotation.RestControllerAdvice;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
+
+@Repository
+@RequiredArgsConstructor
+@Slf4j
+public class CalendarRepository {
+
+    private final CosmosClient cosmosClient;
+    private final QueryConfig queryConfig;
+
+    private static final String DATABASE_NAME = "CalendarDB";
+    private static final String CONTAINER_NAME = "CalendarContainer";
+
+    private CosmosContainer getContainer() {
+        CosmosDatabase database = cosmosClient.getDatabase(DATABASE_NAME);
+        return database.getContainer(CONTAINER_NAME);
+    }
+
+    public List<CalenderEntity> findByDateRange(String startDate, String endDate) {
+        log.info("Fetching calendar data for startDate: {} and endDate: {}", startDate, endDate);
+
+        String query;
+        List<SqlParameter> parameters = new ArrayList<>();
+
+        if (!"0000-01-01".equals(startDate) && !"9999-12-31".equals(endDate)) {
+            // Case: Both startDate and endDate provided
+            query = queryConfig.getQuery("find_by_date_range");
+            parameters.add(new SqlParameter("@startDate", startDate));
+            parameters.add(new SqlParameter("@endDate", endDate));
+        } else if (!"0000-01-01".equals(startDate)) {
+            // Case: Only startDate provided
+            query = queryConfig.getQuery("find_by_start_date");
+            parameters.add(new SqlParameter("@startDate", startDate));
+        } else if (!"9999-12-31".equals(endDate)) {
+            // Case: Only endDate provided
+            query = queryConfig.getQuery("find_by_end_date");
+            parameters.add(new SqlParameter("@endDate", endDate));
+        } else {
+            // Case: No date provided (Fetch all records)
+            query = queryConfig.getQuery("find_all");
+        }
+
+        SqlQuerySpec sqlQuerySpec = new SqlQuerySpec(query, parameters);
+
+        CosmosContainer container = getContainer();
+        List<CalenderEntity> results = new ArrayList<>();
+
+        container.queryItems(sqlQuerySpec, new CosmosQueryRequestOptions(), CalenderEntity.class)
+                .forEach(results::add);
+
+        log.info("Found {} results", results.size());
+        return results;
+    }
+}
+
+3. Explanation of the Dynamic Query Logic
+
+This repository selects the correct query based on the user’s input.
+
+Scenario	Selected Query	Applied Parameters
+Start Date & End Date provided	find_by_date_range	@startDate, @endDate
+Only Start Date provided	find_by_start_date	@startDate
+Only End Date provided	find_by_end_date	@endDate
+No Dates provided	find_all	None
+
+4. Updates in CalendarService to Handle Defaults
+
+We ensure defaults for missing start and end dates before calling the repository.
+
+package com.example.calendar.service;
+
+import com.example.calendar.dto.Calender;
+import com.example.calendar.dto.CalenderSearchConditions;
+import com.example.calendar.mapper.CalendarMapper;
+import com.example.calendar.repository.CalendarRepository;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+
+import java.util.List;
+
+@Service
+@RequiredArgsConstructor
+@Slf4j
+public class CalendarService {
+
+    private final CalendarRepository calendarRepository;
+
+    public List<Calender> searchCalendar(String requestId, CalenderSearchConditions searchConditions) {
+        log.info("Processing calendar search for requestId: {}", requestId);
+
+        // Validate input dates
+        searchConditions.validateDates();
+
+        // Apply default date values
+        String startDate = searchConditions.getStartDate() != null ? searchConditions.getStartDate().toString() : "0000-01-01";
+        String endDate = searchConditions.getEndDate() != null ? searchConditions.getEndDate().toString() : "9999-12-31";
+
+        List<Calender> calendars = CalendarMapper.toDtoList(
+                calendarRepository.findByDateRange(startDate, endDate)
+        );
+
+        if (calendars.isEmpty()) {
+            log.warn("No calendar data found for requestId: {}", requestId);
+        }
+
+        return calendars;
+    }
+}
+
+5. Error Handling for Validation
+
+Ensuring that invalid inputs return meaningful errors.
+
+package com.example.calendar.exception;
+
+import com.example.calendar.dto.ErrorResponse;
+import com.example.calendar.dto.ErrorDetail;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+import java.util.List;
+import java.util.stream.Collectors;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
-    private static final Logger logger = LoggerFactory.getLogger(GlobalExceptionHandler.class);
-
-    // ✅ Handle Validation Errors (400 Bad Request)
-    @ExceptionHandler(ValidationException.class)
-    public ResponseEntity<ErrorContainer> handleValidationException(ValidationException ex) {
-        return buildErrorResponse(HttpStatus.BAD_REQUEST, "Validation Error", ex.getInputFields());
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<ErrorResponse> handleIllegalArgumentException(IllegalArgumentException ex) {
+        ErrorResponse response = new ErrorResponse("400", ex.getMessage(), null);
+        return new ResponseEntity<>(response, HttpStatus.BAD_REQUEST);
     }
 
-    // ✅ Handle Data Not Found Errors (400 Bad Request)
-    @ExceptionHandler(DataNotFoundException.class)
-    public ResponseEntity<ErrorContainer> handleDataNotFoundException(DataNotFoundException ex) {
-        return buildErrorResponse(HttpStatus.BAD_REQUEST, "Data Not Found", ex.getInputFields());
-    }
-
-    // ✅ Handle Unexpected Internal Server Errors (500)
     @ExceptionHandler(Exception.class)
-    public ResponseEntity<ErrorContainer> handleGenericException(Exception ex) {
-        logger.error("Unhandled Exception: {}", ex.getMessage(), ex);
-        return buildErrorResponse(HttpStatus.INTERNAL_SERVER_ERROR, "Internal Server Error", null);
-    }
-
-    // ✅ Build Unified Error Response with Multiple ErrorDetailsDTO
-    private ResponseEntity<ErrorContainer> buildErrorResponse(HttpStatus status, String message, Map<String, Object> details) {
-        logger.error("Error Response: Status={} Message={} Details={}", status.value(), message, details);
-
-        List<ErrorDetailsDTO> errorDetailsList = new ArrayList<>();
-
-        if (details != null) {
-            details.forEach((key, value) -> {
-                errorDetailsList.add(new ErrorDetailsDTO(
-                        String.valueOf(status.value()),
-                        "Invalid or missing field: " + key,
-                        Map.of(key, value)
-                ));
-            });
-        } else {
-            errorDetailsList.add(new ErrorDetailsDTO(
-                    String.valueOf(status.value()),
-                    message,
-                    null
-            ));
-        }
-
-        return new ResponseEntity<>(new ErrorContainer(errorDetailsList), status);
+    public ResponseEntity<ErrorResponse> handleGenericException(Exception ex) {
+        ErrorResponse response = new ErrorResponse("500", "Internal server error", null);
+        return new ResponseEntity<>(response, HttpStatus.INTERNAL_SERVER_ERROR);
     }
 }
 
-✅ 5️⃣ Define ErrorContainer & ErrorDetailsDTO to Support Multiple Errors
+6. Example API Requests and Responses
 
-Modify error response structure to allow multiple ErrorDetailsDTO inside ErrorContainer.
+✅ Valid Request
 
-Error Container
-
-import java.util.List;
-
-public class ErrorContainer {
-    private List<ErrorDetailsDTO> errors;
-
-    public ErrorContainer(List<ErrorDetailsDTO> errors) {
-        this.errors = errors;
-    }
-
-    public List<ErrorDetailsDTO> getErrors() {
-        return errors;
-    }
-}
-
-Error Details DTO
-
-import java.util.Map;
-
-public class ErrorDetailsDTO {
-    private String code;
-    private String message;
-    private Map<String, Object> details;
-
-    public ErrorDetailsDTO(String code, String message, Map<String, Object> details) {
-        this.code = code;
-        this.message = message;
-        this.details = details;
-    }
-
-    // Getters & Setters
-}
-
-📌 Expected JSON Outputs
-
-📌 Case 1: Multiple Fields Validation Errors (400)
-
-If addressCode, postalCode, and characterSetType are provided in the request, but are invalid, the response will include multiple ErrorDetailsDTO:
+Request Body
 
 {
-    "errors": [
-        {
-            "code": "400",
-            "message": "Invalid or missing field: addressCode",
-            "details": { "addressCode": "01101043028" }
-        },
-        {
-            "code": "400",
-            "message": "Invalid or missing field: characterSetType",
-            "details": { "characterSetType": "KANA" }
-        },
-        {
-            "code": "400",
-            "message": "Invalid or missing field: postalCode",
-            "details": { "postalCode": "0640804" }
-        }
-    ]
+  "startDate": "2024-03-01",
+  "endDate": "2024-03-06"
 }
 
-📌 Case 2: Data Not Found (400)
+Response
+
+[
+  {
+    "id": "1",
+    "calendarDay": "2024-03-06",
+    "businessDayFlag": true
+  }
+]
+
+❌ Invalid Request (Start Date > End Date)
+
+Request Body
 
 {
-    "errors": [
-        {
-            "code": "400",
-            "message": "Invalid or missing field: addressCode",
-            "details": { "addressCode": "01101043028" }
-        }
-    ]
+  "startDate": "2024-03-10",
+  "endDate": "2024-03-06"
 }
 
-🚀 Final Summary
-
-✅ Supports Dynamic Multiple Error Details – Generates multiple ErrorDetailsDTO from input fields.
-✅ Returns Structured JSON Error Responses – Uses ErrorContainer to wrap multiple errors.
-✅ Ensures Best Practices – Follows real-world REST API error handling standards.
-
-🚀 Now your API properly supports multiple error details for multiple input fields! Let me know if you need modifications! 🚀
-
-I’ll check the Swagger file you uploaded and modify the response structure to match it exactly. Let me process the file and provide only the necessary changes.
-
-Based on your Swagger file, I have updated the response structure to match the expected format. Here are the required changes:
-
-📌 1️⃣ Modify ErrorContainer to Match Swagger Response Format
-
-Your Swagger file defines error as an object, not an array. Modify ErrorContainer accordingly.
-
-🔹 Before (List<ErrorDetailsDTO>)
-
-public class ErrorContainer {
-    private List<ErrorDetailsDTO> errors;
-}
-
-✅ After (Match Swagger Format)
-
-public class ErrorContainer {
-    private ErrorDetailsDTO error;
-
-    public ErrorContainer(ErrorDetailsDTO error) {
-        this.error = error;
-    }
-
-    public ErrorDetailsDTO getError() {
-        return error;
-    }
-}
-
-📌 2️⃣ Modify ErrorDetailsDTO to Match Swagger
-
-Your Swagger file uses a nested object structure. Change ErrorDetailsDTO accordingly.
-
-🔹 Before
-
-public class ErrorDetailsDTO {
-    private String code;
-    private String message;
-    private Map<String, Object> details;
-}
-
-✅ After (Swagger-Compatible Format)
-
-import java.util.List;
-
-public class ErrorDetailsDTO {
-    private String code;
-    private String message;
-    private List<FieldErrorDTO> details;
-
-    public ErrorDetailsDTO(String code, String message, List<FieldErrorDTO> details) {
-        this.code = code;
-        this.message = message;
-        this.details = details;
-    }
-
-    public List<FieldErrorDTO> getDetails() {
-        return details;
-    }
-}
-
-📌 3️⃣ Create FieldErrorDTO to Handle Multiple Field Errors
-
-Your Swagger file expects details as an array of field-specific errors, not a map.
-
-public class FieldErrorDTO {
-    private String field;
-    private String message;
-
-    public FieldErrorDTO(String field, String message) {
-        this.field = field;
-        this.message = message;
-    }
-
-    public String getField() {
-        return field;
-    }
-
-    public String getMessage() {
-        return message;
-    }
-}
-
-📌 4️⃣ Modify Global Exception Handler to Use FieldErrorDTO
-
-Your Swagger response format requires multiple field errors inside a single error object.
-
-🔹 Before (Returning List of Errors)
-
-List<ErrorDetailsDTO> errorDetailsList = new ArrayList<>();
-details.forEach((key, value) -> {
-    errorDetailsList.add(new ErrorDetailsDTO(
-        "400",
-        "Invalid or missing field: " + key,
-        Map.of(key, value)
-    ));
-});
-
-✅ After (Swagger-Compatible Response)
-
-private ResponseEntity<ErrorContainer> buildErrorResponse(HttpStatus status, String message, Map<String, Object> details) {
-    logger.error("Error Response: Status={} Message={} Details={}", status.value(), message, details);
-
-    List<FieldErrorDTO> fieldErrors = new ArrayList<>();
-
-    if (details != null) {
-        details.forEach((key, value) -> {
-            fieldErrors.add(new FieldErrorDTO(
-                    key,
-                    "Invalid or missing value"
-            ));
-        });
-    }
-
-    ErrorDetailsDTO errorDetails = new ErrorDetailsDTO(
-            String.valueOf(status.value()),
-            message,
-            fieldErrors
-    );
-
-    return new ResponseEntity<>(new ErrorContainer(errorDetails), status);
-}
-
-📌 Expected Swagger-Compatible JSON Output
-
-✅ Case 1: Multiple Validation Errors (400)
+Response
 
 {
-    "error": {
-        "code": "400",
-        "message": "Validation Error",
-        "details": [
-            {
-                "field": "addressCode",
-                "message": "Invalid or missing value"
-            },
-            {
-                "field": "postalCode",
-                "message": "Invalid or missing value"
-            }
-        ]
-    }
+  "code": "400",
+  "message": "Start date cannot be after end date."
 }
 
-✅ Case 2: Data Not Found (400)
+7. Final Summary
 
-{
-    "error": {
-        "code": "400",
-        "message": "Data Not Found",
-        "details": [
-            {
-                "field": "addressCode",
-                "message": "Invalid or missing value"
-            }
-        ]
-    }
-}
+✅ Dynamic Query Selection – Automatically chooses the right query based on input
+✅ Default Values Applied – Prevents null values from breaking the query
+✅ Validation of Input Dates – Ensures meaningful error messages
+✅ Cosmos DB Optimized Querying – Only runs queries when needed
 
-🚀 Final Summary of Changes
+8. What’s Next?
 
-Change	Description
-Modify ErrorContainer ✅	Changed List<ErrorDetailsDTO> to single error object
-Modify ErrorDetailsDTO ✅	Changed details to a list of field errors
-Create FieldErrorDTO ✅	Introduced new DTO for field-specific validation errors
-Modify Exception Handler ✅	Changed details from Map<String, Object> to List of FieldErrorDTO
+Would you like to add:
+	•	Pagination?
+	•	Filtering by Business Day Flag?
+	•	Sorting Results by Date?
 
-🚀 Now your API returns error responses exactly as per your Swagger specification! Let me know if you need further modifications! 🚀
-
+Let me know if you need further refinements! 🚀
