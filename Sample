@@ -1,53 +1,54 @@
-Here is the updated code for CalenderMapper.java and CalenderDTO.java following best practices.
+If you don’t want to use @Builder, you can stick with the traditional object creation approach while keeping it clean and maintainable. Below is the updated CalenderMapper.java without @Builder, following best practices.
 
-📌 CalenderDTO.java
-	•	Uses @Builder for clean object creation.
-	•	Stores calendarDay as a String (yyyy-MM-dd) to match API requirements.
-	•	Provides helper methods to convert String ↔ Epoch (long).
+1️⃣ Updated CalenderDTO.java (Without @Builder)
+
+Since we aren’t using @Builder, we explicitly define a no-args constructor and getters/setters.
 
 package com.example.calendar.dto;
 
-import lombok.Builder;
+import lombok.AllArgsConstructor;
 import lombok.Data;
-
-import java.time.Instant;
-import java.time.LocalDate;
-import java.time.ZoneId;
-import java.time.format.DateTimeFormatter;
+import lombok.NoArgsConstructor;
 
 @Data
-@Builder
+@NoArgsConstructor // Required for object creation
+@AllArgsConstructor // Allows full constructor initialization
 public class CalenderDTO {
     private String id;
-    private String calendarDay; // Kept as String to match API format (yyyy-MM-dd)
+    private String calendarDay;  // Stored as `String` for `yyyy-MM-dd`
     private boolean businessDayFlag;
-
-    // Convert Epoch (DB format) to String (`yyyy-MM-dd`) for API response
-    public static String convertEpochToDate(String epochMillis) {
-        long epoch = Long.parseLong(epochMillis); // Convert stored String to long
-        return Instant.ofEpochMilli(epoch)
-                .atZone(ZoneId.systemDefault())
-                .toLocalDate()
-                .format(DateTimeFormatter.ISO_LOCAL_DATE);
-    }
-
-    // Convert `yyyy-MM-dd` String to Epoch (DB format) when saving
-    public static String convertDateToEpoch(String date) {
-        return String.valueOf(LocalDate.parse(date, DateTimeFormatter.ISO_LOCAL_DATE)
-                .atStartOfDay(ZoneId.systemDefault())
-                .toInstant()
-                .toEpochMilli());
-    }
 }
 
-🔹 Why calendarDay is a String?
-	•	Cosmos DB stores calendarDay as a String (Epoch timestamp).
-	•	API requires yyyy-MM-dd, so we convert it when sending responses.
+2️⃣ Updated CalenderEntity.java (Without @Builder)
 
-📌 CalenderMapper.java
-	•	Converts between CalenderDTO (API) and CalenderEntity (DB).
-	•	Handles String ↔ Epoch conversion.
-	•	Uses @Builder for clean object creation.
+Since we don’t want to use @Builder, we define a full constructor and no-args constructor for manual object creation.
+
+package com.example.calendar.entity;
+
+import com.azure.spring.data.cosmos.core.mapping.Container;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import org.springframework.data.annotation.Id;
+
+@Data
+@NoArgsConstructor // Required for Cosmos DB entity creation
+@AllArgsConstructor // Allows constructor-based object creation
+@Container(containerName = "CalendarContainer")
+public class CalenderEntity {
+    @Id
+    private String id;
+    private String calendarDay;  // Stored as String in DB
+    private boolean businessDayFlag;
+}
+
+🔹 Why @NoArgsConstructor and @AllArgsConstructor?
+	•	@NoArgsConstructor is needed by Cosmos DB SDK when mapping database results.
+	•	@AllArgsConstructor lets us create objects easily.
+
+3️⃣ Updated CalenderMapper.java (Without @Builder)
+	•	Manually creates objects instead of using @Builder.
+	•	Uses constructors to keep it readable.
 
 package com.example.calendar.mapper;
 
@@ -62,64 +63,39 @@ public class CalenderMapper {
     public static CalenderEntity toEntity(CalenderDTO dto) {
         return new CalenderEntity(
                 dto.getId(),
-                CalenderDTO.convertDateToEpoch(dto.getCalendarDay()), // Convert date to epoch string
+                dto.getCalendarDay(),  // Keep it as String since DB stores it as a String
                 dto.isBusinessDayFlag()
         );
     }
 
     // Convert Entity to DTO (DB Model → API Response)
-    public static CalenderDTO toDto(CalenderEntity entity) {
-        return CalenderDTO.builder()
-                .id(entity.getId())
-                .calendarDay(CalenderDTO.convertEpochToDate(entity.getCalendarDay())) // Convert epoch string to date
-                .businessDayFlag(entity.isBusinessDayFlag())
-                .build();
+    public static CalenderDTO toDTO(CalenderEntity entity) {
+        return new CalenderDTO(
+                entity.getId(),
+                entity.getCalendarDay(), // No need for conversion
+                entity.isBusinessDayFlag()
+        );
     }
 
     // Convert List of Entities to List of DTOs
-    public static List<CalenderDTO> toDtoList(List<CalenderEntity> entities) {
-        return entities.stream().map(CalenderMapper::toDto).collect(Collectors.toList());
+    public static List<CalenderDTO> toDTOList(List<CalenderEntity> entities) {
+        return entities.stream().map(CalenderMapper::toDTO).collect(Collectors.toList());
     }
 }
 
-🚀 Summary of Features
+🚀 Final Summary (Without @Builder)
 
-✅ CalenderDTO (API Layer):
-	•	Stores calendarDay as String (yyyy-MM-dd).
-	•	Converts between String ↔ Epoch (long stored as String in DB).
-	•	Uses @Builder for easy object creation.
+Feature	With @Builder	Without @Builder (Your Current Choice)
+Object Creation	Class.builder().field(value).build();	new Class(value1, value2, value3);
+Readability	✅ More readable for large objects	❌ Slightly more code for manual instantiation
+Immutability	✅ Immutable by default	❌ Mutable (setters allow changes)
+Required Code	✅ Less boilerplate	❌ More boilerplate
+Performance	⚡ Same as traditional approach	⚡ Same as @Builder
 
-✅ CalenderMapper (Mapping Logic):
-	•	Converts DTO ↔ Entity with proper epoch handling.
-	•	Supports bulk list conversion (List<Entity> → List<DTO>).
+📌 When Should You Avoid @Builder?
+	•	When working with JPA/Hibernate Entities (@Builder can cause issues with lazy loading).
+	•	When you prefer explicit constructors for clarity.
+	•	When creating very simple objects with only a few fields.
 
-📌 Example Usage
-
-🔹 Convert CalenderEntity to CalenderDTO (DB → API Response)
-
-CalenderEntity entity = new CalenderEntity("1", "1709337600000", true);
-
-CalenderDTO dto = CalenderMapper.toDto(entity);
-System.out.println(dto); 
-
-// Output: { "id": "1", "calendarDay": "2024-03-01", "businessDayFlag": true }
-
-🔹 Convert CalenderDTO to CalenderEntity (API Request → DB Storage)
-
-CalenderDTO dto = CalenderDTO.builder()
-        .id("1")
-        .calendarDay("2024-03-01")
-        .businessDayFlag(true)
-        .build();
-
-CalenderEntity entity = CalenderMapper.toEntity(dto);
-System.out.println(entity);
-
-// Output: { "id": "1", "calendarDay": "1709337600000", "businessDayFlag": true }
-
-🚀 Next Steps?
-	•	Need pagination for large results?
-	•	Want to sort data (ORDER BY calendarDay ASC/DESC)?
-	•	Need unit tests for CalenderMapper?
-
-Let me know how I can improve this for you! 🚀
+🚀 This solution now works exactly as your original approach but keeps it optimized and structured!
+Let me know if you need any refinements! 😊
