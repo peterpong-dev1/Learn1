@@ -1,111 +1,58 @@
-I’ll update the code to use Lombok annotations for getters, setters, constructors, and ensure enums have all necessary features like @JsonCreator and @JsonValue. Also, I’ll adjust the mapper to match the style used in the previous project.
+📌 Updating All Enums as per Your Schema
+
+You’re right! There are multiple Enums in your schema, and I will update all Enums to ensure they match your Swagger definition correctly.
+
+Since your database stores Enums as Strings, I will:
+✅ Place all Enums inside model/enums/
+✅ Use @Enumerated(EnumType.STRING) in the Model
+✅ Ensure the same Enum is used in DTOs (no duplication)
+✅ Use @JsonValue and @JsonCreator for correct API serialization
 
 ⸻
 
-Updated DTOs
+📂 Updated Folder Structure
 
-import lombok.*;
-
-import java.time.LocalDate;
-import java.util.List;
-
-@Getter
-@Setter
-@AllArgsConstructor
-@NoArgsConstructor
-public class PolicyHolderDTO {
-    private String id;
-    private String policyId;
-    private CustomerType customerType;
-    private String customerId;
-    private PartyType partyType;
-    private List<NameDTO> name;
-    private LocalDate birthDate;
-    private Gender gender;
-    private List<AddressDTO> address;
-    private List<String> email;
-    private List<PhoneNumberDTO> phoneNumber;
-    private List<DigitalTouchpointDTO> digitalTouchpoint;
-    private ReceiptOfNotices receiptOfNotices;
-    private LocalDate identificationDate;
-    private LocalDate effectiveDate;
-    private String relationshipFromInsured;
-    private String contractAge;
-}
-
-import lombok.*;
-
-@Getter
-@Setter
-@AllArgsConstructor
-@NoArgsConstructor
-public class NameDTO {
-    private CharacterSetType characterSetType;
-    private String lastName;
-    private String firstName;
-    private String previousLastName;
-    private String otherName;
-    private Boolean namePictorickKanjiFlag;
-    private Boolean nameNonStandardKanjiFlag;
-}
-
-import lombok.*;
-
-@Getter
-@Setter
-@AllArgsConstructor
-@NoArgsConstructor
-public class AddressDTO {
-    private CharacterSetType characterSetType;
-    private AddressType type;
-    private String addressCode;
-    private String postalCode;
-    private String country;
-    private String prefecture;
-    private String city;
-    private String town;
-    private String lane;
-    private String buildingName;
-    private String floorNumber;
-    private String roomNumber;
-}
-
-import lombok.*;
-
-@Getter
-@Setter
-@AllArgsConstructor
-@NoArgsConstructor
-public class PhoneNumberDTO {
-    private PhoneType type;
-    private ContactType contactType;
-    private String number1;
-    private String number2;
-    private String number3;
-}
-
-import lombok.*;
-
-@Getter
-@Setter
-@AllArgsConstructor
-@NoArgsConstructor
-public class DigitalTouchpointDTO {
-    private DigitalType type;
-    private String digitalId;
-}
+src/main/java/com/example/project/
+│── controller/
+│── service/
+│── repository/
+│── dto/
+│      ├── PolicyHolderDTO.java
+│── model/
+│      ├── PolicyHolder.java
+│      ├── enums/  ✅ **(ALL ENUMS placed here)**
+│      │      ├── CustomerType.java
+│      │      ├── PartyType.java
+│      │      ├── CharacterSetType.java
+│      │      ├── Gender.java
+│      │      ├── AddressType.java
+│      │      ├── PhoneType.java
+│      │      ├── ContactType.java
+│      │      ├── DigitalType.java
+│      │      ├── ReceiptOfNotices.java
+│── mapper/
+│── config/
+│── exception/
+│── util/
 
 
 
 ⸻
 
-Updated Enums
+🔹 Updated Enums for Your Project
+
+Now, here are all the enums updated to follow the best practices:
+
+1️⃣ CustomerType Enum
+
+package com.example.project.model.enums;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonValue;
 
 public enum CustomerType {
-    POLICY_HOLDER("policyHolder");
+    INDIVIDUAL("individual"),
+    CORPORATION("corporation");
 
     private final String value;
 
@@ -125,9 +72,17 @@ public enum CustomerType {
                 return type;
             }
         }
-        throw new IllegalArgumentException("Invalid customerType: " + value);
+        throw new IllegalArgumentException("Invalid CustomerType: " + value);
     }
 }
+
+
+
+⸻
+
+2️⃣ PartyType Enum
+
+package com.example.project.model.enums;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonValue;
@@ -154,9 +109,17 @@ public enum PartyType {
                 return type;
             }
         }
-        throw new IllegalArgumentException("Invalid partyType: " + value);
+        throw new IllegalArgumentException("Invalid PartyType: " + value);
     }
 }
+
+
+
+⸻
+
+3️⃣ CharacterSetType Enum
+
+package com.example.project.model.enums;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonValue;
@@ -184,121 +147,244 @@ public enum CharacterSetType {
                 return type;
             }
         }
-        throw new IllegalArgumentException("Invalid characterSetType: " + value);
+        throw new IllegalArgumentException("Invalid CharacterSetType: " + value);
     }
 }
 
-(The same structure applies to other enums like Gender, AddressType, PhoneType, etc.)
+
 
 ⸻
 
-Updated Model Classes
+4️⃣ Gender Enum
 
-import lombok.*;
+package com.example.project.model.enums;
 
-import java.time.LocalDate;
-import java.util.List;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonValue;
 
-@Getter
-@Setter
-@AllArgsConstructor
-@NoArgsConstructor
-public class PolicyHolder {
-    private String id;
-    private String policyId;
-    private CustomerType customerType;
-    private String customerId;
-    private PartyType partyType;
-    private List<Name> name;
-    private LocalDate birthDate;
-    private Gender gender;
-    private List<Address> address;
-    private List<String> email;
-    private List<PhoneNumber> phoneNumber;
-    private List<DigitalTouchpoint> digitalTouchpoint;
-    private ReceiptOfNotices receiptOfNotices;
-    private LocalDate identificationDate;
-    private LocalDate effectiveDate;
-    private String relationshipFromInsured;
-    private String contractAge;
-}
+public enum Gender {
+    MALE("male"),
+    FEMALE("female"),
+    CORPORATION("corporation");
 
-import lombok.*;
+    private final String value;
 
-@Getter
-@Setter
-@AllArgsConstructor
-@NoArgsConstructor
-public class Name {
-    private CharacterSetType characterSetType;
-    private String lastName;
-    private String firstName;
-    private String previousLastName;
-    private String otherName;
-    private Boolean namePictorickKanjiFlag;
-    private Boolean nameNonStandardKanjiFlag;
-}
+    Gender(String value) {
+        this.value = value;
+    }
 
-import lombok.*;
+    @JsonValue
+    public String getValue() {
+        return value;
+    }
 
-@Getter
-@Setter
-@AllArgsConstructor
-@NoArgsConstructor
-public class Address {
-    private CharacterSetType characterSetType;
-    private AddressType type;
-    private String addressCode;
-    private String postalCode;
-    private String country;
-    private String prefecture;
-    private String city;
-    private String town;
-    private String lane;
-    private String buildingName;
-    private String floorNumber;
-    private String roomNumber;
-}
-
-(Similar changes for PhoneNumber, DigitalTouchpoint, etc.)
-
-⸻
-
-Updated Mapper Class
-
-Since you mentioned that the mapper structure was different from what we used before, I’ll adjust it accordingly.
-
-import org.mapstruct.Mapper;
-import org.mapstruct.Mapping;
-import org.mapstruct.factory.Mappers;
-import java.util.List;
-
-@Mapper(componentModel = "spring")
-public interface PolicyHolderMapper {
-    PolicyHolderMapper INSTANCE = Mappers.getMapper(PolicyHolderMapper.class);
-
-    @Mapping(target = "id", source = "policyHolder.id")
-    @Mapping(target = "policyId", source = "policyHolder.policyId")
-    PolicyHolderDTO toDTO(PolicyHolder policyHolder);
-
-    @Mapping(target = "id", source = "policyHolderDTO.id")
-    @Mapping(target = "policyId", source = "policyHolderDTO.policyId")
-    PolicyHolder toModel(PolicyHolderDTO policyHolderDTO);
-
-    List<PolicyHolderDTO> toDTOList(List<PolicyHolder> policyHolders);
-    List<PolicyHolder> toModelList(List<PolicyHolderDTO> policyHolderDTOs);
+    @JsonCreator
+    public static Gender fromValue(String value) {
+        for (Gender type : values()) {
+            if (type.value.equalsIgnoreCase(value)) {
+                return type;
+            }
+        }
+        throw new IllegalArgumentException("Invalid Gender: " + value);
+    }
 }
 
 
 
 ⸻
 
-Changes Summary
+5️⃣ AddressType Enum
 
-✔ Lombok Annotations added: @Getter, @Setter, @AllArgsConstructor, @NoArgsConstructor
-✔ Enums Improved: Now include @JsonCreator and @JsonValue for JSON parsing.
-✔ Mapper Updated: Matches the style used in the previous project with @Mapping.
+package com.example.project.model.enums;
+
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonValue;
+
+public enum AddressType {
+    HOME("home"),
+    OFFICE("office"),
+    OTHERS("others");
+
+    private final String value;
+
+    AddressType(String value) {
+        this.value = value;
+    }
+
+    @JsonValue
+    public String getValue() {
+        return value;
+    }
+
+    @JsonCreator
+    public static AddressType fromValue(String value) {
+        for (AddressType type : values()) {
+            if (type.value.equalsIgnoreCase(value)) {
+                return type;
+            }
+        }
+        throw new IllegalArgumentException("Invalid AddressType: " + value);
+    }
+}
+
+
 
 ⸻
 
-This should now match the previous project implementation. Let me know if you need modifications or additional files!
+6️⃣ PhoneType Enum
+
+package com.example.project.model.enums;
+
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonValue;
+
+public enum PhoneType {
+    MOBILE("mobile"),
+    LANDLINE("landline"),
+    FAX("fax");
+
+    private final String value;
+
+    PhoneType(String value) {
+        this.value = value;
+    }
+
+    @JsonValue
+    public String getValue() {
+        return value;
+    }
+
+    @JsonCreator
+    public static PhoneType fromValue(String value) {
+        for (PhoneType type : values()) {
+            if (type.value.equalsIgnoreCase(value)) {
+                return type;
+            }
+        }
+        throw new IllegalArgumentException("Invalid PhoneType: " + value);
+    }
+}
+
+
+
+⸻
+
+7️⃣ ContactType Enum
+
+package com.example.project.model.enums;
+
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonValue;
+
+public enum ContactType {
+    HOME("home"),
+    OFFICE("office"),
+    BUSINESS_HOURS("business_hours"),
+    OTHERS("others");
+
+    private final String value;
+
+    ContactType(String value) {
+        this.value = value;
+    }
+
+    @JsonValue
+    public String getValue() {
+        return value;
+    }
+
+    @JsonCreator
+    public static ContactType fromValue(String value) {
+        for (ContactType type : values()) {
+            if (type.value.equalsIgnoreCase(value)) {
+                return type;
+            }
+        }
+        throw new IllegalArgumentException("Invalid ContactType: " + value);
+    }
+}
+
+
+
+⸻
+
+8️⃣ DigitalType Enum
+
+package com.example.project.model.enums;
+
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonValue;
+
+public enum DigitalType {
+    PORTAL_SITE("portal_site"),
+    LINE("line"),
+    OTHERS("others");
+
+    private final String value;
+
+    DigitalType(String value) {
+        this.value = value;
+    }
+
+    @JsonValue
+    public String getValue() {
+        return value;
+    }
+
+    @JsonCreator
+    public static DigitalType fromValue(String value) {
+        for (DigitalType type : values()) {
+            if (type.value.equalsIgnoreCase(value)) {
+                return type;
+            }
+        }
+        throw new IllegalArgumentException("Invalid DigitalType: " + value);
+    }
+}
+
+
+
+⸻
+
+9️⃣ ReceiptOfNotices Enum
+
+package com.example.project.model.enums;
+
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonValue;
+
+public enum ReceiptOfNotices {
+    WEB("web"),
+    WEB_AND_MAIL("web_and_mail"),
+    MAILING("mailing");
+
+    private final String value;
+
+    ReceiptOfNotices(String value) {
+        this.value = value;
+    }
+
+    @JsonValue
+    public String getValue() {
+        return value;
+    }
+
+    @JsonCreator
+    public static ReceiptOfNotices fromValue(String value) {
+        for (ReceiptOfNotices type : values()) {
+            if (type.value.equalsIgnoreCase(value)) {
+                return type;
+            }
+        }
+        throw new IllegalArgumentException("Invalid ReceiptOfNotices: " + value);
+    }
+}
+
+
+
+⸻
+
+✅ All Enums Have Been Updated!
+
+This ensures all Enums are properly stored in the DB and used in API responses. 🚀
+Would you like me to update Models, DTOs, or Mappers next?
