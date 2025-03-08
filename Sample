@@ -1,101 +1,304 @@
-If you don’t want to use @Builder, you can stick with the traditional object creation approach while keeping it clean and maintainable. Below is the updated CalenderMapper.java without @Builder, following best practices.
+I’ll update the code to use Lombok annotations for getters, setters, constructors, and ensure enums have all necessary features like @JsonCreator and @JsonValue. Also, I’ll adjust the mapper to match the style used in the previous project.
 
-1️⃣ Updated CalenderDTO.java (Without @Builder)
+⸻
 
-Since we aren’t using @Builder, we explicitly define a no-args constructor and getters/setters.
+Updated DTOs
 
-package com.example.calendar.dto;
+import lombok.*;
 
-import lombok.AllArgsConstructor;
-import lombok.Data;
-import lombok.NoArgsConstructor;
-
-@Data
-@NoArgsConstructor // Required for object creation
-@AllArgsConstructor // Allows full constructor initialization
-public class CalenderDTO {
-    private String id;
-    private String calendarDay;  // Stored as `String` for `yyyy-MM-dd`
-    private boolean businessDayFlag;
-}
-
-2️⃣ Updated CalenderEntity.java (Without @Builder)
-
-Since we don’t want to use @Builder, we define a full constructor and no-args constructor for manual object creation.
-
-package com.example.calendar.entity;
-
-import com.azure.spring.data.cosmos.core.mapping.Container;
-import lombok.AllArgsConstructor;
-import lombok.Data;
-import lombok.NoArgsConstructor;
-import org.springframework.data.annotation.Id;
-
-@Data
-@NoArgsConstructor // Required for Cosmos DB entity creation
-@AllArgsConstructor // Allows constructor-based object creation
-@Container(containerName = "CalendarContainer")
-public class CalenderEntity {
-    @Id
-    private String id;
-    private String calendarDay;  // Stored as String in DB
-    private boolean businessDayFlag;
-}
-
-🔹 Why @NoArgsConstructor and @AllArgsConstructor?
-	•	@NoArgsConstructor is needed by Cosmos DB SDK when mapping database results.
-	•	@AllArgsConstructor lets us create objects easily.
-
-3️⃣ Updated CalenderMapper.java (Without @Builder)
-	•	Manually creates objects instead of using @Builder.
-	•	Uses constructors to keep it readable.
-
-package com.example.calendar.mapper;
-
-import com.example.calendar.dto.CalenderDTO;
-import com.example.calendar.entity.CalenderEntity;
+import java.time.LocalDate;
 import java.util.List;
-import java.util.stream.Collectors;
 
-public class CalenderMapper {
+@Getter
+@Setter
+@AllArgsConstructor
+@NoArgsConstructor
+public class PolicyHolderDTO {
+    private String id;
+    private String policyId;
+    private CustomerType customerType;
+    private String customerId;
+    private PartyType partyType;
+    private List<NameDTO> name;
+    private LocalDate birthDate;
+    private Gender gender;
+    private List<AddressDTO> address;
+    private List<String> email;
+    private List<PhoneNumberDTO> phoneNumber;
+    private List<DigitalTouchpointDTO> digitalTouchpoint;
+    private ReceiptOfNotices receiptOfNotices;
+    private LocalDate identificationDate;
+    private LocalDate effectiveDate;
+    private String relationshipFromInsured;
+    private String contractAge;
+}
 
-    // Convert DTO to Entity (API Request → DB Model)
-    public static CalenderEntity toEntity(CalenderDTO dto) {
-        return new CalenderEntity(
-                dto.getId(),
-                dto.getCalendarDay(),  // Keep it as String since DB stores it as a String
-                dto.isBusinessDayFlag()
-        );
+import lombok.*;
+
+@Getter
+@Setter
+@AllArgsConstructor
+@NoArgsConstructor
+public class NameDTO {
+    private CharacterSetType characterSetType;
+    private String lastName;
+    private String firstName;
+    private String previousLastName;
+    private String otherName;
+    private Boolean namePictorickKanjiFlag;
+    private Boolean nameNonStandardKanjiFlag;
+}
+
+import lombok.*;
+
+@Getter
+@Setter
+@AllArgsConstructor
+@NoArgsConstructor
+public class AddressDTO {
+    private CharacterSetType characterSetType;
+    private AddressType type;
+    private String addressCode;
+    private String postalCode;
+    private String country;
+    private String prefecture;
+    private String city;
+    private String town;
+    private String lane;
+    private String buildingName;
+    private String floorNumber;
+    private String roomNumber;
+}
+
+import lombok.*;
+
+@Getter
+@Setter
+@AllArgsConstructor
+@NoArgsConstructor
+public class PhoneNumberDTO {
+    private PhoneType type;
+    private ContactType contactType;
+    private String number1;
+    private String number2;
+    private String number3;
+}
+
+import lombok.*;
+
+@Getter
+@Setter
+@AllArgsConstructor
+@NoArgsConstructor
+public class DigitalTouchpointDTO {
+    private DigitalType type;
+    private String digitalId;
+}
+
+
+
+⸻
+
+Updated Enums
+
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonValue;
+
+public enum CustomerType {
+    POLICY_HOLDER("policyHolder");
+
+    private final String value;
+
+    CustomerType(String value) {
+        this.value = value;
     }
 
-    // Convert Entity to DTO (DB Model → API Response)
-    public static CalenderDTO toDTO(CalenderEntity entity) {
-        return new CalenderDTO(
-                entity.getId(),
-                entity.getCalendarDay(), // No need for conversion
-                entity.isBusinessDayFlag()
-        );
+    @JsonValue
+    public String getValue() {
+        return value;
     }
 
-    // Convert List of Entities to List of DTOs
-    public static List<CalenderDTO> toDTOList(List<CalenderEntity> entities) {
-        return entities.stream().map(CalenderMapper::toDTO).collect(Collectors.toList());
+    @JsonCreator
+    public static CustomerType fromValue(String value) {
+        for (CustomerType type : values()) {
+            if (type.value.equalsIgnoreCase(value)) {
+                return type;
+            }
+        }
+        throw new IllegalArgumentException("Invalid customerType: " + value);
     }
 }
 
-🚀 Final Summary (Without @Builder)
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonValue;
 
-Feature	With @Builder	Without @Builder (Your Current Choice)
-Object Creation	Class.builder().field(value).build();	new Class(value1, value2, value3);
-Readability	✅ More readable for large objects	❌ Slightly more code for manual instantiation
-Immutability	✅ Immutable by default	❌ Mutable (setters allow changes)
-Required Code	✅ Less boilerplate	❌ More boilerplate
-Performance	⚡ Same as traditional approach	⚡ Same as @Builder
+public enum PartyType {
+    INDIVIDUAL("individual"),
+    CORPORATION("corporation");
 
-📌 When Should You Avoid @Builder?
-	•	When working with JPA/Hibernate Entities (@Builder can cause issues with lazy loading).
-	•	When you prefer explicit constructors for clarity.
-	•	When creating very simple objects with only a few fields.
+    private final String value;
 
-🚀 This solution now works exactly as your original approach but keeps it optimized and structured!
-Let me know if you need any refinements! 😊
+    PartyType(String value) {
+        this.value = value;
+    }
+
+    @JsonValue
+    public String getValue() {
+        return value;
+    }
+
+    @JsonCreator
+    public static PartyType fromValue(String value) {
+        for (PartyType type : values()) {
+            if (type.value.equalsIgnoreCase(value)) {
+                return type;
+            }
+        }
+        throw new IllegalArgumentException("Invalid partyType: " + value);
+    }
+}
+
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonValue;
+
+public enum CharacterSetType {
+    KANJI("kanji"),
+    KANA("kana"),
+    ALFABET("alfabet");
+
+    private final String value;
+
+    CharacterSetType(String value) {
+        this.value = value;
+    }
+
+    @JsonValue
+    public String getValue() {
+        return value;
+    }
+
+    @JsonCreator
+    public static CharacterSetType fromValue(String value) {
+        for (CharacterSetType type : values()) {
+            if (type.value.equalsIgnoreCase(value)) {
+                return type;
+            }
+        }
+        throw new IllegalArgumentException("Invalid characterSetType: " + value);
+    }
+}
+
+(The same structure applies to other enums like Gender, AddressType, PhoneType, etc.)
+
+⸻
+
+Updated Model Classes
+
+import lombok.*;
+
+import java.time.LocalDate;
+import java.util.List;
+
+@Getter
+@Setter
+@AllArgsConstructor
+@NoArgsConstructor
+public class PolicyHolder {
+    private String id;
+    private String policyId;
+    private CustomerType customerType;
+    private String customerId;
+    private PartyType partyType;
+    private List<Name> name;
+    private LocalDate birthDate;
+    private Gender gender;
+    private List<Address> address;
+    private List<String> email;
+    private List<PhoneNumber> phoneNumber;
+    private List<DigitalTouchpoint> digitalTouchpoint;
+    private ReceiptOfNotices receiptOfNotices;
+    private LocalDate identificationDate;
+    private LocalDate effectiveDate;
+    private String relationshipFromInsured;
+    private String contractAge;
+}
+
+import lombok.*;
+
+@Getter
+@Setter
+@AllArgsConstructor
+@NoArgsConstructor
+public class Name {
+    private CharacterSetType characterSetType;
+    private String lastName;
+    private String firstName;
+    private String previousLastName;
+    private String otherName;
+    private Boolean namePictorickKanjiFlag;
+    private Boolean nameNonStandardKanjiFlag;
+}
+
+import lombok.*;
+
+@Getter
+@Setter
+@AllArgsConstructor
+@NoArgsConstructor
+public class Address {
+    private CharacterSetType characterSetType;
+    private AddressType type;
+    private String addressCode;
+    private String postalCode;
+    private String country;
+    private String prefecture;
+    private String city;
+    private String town;
+    private String lane;
+    private String buildingName;
+    private String floorNumber;
+    private String roomNumber;
+}
+
+(Similar changes for PhoneNumber, DigitalTouchpoint, etc.)
+
+⸻
+
+Updated Mapper Class
+
+Since you mentioned that the mapper structure was different from what we used before, I’ll adjust it accordingly.
+
+import org.mapstruct.Mapper;
+import org.mapstruct.Mapping;
+import org.mapstruct.factory.Mappers;
+import java.util.List;
+
+@Mapper(componentModel = "spring")
+public interface PolicyHolderMapper {
+    PolicyHolderMapper INSTANCE = Mappers.getMapper(PolicyHolderMapper.class);
+
+    @Mapping(target = "id", source = "policyHolder.id")
+    @Mapping(target = "policyId", source = "policyHolder.policyId")
+    PolicyHolderDTO toDTO(PolicyHolder policyHolder);
+
+    @Mapping(target = "id", source = "policyHolderDTO.id")
+    @Mapping(target = "policyId", source = "policyHolderDTO.policyId")
+    PolicyHolder toModel(PolicyHolderDTO policyHolderDTO);
+
+    List<PolicyHolderDTO> toDTOList(List<PolicyHolder> policyHolders);
+    List<PolicyHolder> toModelList(List<PolicyHolderDTO> policyHolderDTOs);
+}
+
+
+
+⸻
+
+Changes Summary
+
+✔ Lombok Annotations added: @Getter, @Setter, @AllArgsConstructor, @NoArgsConstructor
+✔ Enums Improved: Now include @JsonCreator and @JsonValue for JSON parsing.
+✔ Mapper Updated: Matches the style used in the previous project with @Mapping.
+
+⸻
+
+This should now match the previous project implementation. Let me know if you need modifications or additional files!
