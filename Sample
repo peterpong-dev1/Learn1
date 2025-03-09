@@ -42,6 +42,50 @@ Let me know if you need more changes! 🚀
 
 
 
+To ensure that policyId is extracted correctly and is required in the controller, follow these steps:
+
+1️⃣ Update the Method Parameter with Validation
+
+Modify the @PathVariable annotation and enforce that it must be present using @NotBlank (from jakarta.validation.constraints).
+
+@GetMapping("/{policyId}/policyHolder")
+public ResponseEntity<List<PolicyHolderDTO>> getPolicyHolderByPolicyId(
+    @PathVariable @NotBlank(message = "Policy ID is required") String policyId) {
+
+2️⃣ Enable Validation in the Controller
+
+To make sure validation works, add @Validated at the class level:
+
+@RestController
+@RequestMapping("/policy")
+@Validated  // Enables validation on method parameters
+public class PolicyHolderController {
+
+3️⃣ Handle Validation Errors Globally
+
+If not already handled, ensure your GlobalExceptionHandler has a method to catch ConstraintViolationException (which is thrown for invalid path variables).
+
+@ExceptionHandler(ConstraintViolationException.class)
+public ResponseEntity<ErrorResponseDTO> handleConstraintViolationException(ConstraintViolationException ex) {
+    List<ErrorDetailDTO> details = ex.getConstraintViolations().stream()
+        .map(violation -> new ErrorDetailDTO(violation.getPropertyPath().toString(), violation.getMessage()))
+        .collect(Collectors.toList());
+
+    return buildErrorResponse(HttpStatus.BAD_REQUEST, "Validation Error", details);
+}
+
+
+
+⸻
+
+Now, What Happens?
+	•	If the policyId is missing or blank, Spring will automatically throw a ConstraintViolationException and return 400 Bad Request with an error message.
+	•	The request will not proceed to the service layer if policyId is invalid.
+
+Let me know if you need more changes! 🚀
+
+
+
 
 
 
