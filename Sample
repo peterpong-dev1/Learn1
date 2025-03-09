@@ -1,34 +1,39 @@
-import lombok.*;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import com.azure.spring.data.cosmos.core.mapping.Container;
+import com.azure.spring.data.cosmos.core.mapping.PartitionKey;
+import org.springframework.data.annotation.Id;
 import java.time.LocalDate;
 import java.util.List;
 
-@Getter
-@Setter
+@Data
 @NoArgsConstructor
 @AllArgsConstructor
-@Builder
-public class AgentDTO {
+@Container(containerName = "Agents")
+public class Agent {
+    @Id
     private String id;
+    
+    @PartitionKey
     private String agentId;
     private String clerkNumber;
     private String roles;
-    private List<NameDTO> name;
+    private List<Name> name;
     private LocalDate birthDate;
     private Gender gender;
-    private List<PhoneNumberDTO> phoneNumber;
-    private List<EmailDTO> email;
-    private List<DigitalTouchpointDTO> digitalTouchpoint;
-    private SolicitorDTO solicitor;
-    private AgencyDTO agency;
-    private AgencyOfficeDTO agencyOffice;
+    private List<PhoneNumber> phoneNumber;
+    private List<Email> email;
+    private List<DigitalTouchpoint> digitalTouchpoint;
+    private Solicitor solicitor;
+    private Agency agency;
+    private AgencyOffice agencyOffice;
 }
 
-@Getter
-@Setter
+@Data
 @NoArgsConstructor
 @AllArgsConstructor
-@Builder
-public class NameDTO {
+public class Name {
     private CharacterSetType characterSetType;
     private String lastName;
     private String firstName;
@@ -36,12 +41,10 @@ public class NameDTO {
     private boolean nameNonStandardKanjiFlag;
 }
 
-@Getter
-@Setter
+@Data
 @NoArgsConstructor
 @AllArgsConstructor
-@Builder
-public class PhoneNumberDTO {
+public class PhoneNumber {
     private PhoneType type;
     private ContactType contactType;
     private String number1;
@@ -49,32 +52,26 @@ public class PhoneNumberDTO {
     private String number3;
 }
 
-@Getter
-@Setter
+@Data
 @NoArgsConstructor
 @AllArgsConstructor
-@Builder
-public class EmailDTO {
+public class Email {
     private String address;
     private boolean addressValidated;
 }
 
-@Getter
-@Setter
+@Data
 @NoArgsConstructor
 @AllArgsConstructor
-@Builder
-public class DigitalTouchpointDTO {
+public class DigitalTouchpoint {
     private DigitalType type;
     private String digitalId;
 }
 
-@Getter
-@Setter
+@Data
 @NoArgsConstructor
 @AllArgsConstructor
-@Builder
-public class SolicitorDTO {
+public class Solicitor {
     private String employeeId;
     private String employeeNumber;
     private String name;
@@ -84,44 +81,158 @@ public class SolicitorDTO {
     private String emailAddress;
 }
 
-@Getter
-@Setter
+@Data
 @NoArgsConstructor
 @AllArgsConstructor
-@Builder
-public class AgencyDTO {
+public class Agency {
     private String associationRegistrationNumber;
     private String agencyNumber;
     private String name;
 }
 
-@Getter
-@Setter
+@Data
 @NoArgsConstructor
 @AllArgsConstructor
-@Builder
-public class AgencyOfficeDTO {
+public class AgencyOffice {
     private String officeNumber;
     private String name;
 }
 
-// Enums
+// Enum Implementations
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonValue;
+
 public enum CharacterSetType {
-    KANJI, KANA, ALFABET;
+    KANJI("kanji"),
+    KANA("kana"),
+    ALFABET("alfabet");
+
+    private final String value;
+
+    CharacterSetType(String value) {
+        this.value = value;
+    }
+
+    @JsonValue
+    public String getValue() {
+        return value;
+    }
+
+    @JsonCreator
+    public static CharacterSetType fromValue(String value) {
+        for (CharacterSetType type : CharacterSetType.values()) {
+            if (type.value.equalsIgnoreCase(value)) {
+                return type;
+            }
+        }
+        throw new IllegalArgumentException("Invalid CharacterSetType: " + value);
+    }
 }
 
 public enum Gender {
-    MALE, FEMALE;
+    MALE("male"),
+    FEMALE("female");
+
+    private final String value;
+
+    Gender(String value) {
+        this.value = value;
+    }
+
+    @JsonValue
+    public String getValue() {
+        return value;
+    }
+
+    @JsonCreator
+    public static Gender fromValue(String value) {
+        for (Gender type : Gender.values()) {
+            if (type.value.equalsIgnoreCase(value)) {
+                return type;
+            }
+        }
+        throw new IllegalArgumentException("Invalid Gender: " + value);
+    }
 }
 
 public enum PhoneType {
-    MOBILE, LANDLINE, FAX;
+    MOBILE("mobile"),
+    LANDLINE("landline"),
+    FAX("fax");
+
+    private final String value;
+
+    PhoneType(String value) {
+        this.value = value;
+    }
+
+    @JsonValue
+    public String getValue() {
+        return value;
+    }
+
+    @JsonCreator
+    public static PhoneType fromValue(String value) {
+        for (PhoneType type : PhoneType.values()) {
+            if (type.value.equalsIgnoreCase(value)) {
+                return type;
+            }
+        }
+        throw new IllegalArgumentException("Invalid PhoneType: " + value);
+    }
 }
 
 public enum ContactType {
-    HOME, OFFICE, BUSINESS_HOURS, OTHERS;
+    HOME("home"),
+    OFFICE("office"),
+    BUSINESS_HOURS("business_hours"),
+    OTHERS("others");
+
+    private final String value;
+
+    ContactType(String value) {
+        this.value = value;
+    }
+
+    @JsonValue
+    public String getValue() {
+        return value;
+    }
+
+    @JsonCreator
+    public static ContactType fromValue(String value) {
+        for (ContactType type : ContactType.values()) {
+            if (type.value.equalsIgnoreCase(value)) {
+                return type;
+            }
+        }
+        throw new IllegalArgumentException("Invalid ContactType: " + value);
+    }
 }
 
 public enum DigitalType {
-    PORTAL_SITE, LINE, OTHERS;
+    PORTAL_SITE("portal_site"),
+    LINE("line"),
+    OTHERS("others");
+
+    private final String value;
+
+    DigitalType(String value) {
+        this.value = value;
+    }
+
+    @JsonValue
+    public String getValue() {
+        return value;
+    }
+
+    @JsonCreator
+    public static DigitalType fromValue(String value) {
+        for (DigitalType type : DigitalType.values()) {
+            if (type.value.equalsIgnoreCase(value)) {
+                return type;
+            }
+        }
+        throw new IllegalArgumentException("Invalid DigitalType: " + value);
+    }
 }
