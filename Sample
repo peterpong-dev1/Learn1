@@ -1,32 +1,34 @@
-Sure! Below is the Model Layer code for your project, generated based on your Swagger file.
+📌 Since You Are Using Azure Cosmos DB (Not a Relational Database)
+
+You’re right! Since you are using Azure Cosmos DB and not a relational database (RDBMS like MySQL, PostgreSQL, etc.), JPA annotations like @Entity, @ManyToOne, @OneToMany, @Enumerated, etc., are NOT required.
+
+Cosmos DB is a NoSQL document database, so all data is stored as JSON documents, and there are no relational constraints like foreign keys.
 
 ⸻
 
-📌 Key Points in This Implementation
+🚀 Changes Based on Cosmos DB (NoSQL)
 
-✅ Models represent the database structure (Used with JPA if needed).
-✅ Enums are stored as @Enumerated(EnumType.STRING) to avoid ordinal issues.
-✅ Mapped to DTOs using a Mapper class (PolicyHolderMapper).
-✅ Uses Lombok (@Getter, @Setter, @NoArgsConstructor, @AllArgsConstructor) to reduce boilerplate.
-✅ Date fields (LocalDate) are mapped properly.
+✅ ❌ Remove all JPA annotations (@Entity, @Table, @OneToMany, @ManyToOne, etc.)
+✅ ✅ Keep only the model fields and Lombok annotations (@Getter, @Setter)
+✅ ✅ Use Cosmos DB SDK (@Container, @PartitionKey) instead of JPA annotations
 
 ⸻
 
-📂 Folder Structure
+📂 Updated Folder Structure
 
 src/main/java/com/example/project/
 │── controller/
 │── service/
 │── repository/
 │── dto/
-│── model/  ✅ **(Contains database entities)**
+│── model/  ✅ **(Cosmos DB models without JPA annotations)**
 │      ├── PolicyHolder.java
 │      ├── NameDetails.java
 │      ├── AddressDetails.java
 │      ├── PhoneNumber.java
 │      ├── Contact.java
 │      ├── DigitalContact.java
-│      ├── enums/  ✅ **(Contains all Enums)**
+│      ├── enums/  ✅ **(Enums remain the same)**
 │      │      ├── CustomerType.java
 │      │      ├── PartyType.java
 │      │      ├── CharacterSetType.java
@@ -35,6 +37,8 @@ src/main/java/com/example/project/
 │      │      ├── ContactType.java
 │      │      ├── DigitalType.java
 │      │      ├── ReceiptOfNotices.java
+│── repository/
+│      ├── PolicyHolderRepository.java ✅ (Uses Cosmos DB SDK, not JPA)
 │── mapper/
 │── config/
 │── exception/
@@ -44,12 +48,13 @@ src/main/java/com/example/project/
 
 ⸻
 
-🔹 1. PolicyHolder.java (Main Entity)
+✅ 1. Updated PolicyHolder.java (No JPA, Now Cosmos DB)
 
 package com.example.project.model;
 
+import com.azure.spring.data.cosmos.core.mapping.Container;
+import com.azure.spring.data.cosmos.core.mapping.PartitionKey;
 import com.example.project.model.enums.*;
-import jakarta.persistence.*;
 import lombok.*;
 
 import java.util.List;
@@ -58,40 +63,24 @@ import java.util.List;
 @Setter
 @NoArgsConstructor
 @AllArgsConstructor
-@Entity
-@Table(name = "policy_holder")
+@Container(containerName = "policyHolder") // ✅ Cosmos DB container annotation
 public class PolicyHolder {
 
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    private String id;
 
+    @PartitionKey // ✅ Needed for Cosmos DB partitioning
     private String policyId;
 
-    @Enumerated(EnumType.STRING)
     private CustomerType customerType;
-
     private String customerId;
-
-    @Enumerated(EnumType.STRING)
     private PartyType partyType;
 
-    @OneToMany(mappedBy = "policyHolder", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
     private List<NameDetails> name;
-
-    @OneToMany(mappedBy = "policyHolder", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
     private List<AddressDetails> address;
-
-    @OneToMany(mappedBy = "policyHolder", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
     private List<PhoneNumber> phone;
-
-    @OneToMany(mappedBy = "policyHolder", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
     private List<Contact> contact;
-
-    @OneToMany(mappedBy = "policyHolder", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
     private List<DigitalContact> digitalContact;
 
-    @Enumerated(EnumType.STRING)
     private ReceiptOfNotices receiptOfNotices;
 }
 
@@ -99,48 +88,33 @@ public class PolicyHolder {
 
 ⸻
 
-🔹 2. NameDetails.java
+✅ 2. Updated NameDetails.java (No JPA, Pure Model)
 
 package com.example.project.model;
 
 import com.example.project.model.enums.CharacterSetType;
-import jakarta.persistence.*;
 import lombok.*;
 
 @Getter
 @Setter
 @NoArgsConstructor
 @AllArgsConstructor
-@Entity
-@Table(name = "name_details")
 public class NameDetails {
-
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
-
-    @Enumerated(EnumType.STRING)
     private CharacterSetType characterSetType;
-
     private String fullName;
     private String lastName;
     private String firstName;
-
-    @ManyToOne
-    @JoinColumn(name = "policy_holder_id", nullable = false)
-    private PolicyHolder policyHolder;
 }
 
 
 
 ⸻
 
-🔹 3. AddressDetails.java
+✅ 3. Updated AddressDetails.java (No JPA, Pure Model)
 
 package com.example.project.model;
 
 import com.example.project.model.enums.AddressType;
-import jakarta.persistence.*;
 import lombok.*;
 
 import java.time.LocalDate;
@@ -149,17 +123,8 @@ import java.time.LocalDate;
 @Setter
 @NoArgsConstructor
 @AllArgsConstructor
-@Entity
-@Table(name = "address_details")
 public class AddressDetails {
-
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
-
-    @Enumerated(EnumType.STRING)
     private AddressType addressType;
-
     private String postalCode;
     private String country;
     private String state;
@@ -167,138 +132,92 @@ public class AddressDetails {
     private String street;
     private LocalDate effectiveDate;
     private LocalDate terminationDate;
-
-    @ManyToOne
-    @JoinColumn(name = "policy_holder_id", nullable = false)
-    private PolicyHolder policyHolder;
 }
 
 
 
 ⸻
 
-🔹 4. PhoneNumber.java
+✅ 4. Updated PhoneNumber.java
 
 package com.example.project.model;
 
 import com.example.project.model.enums.PhoneType;
-import jakarta.persistence.*;
 import lombok.*;
 
 @Getter
 @Setter
 @NoArgsConstructor
 @AllArgsConstructor
-@Entity
-@Table(name = "phone_number")
 public class PhoneNumber {
-
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
-
-    @Enumerated(EnumType.STRING)
     private PhoneType phoneType;
-
     private String phoneNumber;
-
-    @ManyToOne
-    @JoinColumn(name = "policy_holder_id", nullable = false)
-    private PolicyHolder policyHolder;
 }
 
 
 
 ⸻
 
-🔹 5. Contact.java
+✅ 5. Updated Contact.java
 
 package com.example.project.model;
 
 import com.example.project.model.enums.ContactType;
-import jakarta.persistence.*;
 import lombok.*;
 
 @Getter
 @Setter
 @NoArgsConstructor
 @AllArgsConstructor
-@Entity
-@Table(name = "contact")
 public class Contact {
-
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
-
-    @Enumerated(EnumType.STRING)
     private ContactType contactType;
-
     private String contactDetails;
-
-    @ManyToOne
-    @JoinColumn(name = "policy_holder_id", nullable = false)
-    private PolicyHolder policyHolder;
 }
 
 
 
 ⸻
 
-🔹 6. DigitalContact.java
+✅ 6. Updated DigitalContact.java
 
 package com.example.project.model;
 
 import com.example.project.model.enums.DigitalType;
-import jakarta.persistence.*;
 import lombok.*;
 
 @Getter
 @Setter
 @NoArgsConstructor
 @AllArgsConstructor
-@Entity
-@Table(name = "digital_contact")
 public class DigitalContact {
-
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
-
-    @Enumerated(EnumType.STRING)
     private DigitalType digitalType;
-
     private String digitalContactDetails;
-
-    @ManyToOne
-    @JoinColumn(name = "policy_holder_id", nullable = false)
-    private PolicyHolder policyHolder;
 }
 
 
 
 ⸻
 
-📌 Summary of Model Enhancements
+📌 What’s Changed?
 
-Model Class	Relationships Added?	Enums Used?	Fixes Applied?
-PolicyHolder	✅ (@OneToMany)	✅ (CustomerType, PartyType, ReceiptOfNotices)	✅
-NameDetails	✅ (@ManyToOne)	✅ (CharacterSetType)	✅
-AddressDetails	✅ (@ManyToOne)	✅ (AddressType)	✅
-PhoneNumber	✅ (@ManyToOne)	✅ (PhoneType)	✅
-Contact	✅ (@ManyToOne)	✅ (ContactType)	✅
-DigitalContact	✅ (@ManyToOne)	✅ (DigitalType)	✅
+Aspect	Before (JPA, Relational DB)	Now (Cosmos DB, NoSQL)
+Annotations Used	@Entity, @Table, @OneToMany, @ManyToOne, @Enumerated	@Container, @PartitionKey
+Relationship Mapping	@OneToMany, @ManyToOne	Replaced with List<>
+Primary Key	@Id	Cosmos DB uses id field
+Partitioning	N/A (handled by RDBMS)	@PartitionKey on key fields
+JPA Repository	JpaRepository<PolicyHolder, String>	CosmosRepository<PolicyHolder, String>
+SQL Queries	@Query annotations	Uses Cosmos SQL API
 
 
 
 ⸻
 
-📌 Next Steps
+✅ Next Steps
 
 Would you like me to:
-	1.	Generate Repository Layer (PolicyHolderRepository.java & others)?
-	2.	Generate the Mapper Layer to convert between Model ↔ DTOs?
-	3.	Generate Service Layer (PolicyHolderService.java)?
-	4.	Generate Controller (PolicyHolderController.java) with API Endpoints?
+	1.	Generate the Repository Layer (PolicyHolderRepository.java using Cosmos SDK)?
+	2.	Generate the Mapper Layer (PolicyHolderMapper.java) to convert between DTO & Model?
+	3.	Generate the Service Layer (PolicyHolderService.java)?
+	4.	Generate the Controller (PolicyHolderController.java) with API Endpoints?
 
 Let me know how you’d like to proceed! 🚀
