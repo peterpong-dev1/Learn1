@@ -1,150 +1,49 @@
 @startuml
-start
-
-:Client Sends API Request;
-if (Filter Enabled?) then (Yes)
-    :Extract Request ID & Log Input Fields;
-    :Pass Request to Controller;
-endif
-
-:Controller Receives API Request;
-if (Is Request Valid?) then (Yes)
-    :Convert DTO to Model;
-    :Call Service Layer;
-else (No)
-    :Return 400 Bad Request;
-    stop
-endif
-
-:Service Layer Executes Business Logic;
-:Call Repository Layer;
-
-if (DB Query Success?) then (Yes)
-    :Save Data in CosmosDB;
-    :Return 201 Created Response;
-else (No)
-    :Return 500 Internal Server Error;
-    stop
-endif
-
-:Log API Response;
-stop
-@enduml
-
-
-
-
-Here’s both the PlantUML flowchart (for Visio import) and a detailed sequence diagram showing how your POST API flows through different layers.
-
-⸻
-
-📌 1️⃣ Visio-Compatible Flowchart (PlantUML Format)
-
-You can import this directly into Visio using PlantUML tools.
-
-@startuml
-start
-
-:Client Sends API Request;
-if (Filter Enabled?) then (Yes)
-    :Extract Request ID & Log Input Fields;
-    :Pass Request to Controller;
-endif
-
-:Controller Receives API Request;
-if (Is Request Valid?) then (Yes)
-    :Convert DTO to Model;
-    :Call Service Layer;
-else (No)
-    :Return 400 Bad Request;
-    stop
-endif
-
-:Service Layer Executes Business Logic;
-:Call Repository Layer;
-
-if (DB Query Success?) then (Yes)
-    :Save Data in CosmosDB;
-    :Return 201 Created Response;
-else (No)
-    :Return 500 Internal Server Error;
-    stop
-endif
-
-:Log API Response;
-stop
-@enduml
-
-📌 How to Import into Visio
-	1.	Go to PlantUML Online Editor.
-	2.	Paste the code above and generate the diagram.
-	3.	Export it as SVG / PNG → Import into Visio.
-	4.	Modify it as needed.
-
-⸻
-
-📌 2️⃣ Sequence Diagram (Detailed)
-
-This sequence diagram represents the flow of a POST request from the client to CosmosDB.
-
-@startuml
 actor Client
-participant "Filter" as F
 participant "Controller" as C
-participant "Service" as S
+participant "Service Layer" as S
+participant "Validation Utility" as V
 participant "Repository" as R
 database "CosmosDB" as DB
 participant "Exception Handler" as EH
 participant "Logger" as L
 
-Client -> C: Sends POST Request
-C -> F: Extract Request ID (If Used)
-F -> L: Log Request Metadata
-F -> C: Pass Request to Controller
+Client -> C: Sends API Request
+C -> L: Log Request Metadata
+C -> S: Calls Service with Request Data
 
-C -> S: Call Service Layer with DTO
-S -> R: Convert DTO to Model & Call Repository
-R -> DB: Execute Query in CosmosDB
-
-alt Database Query Success
-    DB --> R: Returns Data
-    R --> S: Returns Success Response
-    S --> C: Returns 201 Created
-    C --> Client: Responds with 201 Created
-else Database Query Fails
-    DB --> R: Throws Exception
-    R --> EH: Global Exception Handler Catches Error
-    EH --> Client: Responds with 500 Internal Server Error
+alt Input Validation Fails
+    S -> V: Validate Request Fields
+    V --> S: Returns Validation Error
+    S -> EH: Throws BadRequestException (400)
+    EH --> Client: Returns 400 Bad Request
+    L -> L: Log Validation Failure
+    return
 end
 
-L -> L: Log API Response
+S -> R: Convert DTO to Model & Call Repository
+
+alt Data Not Found
+    R -> DB: Query Data
+    DB --> R: No Matching Data
+    R -> EH: Throws DataNotFoundException (404)
+    EH --> Client: Returns 404 Not Found
+    L -> L: Log Data Not Found
+    return
+end
+
+alt Database Failure
+    R -> DB: Query Fails
+    DB --> R: Throws Exception
+    R -> EH: Global Exception Handler Catches Error
+    EH --> Client: Returns 500 Internal Server Error
+    L -> L: Log DB Failure
+    return
+end
+
+DB --> R: Returns Retrieved Data
+R --> S: Returns Model Data
+S --> C: Returns Response DTO
+C --> Client: Sends 200 OK Response
+L -> L: Log Successful Response
 @enduml
-
-📌 How to Import into Visio
-	1.	Copy the sequence diagram code above.
-	2.	Paste it into PlantUML Online Editor or a tool like IntelliJ / VS Code.
-	3.	Export as SVG and import into Visio.
-
-⸻
-
-📌 Summary: What’s Included in Both Diagrams?
-
-Component	Flowchart	Sequence Diagram	Description
-Client (User/API Call)	✅	✅	Sends the API request
-Filter (If Used)	✅	✅	Extracts metadata (Request ID)
-Controller	✅	✅	Receives and validates the request
-Service Layer	✅	✅	Processes business logic
-Repository Layer	✅	✅	Executes DB query
-Database (CosmosDB)	✅	✅	Stores data
-Exception Handling	✅	✅	Catches 400/500 errors
-Logging (Logback.xml)	✅	✅	Logs requests, responses, errors
-
-
-
-⸻
-
-🚀 Next Steps
-	•	For Flowchart: Import the PlantUML Flowchart into Visio.
-	•	For Sequence Diagram: Use the sequence diagram to document API request flow.
-
-Would you like any modifications to the diagrams before you start creating them in Visio? 🚀
