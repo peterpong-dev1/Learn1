@@ -1,5 +1,6 @@
 @startuml
 actor Client
+participant "Filter" as F
 participant "Controller" as C
 participant "Service Layer" as S
 participant "Validation Utility" as V
@@ -8,8 +9,11 @@ database "CosmosDB" as DB
 participant "Exception Handler" as EH
 participant "Logger" as L
 
-Client -> C: Sends API Request
-C -> L: Log Request Metadata
+Client -> F: Sends API Request
+F -> L: Log Incoming Request and Extract Request ID
+F -> C: Passes Request to Controller
+
+C -> L: Log Request Processing
 C -> S: Calls Service with Request Data
 
 alt Input Validation Fails
@@ -21,7 +25,7 @@ alt Input Validation Fails
     return
 end
 
-S -> R: Convert DTO to Model & Call Repository
+S -> R: Call Repository to Query Database
 
 alt Data Not Found
     R -> DB: Query Data
@@ -42,8 +46,8 @@ alt Database Failure
 end
 
 DB --> R: Returns Retrieved Data
-R --> S: Returns Model Data
-S --> C: Returns Response DTO
+R --> S: Returns Data
+S --> C: Returns Data
 C --> Client: Sends 200 OK Response
 L -> L: Log Successful Response
 @enduml
