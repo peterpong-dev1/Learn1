@@ -1,434 +1,127 @@
-To ensure that policyId is extracted correctly and is required in the controller, follow these steps:
-
-1️⃣ Update the Method Parameter with Validation
-
-Modify the @PathVariable annotation and enforce that it must be present using @NotBlank (from jakarta.validation.constraints).
-
-@GetMapping("/{policyId}/policyHolder")
-public ResponseEntity<List<PolicyHolderDTO>> getPolicyHolderByPolicyId(
-    @PathVariable @NotBlank(message = "Policy ID is required") String policyId) {
-
-2️⃣ Enable Validation in the Controller
-
-To make sure validation works, add @Validated at the class level:
-
-@RestController
-@RequestMapping("/policy")
-@Validated  // Enables validation on method parameters
-public class PolicyHolderController {
-
-3️⃣ Handle Validation Errors Globally
-
-If not already handled, ensure your GlobalExceptionHandler has a method to catch ConstraintViolationException (which is thrown for invalid path variables).
-
-@ExceptionHandler(ConstraintViolationException.class)
-public ResponseEntity<ErrorResponseDTO> handleConstraintViolationException(ConstraintViolationException ex) {
-    List<ErrorDetailDTO> details = ex.getConstraintViolations().stream()
-        .map(violation -> new ErrorDetailDTO(violation.getPropertyPath().toString(), violation.getMessage()))
-        .collect(Collectors.toList());
-
-    return buildErrorResponse(HttpStatus.BAD_REQUEST, "Validation Error", details);
-}
-
-
-
-⸻
-
-Now, What Happens?
-	•	If the policyId is missing or blank, Spring will automatically throw a ConstraintViolationException and return 400 Bad Request with an error message.
-	•	The request will not proceed to the service layer if policyId is invalid.
-
-Let me know if you need more changes! 🚀
-
-
-
-To ensure that policyId is extracted correctly and is required in the controller, follow these steps:
-
-1️⃣ Update the Method Parameter with Validation
-
-Modify the @PathVariable annotation and enforce that it must be present using @NotBlank (from jakarta.validation.constraints).
-
-@GetMapping("/{policyId}/policyHolder")
-public ResponseEntity<List<PolicyHolderDTO>> getPolicyHolderByPolicyId(
-    @PathVariable @NotBlank(message = "Policy ID is required") String policyId) {
-
-2️⃣ Enable Validation in the Controller
-
-To make sure validation works, add @Validated at the class level:
-
-@RestController
-@RequestMapping("/policy")
-@Validated  // Enables validation on method parameters
-public class PolicyHolderController {
-
-3️⃣ Handle Validation Errors Globally
-
-If not already handled, ensure your GlobalExceptionHandler has a method to catch ConstraintViolationException (which is thrown for invalid path variables).
-
-@ExceptionHandler(ConstraintViolationException.class)
-public ResponseEntity<ErrorResponseDTO> handleConstraintViolationException(ConstraintViolationException ex) {
-    List<ErrorDetailDTO> details = ex.getConstraintViolations().stream()
-        .map(violation -> new ErrorDetailDTO(violation.getPropertyPath().toString(), violation.getMessage()))
-        .collect(Collectors.toList());
-
-    return buildErrorResponse(HttpStatus.BAD_REQUEST, "Validation Error", details);
-}
-
-
-
-⸻
-
-Now, What Happens?
-	•	If the policyId is missing or blank, Spring will automatically throw a ConstraintViolationException and return 400 Bad Request with an error message.
-	•	The request will not proceed to the service layer if policyId is invalid.
-
-Let me know if you need more changes! 🚀
-
-
-
-
-
-
-
-
-
-
-
-You’re right! The GET API should retrieve data using policyId as mentioned in the Swagger file instead of using a general id. Based on your Swagger file, I will update the implementation to align correctly with the structure.
-
-⸻
-
-🔹 Updated Controller - PolicyHolderController.java
-
-package jp.co.neofirst.servicing.controller;
-
-import jp.co.neofirst.servicing.dto.PolicyHolderDTO;
-import jp.co.neofirst.servicing.service.PolicyHolderService;
-import lombok.RequiredArgsConstructor;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
-
-@RestController
-@RequestMapping("/policyholder")
-@RequiredArgsConstructor
-public class PolicyHolderController {
-
-    private static final Logger logger = LoggerFactory.getLogger(PolicyHolderController.class);
-    private final PolicyHolderService policyHolderService;
-
-    /**
-     * Fetch policyholder details by policyId.
-     *
-     * @param policyId The unique policy ID.
-     * @return PolicyHolderDTO if found, else 404.
-     */
-    @GetMapping
-    public ResponseEntity<PolicyHolderDTO> getPolicyHolderByPolicyId(@RequestParam String policyId) {
-        logger.info("Fetching PolicyHolder details for Policy ID: {}", policyId);
-        PolicyHolderDTO policyHolderDTO = policyHolderService.getPolicyHolderByPolicyId(policyId);
-        return ResponseEntity.ok(policyHolderDTO);
-    }
-}
-
-✅ Changes made:
-	•	Instead of @GetMapping("/{id}"), policyId is now a request parameter: @RequestParam String policyId.
-	•	Aligned with Swagger file requirement.
-
-⸻
-
-🔹 Updated Service - PolicyHolderService.java
-
-package jp.co.neofirst.servicing.service;
-
-import jp.co.neofirst.servicing.dto.PolicyHolderDTO;
-import jp.co.neofirst.servicing.mapper.PolicyHolderMapper;
-import jp.co.neofirst.servicing.model.PolicyHolder;
-import jp.co.neofirst.servicing.repository.PolicyHolderRepository;
-import lombok.RequiredArgsConstructor;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Service;
-
-@Service
-@RequiredArgsConstructor
-public class PolicyHolderService {
-
-    private static final Logger logger = LoggerFactory.getLogger(PolicyHolderService.class);
-    private final PolicyHolderRepository policyHolderRepository;
-    private final PolicyHolderMapper policyHolderMapper;
-
-    /**
-     * Fetches policyholder details by policyId.
-     *
-     * @param policyId Policy ID.
-     * @return Mapped PolicyHolderDTO.
-     */
-    public PolicyHolderDTO getPolicyHolderByPolicyId(String policyId) {
-        logger.info("Searching for PolicyHolder with Policy ID: {}", policyId);
-        
-        PolicyHolder policyHolder = policyHolderRepository.findByPolicyId(policyId)
-            .orElseThrow(() -> {
-                logger.error("PolicyHolder not found for Policy ID: {}", policyId);
-                return new RuntimeException("PolicyHolder not found with Policy ID: " + policyId);
-            });
-
-        return policyHolderMapper.toDTO(policyHolder);
-    }
-}
-
-✅ Changes made:
-	•	Replaced id with policyId.
-	•	Calls repository method findByPolicyId(policyId).
-
-⸻
-
-🔹 Updated Repository - PolicyHolderRepository.java
-
-package jp.co.neofirst.servicing.repository;
-
-import jp.co.neofirst.servicing.model.PolicyHolder;
-import org.springframework.data.repository.CrudRepository;
-import org.springframework.stereotype.Repository;
-
-import java.util.Optional;
-
-@Repository
-public interface PolicyHolderRepository extends CrudRepository<PolicyHolder, String> {
-    Optional<PolicyHolder> findByPolicyId(String policyId);
-}
-
-✅ Changes made:
-	•	Added findByPolicyId(String policyId) method for querying Cosmos DB.
-
-⸻
-
-🔹 Summary of Fixes
-	1.	GET API now uses policyId as per Swagger file.
-	2.	Changed repository query method to findByPolicyId().
-	3.	Updated exception messages to use policyId instead of id.
-
-⸻
-
-✅ Next Steps
-	•	Do you need pagination or filtering?
-	•	Do you want a custom exception class instead of RuntimeException?
-	•	Would you like a log enhancement for better debugging?
-
-Let me know if this works as expected! 🚀
-
-Updated Implementation - Handling Multiple Request Parameters & Dynamic Queries
-
-You’re right! The GET API should handle:
-	1.	Request ID (for logging and tracking).
-	2.	Policy ID (used for fetching data from Cosmos DB).
-
-Additionally, since you asked about dynamic queries, I will update the repository implementation to support querying via a concrete repository class using a queries.properties file instead of a simple interface-based repository.
-
-⸻
-
-🔹 Updated Controller - PolicyHolderController.java
-
-package jp.co.neofirst.servicing.controller;
-
-import jp.co.neofirst.servicing.dto.PolicyHolderDTO;
-import jp.co.neofirst.servicing.service.PolicyHolderService;
-import lombok.RequiredArgsConstructor;
-import org.slf4j.Logger;
-import org.slf4j.MDC;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
-
-@RestController
-@RequestMapping("/policyholder")
-@RequiredArgsConstructor
-public class PolicyHolderController {
-
-    private static final Logger logger = LoggerFactory.getLogger(PolicyHolderController.class);
-    private final PolicyHolderService policyHolderService;
-
-    /**
-     * Fetch policyholder details by policyId.
-     *
-     * @param requestId The unique request ID (used for tracking).
-     * @param policyId  The unique policy ID (used for fetching data).
-     * @return PolicyHolderDTO if found, else 404.
-     */
-    @GetMapping
-    public ResponseEntity<PolicyHolderDTO> getPolicyHolderByPolicyId(
-            @RequestHeader("X-Request-ID") String requestId,
-            @RequestParam String policyId) {
-
-        MDC.put("requestId", requestId); // Store request ID for logging
-        logger.info("Fetching PolicyHolder details for Policy ID: {}", policyId);
-
-        PolicyHolderDTO policyHolderDTO = policyHolderService.getPolicyHolderByPolicyId(policyId);
-
-        MDC.clear(); // Clear MDC after request is processed
-        return ResponseEntity.ok(policyHolderDTO);
-    }
-}
-
-✅ Changes made:
-	•	Extracted Request ID from @RequestHeader("X-Request-ID").
-	•	Used MDC.put("requestId", requestId) to make Request ID available in logs.
-	•	Cleared MDC after request processing.
-
-⸻
-
-🔹 Updated Service - PolicyHolderService.java
-
-package jp.co.neofirst.servicing.service;
-
-import jp.co.neofirst.servicing.dto.PolicyHolderDTO;
-import jp.co.neofirst.servicing.mapper.PolicyHolderMapper;
-import jp.co.neofirst.servicing.model.PolicyHolder;
-import jp.co.neofirst.servicing.repository.PolicyHolderRepository;
-import lombok.RequiredArgsConstructor;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Service;
-
-@Service
-@RequiredArgsConstructor
-public class PolicyHolderService {
-
-    private static final Logger logger = LoggerFactory.getLogger(PolicyHolderService.class);
-    private final PolicyHolderRepository policyHolderRepository;
-    private final PolicyHolderMapper policyHolderMapper;
-
-    /**
-     * Fetches policyholder details by policyId.
-     *
-     * @param policyId Policy ID.
-     * @return Mapped PolicyHolderDTO.
-     */
-    public PolicyHolderDTO getPolicyHolderByPolicyId(String policyId) {
-        logger.info("Searching for PolicyHolder with Policy ID: {}", policyId);
-
-        PolicyHolder policyHolder = policyHolderRepository.searchByPolicyId(policyId)
-            .orElseThrow(() -> {
-                logger.error("PolicyHolder not found for Policy ID: {}", policyId);
-                return new RuntimeException("PolicyHolder not found with Policy ID: " + policyId);
-            });
-
-        return policyHolderMapper.toDTO(policyHolder);
-    }
-}
-
-✅ Changes made:
-	•	Calls searchByPolicyId(policyId), which is implemented using dynamic query.
-
-⸻
-
-🔹 Concrete Repository Implementation (Dynamic Queries)
-
-Instead of using Spring Data Interface, we will implement a custom repository class that fetches data dynamically using queries.properties.
-
-🔸 Step 1: Create queries.properties
-
-query.searchByPolicyId=SELECT * FROM c WHERE c.policyId = @policyId
-
-✅ This file will store the query dynamically instead of hardcoding it in the repository.
-
-⸻
-
-🔸 Step 2: Repository Configuration - QueryPropertyFileConfig.java
-
-package jp.co.neofirst.servicing.config;
-
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.stereotype.Component;
-
-import java.util.Properties;
-
-@Component
-public class QueryPropertyFileConfig {
-
-    private final Properties queries = new Properties();
-
-    public QueryPropertyFileConfig(@Value("classpath:queries.properties") org.springframework.core.io.Resource resource) {
-        try {
-            queries.load(resource.getInputStream());
-        } catch (Exception e) {
-            throw new RuntimeException("Failed to load queries.properties file", e);
-        }
-    }
-
-    public String getQuery(String key) {
-        return queries.getProperty(key);
-    }
-}
-
-✅ Loads queries from queries.properties dynamically.
-
-⸻
-
-🔸 Step 3: Update Repository - PolicyHolderRepository.java
-
-package jp.co.neofirst.servicing.repository;
-
-import com.azure.cosmos.CosmosContainer;
-import com.azure.cosmos.models.SqlQuerySpec;
-import com.azure.cosmos.models.SqlParameter;
-import jp.co.neofirst.servicing.config.QueryPropertyFileConfig;
-import jp.co.neofirst.servicing.model.PolicyHolder;
-import lombok.RequiredArgsConstructor;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Repository;
-
-import java.util.Collections;
+import lombok.*;
+import java.time.LocalDate;
 import java.util.List;
-import java.util.Optional;
 
-@Repository
-@RequiredArgsConstructor
-public class PolicyHolderRepository {
-
-    private static final Logger logger = LoggerFactory.getLogger(PolicyHolderRepository.class);
-    private final CosmosContainer cosmosContainer;
-    private final QueryPropertyFileConfig queryConfig;
-
-    /**
-     * Searches PolicyHolder by Policy ID using dynamic query.
-     *
-     * @param policyId Policy ID.
-     * @return Optional PolicyHolder.
-     */
-    public Optional<PolicyHolder> searchByPolicyId(String policyId) {
-        logger.info("Executing query to find PolicyHolder by Policy ID: {}", policyId);
-
-        String query = queryConfig.getQuery("query.searchByPolicyId");
-
-        SqlQuerySpec querySpec = new SqlQuerySpec(query)
-                .setParameters(Collections.singletonList(new SqlParameter("@policyId", policyId)));
-
-        List<PolicyHolder> results = cosmosContainer.queryItems(querySpec, PolicyHolder.class)
-                .stream().toList();
-
-        return results.stream().findFirst();
-    }
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class AgentDTO {
+    private String id;
+    private String agentId;
+    private String clerkNumber;
+    private String roles;
+    private List<NameDTO> name;
+    private LocalDate birthDate;
+    private Gender gender;
+    private List<PhoneNumberDTO> phoneNumber;
+    private List<EmailDTO> email;
+    private List<DigitalTouchpointDTO> digitalTouchpoint;
+    private SolicitorDTO solicitor;
+    private AgencyDTO agency;
+    private AgencyOfficeDTO agencyOffice;
 }
 
-✅ Changes made:
-	•	Loads query dynamically from queries.properties.
-	•	Uses CosmosContainer.queryItems() to fetch data using the query.
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class NameDTO {
+    private CharacterSetType characterSetType;
+    private String lastName;
+    private String firstName;
+    private boolean namePictoricKanjiFlag;
+    private boolean nameNonStandardKanjiFlag;
+}
 
-⸻
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class PhoneNumberDTO {
+    private PhoneType type;
+    private ContactType contactType;
+    private String number1;
+    private String number2;
+    private String number3;
+}
 
-🔹 Summary of Fixes
-	1.	GET API now extracts requestId & policyId correctly.
-	2.	Implemented searchByPolicyId() with dynamic queries using queries.properties.
-	3.	Replaced interface repository with concrete repository class.
-	4.	Implemented MDC logging for tracking request ID.
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class EmailDTO {
+    private String address;
+    private boolean addressValidated;
+}
 
-⸻
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class DigitalTouchpointDTO {
+    private DigitalType type;
+    private String digitalId;
+}
 
-✅ Next Steps
-	•	Do you want to return 404 (Not Found) instead of 500 (Exception) when no data exists?
-	•	Do you need pagination and sorting for this API?
-	•	Do you want error handling to include request parameters?
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class SolicitorDTO {
+    private String employeeId;
+    private String employeeNumber;
+    private String name;
+    private String phoneNumber1;
+    private String phoneNumber2;
+    private String phoneNumber3;
+    private String emailAddress;
+}
 
-Let me know if this works as expected! 🚀
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class AgencyDTO {
+    private String associationRegistrationNumber;
+    private String agencyNumber;
+    private String name;
+}
+
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class AgencyOfficeDTO {
+    private String officeNumber;
+    private String name;
+}
+
+// Enums
+public enum CharacterSetType {
+    KANJI, KANA, ALFABET;
+}
+
+public enum Gender {
+    MALE, FEMALE;
+}
+
+public enum PhoneType {
+    MOBILE, LANDLINE, FAX;
+}
+
+public enum ContactType {
+    HOME, OFFICE, BUSINESS_HOURS, OTHERS;
+}
+
+public enum DigitalType {
+    PORTAL_SITE, LINE, OTHERS;
+}
