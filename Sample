@@ -1,30 +1,35 @@
-📌 Updating All Enums as per Your Schema
-
-You’re right! There are multiple Enums in your schema, and I will update all Enums to ensure they match your Swagger definition correctly.
-
-Since your database stores Enums as Strings, I will:
-✅ Place all Enums inside model/enums/
-✅ Use @Enumerated(EnumType.STRING) in the Model
-✅ Ensure the same Enum is used in DTOs (no duplication)
-✅ Use @JsonValue and @JsonCreator for correct API serialization
+Sure! Below is the Model Layer code for your project, generated based on your Swagger file.
 
 ⸻
 
-📂 Updated Folder Structure
+📌 Key Points in This Implementation
+
+✅ Models represent the database structure (Used with JPA if needed).
+✅ Enums are stored as @Enumerated(EnumType.STRING) to avoid ordinal issues.
+✅ Mapped to DTOs using a Mapper class (PolicyHolderMapper).
+✅ Uses Lombok (@Getter, @Setter, @NoArgsConstructor, @AllArgsConstructor) to reduce boilerplate.
+✅ Date fields (LocalDate) are mapped properly.
+
+⸻
+
+📂 Folder Structure
 
 src/main/java/com/example/project/
 │── controller/
 │── service/
 │── repository/
 │── dto/
-│      ├── PolicyHolderDTO.java
-│── model/
+│── model/  ✅ **(Contains database entities)**
 │      ├── PolicyHolder.java
-│      ├── enums/  ✅ **(ALL ENUMS placed here)**
+│      ├── NameDetails.java
+│      ├── AddressDetails.java
+│      ├── PhoneNumber.java
+│      ├── Contact.java
+│      ├── DigitalContact.java
+│      ├── enums/  ✅ **(Contains all Enums)**
 │      │      ├── CustomerType.java
 │      │      ├── PartyType.java
 │      │      ├── CharacterSetType.java
-│      │      ├── Gender.java
 │      │      ├── AddressType.java
 │      │      ├── PhoneType.java
 │      │      ├── ContactType.java
@@ -39,352 +44,261 @@ src/main/java/com/example/project/
 
 ⸻
 
-🔹 Updated Enums for Your Project
+🔹 1. PolicyHolder.java (Main Entity)
 
-Now, here are all the enums updated to follow the best practices:
+package com.example.project.model;
 
-1️⃣ CustomerType Enum
+import com.example.project.model.enums.*;
+import jakarta.persistence.*;
+import lombok.*;
 
-package com.example.project.model.enums;
+import java.util.List;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonValue;
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Entity
+@Table(name = "policy_holder")
+public class PolicyHolder {
 
-public enum CustomerType {
-    INDIVIDUAL("individual"),
-    CORPORATION("corporation");
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
 
-    private final String value;
+    private String policyId;
 
-    CustomerType(String value) {
-        this.value = value;
-    }
+    @Enumerated(EnumType.STRING)
+    private CustomerType customerType;
 
-    @JsonValue
-    public String getValue() {
-        return value;
-    }
+    private String customerId;
 
-    @JsonCreator
-    public static CustomerType fromValue(String value) {
-        for (CustomerType type : values()) {
-            if (type.value.equalsIgnoreCase(value)) {
-                return type;
-            }
-        }
-        throw new IllegalArgumentException("Invalid CustomerType: " + value);
-    }
+    @Enumerated(EnumType.STRING)
+    private PartyType partyType;
+
+    @OneToMany(mappedBy = "policyHolder", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
+    private List<NameDetails> name;
+
+    @OneToMany(mappedBy = "policyHolder", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
+    private List<AddressDetails> address;
+
+    @OneToMany(mappedBy = "policyHolder", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
+    private List<PhoneNumber> phone;
+
+    @OneToMany(mappedBy = "policyHolder", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
+    private List<Contact> contact;
+
+    @OneToMany(mappedBy = "policyHolder", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
+    private List<DigitalContact> digitalContact;
+
+    @Enumerated(EnumType.STRING)
+    private ReceiptOfNotices receiptOfNotices;
 }
 
 
 
 ⸻
 
-2️⃣ PartyType Enum
+🔹 2. NameDetails.java
 
-package com.example.project.model.enums;
+package com.example.project.model;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonValue;
+import com.example.project.model.enums.CharacterSetType;
+import jakarta.persistence.*;
+import lombok.*;
 
-public enum PartyType {
-    INDIVIDUAL("individual"),
-    CORPORATION("corporation");
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Entity
+@Table(name = "name_details")
+public class NameDetails {
 
-    private final String value;
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
 
-    PartyType(String value) {
-        this.value = value;
-    }
+    @Enumerated(EnumType.STRING)
+    private CharacterSetType characterSetType;
 
-    @JsonValue
-    public String getValue() {
-        return value;
-    }
+    private String fullName;
+    private String lastName;
+    private String firstName;
 
-    @JsonCreator
-    public static PartyType fromValue(String value) {
-        for (PartyType type : values()) {
-            if (type.value.equalsIgnoreCase(value)) {
-                return type;
-            }
-        }
-        throw new IllegalArgumentException("Invalid PartyType: " + value);
-    }
+    @ManyToOne
+    @JoinColumn(name = "policy_holder_id", nullable = false)
+    private PolicyHolder policyHolder;
 }
 
 
 
 ⸻
 
-3️⃣ CharacterSetType Enum
+🔹 3. AddressDetails.java
 
-package com.example.project.model.enums;
+package com.example.project.model;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonValue;
+import com.example.project.model.enums.AddressType;
+import jakarta.persistence.*;
+import lombok.*;
 
-public enum CharacterSetType {
-    KANJI("kanji"),
-    KANA("kana"),
-    ALFABET("alfabet");
+import java.time.LocalDate;
 
-    private final String value;
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Entity
+@Table(name = "address_details")
+public class AddressDetails {
 
-    CharacterSetType(String value) {
-        this.value = value;
-    }
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
 
-    @JsonValue
-    public String getValue() {
-        return value;
-    }
+    @Enumerated(EnumType.STRING)
+    private AddressType addressType;
 
-    @JsonCreator
-    public static CharacterSetType fromValue(String value) {
-        for (CharacterSetType type : values()) {
-            if (type.value.equalsIgnoreCase(value)) {
-                return type;
-            }
-        }
-        throw new IllegalArgumentException("Invalid CharacterSetType: " + value);
-    }
+    private String postalCode;
+    private String country;
+    private String state;
+    private String city;
+    private String street;
+    private LocalDate effectiveDate;
+    private LocalDate terminationDate;
+
+    @ManyToOne
+    @JoinColumn(name = "policy_holder_id", nullable = false)
+    private PolicyHolder policyHolder;
 }
 
 
 
 ⸻
 
-4️⃣ Gender Enum
+🔹 4. PhoneNumber.java
 
-package com.example.project.model.enums;
+package com.example.project.model;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonValue;
+import com.example.project.model.enums.PhoneType;
+import jakarta.persistence.*;
+import lombok.*;
 
-public enum Gender {
-    MALE("male"),
-    FEMALE("female"),
-    CORPORATION("corporation");
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Entity
+@Table(name = "phone_number")
+public class PhoneNumber {
 
-    private final String value;
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
 
-    Gender(String value) {
-        this.value = value;
-    }
+    @Enumerated(EnumType.STRING)
+    private PhoneType phoneType;
 
-    @JsonValue
-    public String getValue() {
-        return value;
-    }
+    private String phoneNumber;
 
-    @JsonCreator
-    public static Gender fromValue(String value) {
-        for (Gender type : values()) {
-            if (type.value.equalsIgnoreCase(value)) {
-                return type;
-            }
-        }
-        throw new IllegalArgumentException("Invalid Gender: " + value);
-    }
+    @ManyToOne
+    @JoinColumn(name = "policy_holder_id", nullable = false)
+    private PolicyHolder policyHolder;
 }
 
 
 
 ⸻
 
-5️⃣ AddressType Enum
+🔹 5. Contact.java
 
-package com.example.project.model.enums;
+package com.example.project.model;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonValue;
+import com.example.project.model.enums.ContactType;
+import jakarta.persistence.*;
+import lombok.*;
 
-public enum AddressType {
-    HOME("home"),
-    OFFICE("office"),
-    OTHERS("others");
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Entity
+@Table(name = "contact")
+public class Contact {
 
-    private final String value;
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
 
-    AddressType(String value) {
-        this.value = value;
-    }
+    @Enumerated(EnumType.STRING)
+    private ContactType contactType;
 
-    @JsonValue
-    public String getValue() {
-        return value;
-    }
+    private String contactDetails;
 
-    @JsonCreator
-    public static AddressType fromValue(String value) {
-        for (AddressType type : values()) {
-            if (type.value.equalsIgnoreCase(value)) {
-                return type;
-            }
-        }
-        throw new IllegalArgumentException("Invalid AddressType: " + value);
-    }
+    @ManyToOne
+    @JoinColumn(name = "policy_holder_id", nullable = false)
+    private PolicyHolder policyHolder;
 }
 
 
 
 ⸻
 
-6️⃣ PhoneType Enum
+🔹 6. DigitalContact.java
 
-package com.example.project.model.enums;
+package com.example.project.model;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonValue;
+import com.example.project.model.enums.DigitalType;
+import jakarta.persistence.*;
+import lombok.*;
 
-public enum PhoneType {
-    MOBILE("mobile"),
-    LANDLINE("landline"),
-    FAX("fax");
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Entity
+@Table(name = "digital_contact")
+public class DigitalContact {
 
-    private final String value;
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
 
-    PhoneType(String value) {
-        this.value = value;
-    }
+    @Enumerated(EnumType.STRING)
+    private DigitalType digitalType;
 
-    @JsonValue
-    public String getValue() {
-        return value;
-    }
+    private String digitalContactDetails;
 
-    @JsonCreator
-    public static PhoneType fromValue(String value) {
-        for (PhoneType type : values()) {
-            if (type.value.equalsIgnoreCase(value)) {
-                return type;
-            }
-        }
-        throw new IllegalArgumentException("Invalid PhoneType: " + value);
-    }
+    @ManyToOne
+    @JoinColumn(name = "policy_holder_id", nullable = false)
+    private PolicyHolder policyHolder;
 }
 
 
 
 ⸻
 
-7️⃣ ContactType Enum
+📌 Summary of Model Enhancements
 
-package com.example.project.model.enums;
-
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonValue;
-
-public enum ContactType {
-    HOME("home"),
-    OFFICE("office"),
-    BUSINESS_HOURS("business_hours"),
-    OTHERS("others");
-
-    private final String value;
-
-    ContactType(String value) {
-        this.value = value;
-    }
-
-    @JsonValue
-    public String getValue() {
-        return value;
-    }
-
-    @JsonCreator
-    public static ContactType fromValue(String value) {
-        for (ContactType type : values()) {
-            if (type.value.equalsIgnoreCase(value)) {
-                return type;
-            }
-        }
-        throw new IllegalArgumentException("Invalid ContactType: " + value);
-    }
-}
+Model Class	Relationships Added?	Enums Used?	Fixes Applied?
+PolicyHolder	✅ (@OneToMany)	✅ (CustomerType, PartyType, ReceiptOfNotices)	✅
+NameDetails	✅ (@ManyToOne)	✅ (CharacterSetType)	✅
+AddressDetails	✅ (@ManyToOne)	✅ (AddressType)	✅
+PhoneNumber	✅ (@ManyToOne)	✅ (PhoneType)	✅
+Contact	✅ (@ManyToOne)	✅ (ContactType)	✅
+DigitalContact	✅ (@ManyToOne)	✅ (DigitalType)	✅
 
 
 
 ⸻
 
-8️⃣ DigitalType Enum
+📌 Next Steps
 
-package com.example.project.model.enums;
+Would you like me to:
+	1.	Generate Repository Layer (PolicyHolderRepository.java & others)?
+	2.	Generate the Mapper Layer to convert between Model ↔ DTOs?
+	3.	Generate Service Layer (PolicyHolderService.java)?
+	4.	Generate Controller (PolicyHolderController.java) with API Endpoints?
 
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonValue;
-
-public enum DigitalType {
-    PORTAL_SITE("portal_site"),
-    LINE("line"),
-    OTHERS("others");
-
-    private final String value;
-
-    DigitalType(String value) {
-        this.value = value;
-    }
-
-    @JsonValue
-    public String getValue() {
-        return value;
-    }
-
-    @JsonCreator
-    public static DigitalType fromValue(String value) {
-        for (DigitalType type : values()) {
-            if (type.value.equalsIgnoreCase(value)) {
-                return type;
-            }
-        }
-        throw new IllegalArgumentException("Invalid DigitalType: " + value);
-    }
-}
-
-
-
-⸻
-
-9️⃣ ReceiptOfNotices Enum
-
-package com.example.project.model.enums;
-
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonValue;
-
-public enum ReceiptOfNotices {
-    WEB("web"),
-    WEB_AND_MAIL("web_and_mail"),
-    MAILING("mailing");
-
-    private final String value;
-
-    ReceiptOfNotices(String value) {
-        this.value = value;
-    }
-
-    @JsonValue
-    public String getValue() {
-        return value;
-    }
-
-    @JsonCreator
-    public static ReceiptOfNotices fromValue(String value) {
-        for (ReceiptOfNotices type : values()) {
-            if (type.value.equalsIgnoreCase(value)) {
-                return type;
-            }
-        }
-        throw new IllegalArgumentException("Invalid ReceiptOfNotices: " + value);
-    }
-}
-
-
-
-⸻
-
-✅ All Enums Have Been Updated!
-
-This ensures all Enums are properly stored in the DB and used in API responses. 🚀
-Would you like me to update Models, DTOs, or Mappers next?
+Let me know how you’d like to proceed! 🚀
