@@ -1,238 +1,32 @@
-import lombok.AllArgsConstructor;
-import lombok.Data;
-import lombok.NoArgsConstructor;
-import com.azure.spring.data.cosmos.core.mapping.Container;
-import com.azure.spring.data.cosmos.core.mapping.PartitionKey;
-import org.springframework.data.annotation.Id;
-import java.time.LocalDate;
-import java.util.List;
+@startuml
+start
 
-@Data
-@NoArgsConstructor
-@AllArgsConstructor
-@Container(containerName = "Agents")
-public class Agent {
-    @Id
-    private String id;
-    
-    @PartitionKey
-    private String agentId;
-    private String clerkNumber;
-    private String roles;
-    private List<Name> name;
-    private LocalDate birthDate;
-    private Gender gender;
-    private List<PhoneNumber> phoneNumber;
-    private List<Email> email;
-    private List<DigitalTouchpoint> digitalTouchpoint;
-    private Solicitor solicitor;
-    private Agency agency;
-    private AgencyOffice agencyOffice;
-}
+:Client Sends API Request;
+if (Filter Enabled?) then (Yes)
+    :Extract Request ID & Log Input Fields;
+    :Pass Request to Controller;
+endif
 
-@Data
-@NoArgsConstructor
-@AllArgsConstructor
-public class Name {
-    private CharacterSetType characterSetType;
-    private String lastName;
-    private String firstName;
-    private boolean namePictoricKanjiFlag;
-    private boolean nameNonStandardKanjiFlag;
-}
+:Controller Receives API Request;
+if (Is Request Valid?) then (Yes)
+    :Convert DTO to Model;
+    :Call Service Layer;
+else (No)
+    :Return 400 Bad Request;
+    stop
+endif
 
-@Data
-@NoArgsConstructor
-@AllArgsConstructor
-public class PhoneNumber {
-    private PhoneType type;
-    private ContactType contactType;
-    private String number1;
-    private String number2;
-    private String number3;
-}
+:Service Layer Executes Business Logic;
+:Call Repository Layer;
 
-@Data
-@NoArgsConstructor
-@AllArgsConstructor
-public class Email {
-    private String address;
-    private boolean addressValidated;
-}
+if (DB Query Success?) then (Yes)
+    :Save Data in CosmosDB;
+    :Return 201 Created Response;
+else (No)
+    :Return 500 Internal Server Error;
+    stop
+endif
 
-@Data
-@NoArgsConstructor
-@AllArgsConstructor
-public class DigitalTouchpoint {
-    private DigitalType type;
-    private String digitalId;
-}
-
-@Data
-@NoArgsConstructor
-@AllArgsConstructor
-public class Solicitor {
-    private String employeeId;
-    private String employeeNumber;
-    private String name;
-    private String phoneNumber1;
-    private String phoneNumber2;
-    private String phoneNumber3;
-    private String emailAddress;
-}
-
-@Data
-@NoArgsConstructor
-@AllArgsConstructor
-public class Agency {
-    private String associationRegistrationNumber;
-    private String agencyNumber;
-    private String name;
-}
-
-@Data
-@NoArgsConstructor
-@AllArgsConstructor
-public class AgencyOffice {
-    private String officeNumber;
-    private String name;
-}
-
-// Enum Implementations
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonValue;
-
-public enum CharacterSetType {
-    KANJI("kanji"),
-    KANA("kana"),
-    ALFABET("alfabet");
-
-    private final String value;
-
-    CharacterSetType(String value) {
-        this.value = value;
-    }
-
-    @JsonValue
-    public String getValue() {
-        return value;
-    }
-
-    @JsonCreator
-    public static CharacterSetType fromValue(String value) {
-        for (CharacterSetType type : CharacterSetType.values()) {
-            if (type.value.equalsIgnoreCase(value)) {
-                return type;
-            }
-        }
-        throw new IllegalArgumentException("Invalid CharacterSetType: " + value);
-    }
-}
-
-public enum Gender {
-    MALE("male"),
-    FEMALE("female");
-
-    private final String value;
-
-    Gender(String value) {
-        this.value = value;
-    }
-
-    @JsonValue
-    public String getValue() {
-        return value;
-    }
-
-    @JsonCreator
-    public static Gender fromValue(String value) {
-        for (Gender type : Gender.values()) {
-            if (type.value.equalsIgnoreCase(value)) {
-                return type;
-            }
-        }
-        throw new IllegalArgumentException("Invalid Gender: " + value);
-    }
-}
-
-public enum PhoneType {
-    MOBILE("mobile"),
-    LANDLINE("landline"),
-    FAX("fax");
-
-    private final String value;
-
-    PhoneType(String value) {
-        this.value = value;
-    }
-
-    @JsonValue
-    public String getValue() {
-        return value;
-    }
-
-    @JsonCreator
-    public static PhoneType fromValue(String value) {
-        for (PhoneType type : PhoneType.values()) {
-            if (type.value.equalsIgnoreCase(value)) {
-                return type;
-            }
-        }
-        throw new IllegalArgumentException("Invalid PhoneType: " + value);
-    }
-}
-
-public enum ContactType {
-    HOME("home"),
-    OFFICE("office"),
-    BUSINESS_HOURS("business_hours"),
-    OTHERS("others");
-
-    private final String value;
-
-    ContactType(String value) {
-        this.value = value;
-    }
-
-    @JsonValue
-    public String getValue() {
-        return value;
-    }
-
-    @JsonCreator
-    public static ContactType fromValue(String value) {
-        for (ContactType type : ContactType.values()) {
-            if (type.value.equalsIgnoreCase(value)) {
-                return type;
-            }
-        }
-        throw new IllegalArgumentException("Invalid ContactType: " + value);
-    }
-}
-
-public enum DigitalType {
-    PORTAL_SITE("portal_site"),
-    LINE("line"),
-    OTHERS("others");
-
-    private final String value;
-
-    DigitalType(String value) {
-        this.value = value;
-    }
-
-    @JsonValue
-    public String getValue() {
-        return value;
-    }
-
-    @JsonCreator
-    public static DigitalType fromValue(String value) {
-        for (DigitalType type : DigitalType.values()) {
-            if (type.value.equalsIgnoreCase(value)) {
-                return type;
-            }
-        }
-        throw new IllegalArgumentException("Invalid DigitalType: " + value);
-    }
-}
+:Log API Response;
+stop
+@enduml
