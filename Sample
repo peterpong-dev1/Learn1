@@ -1,45 +1,31 @@
-📌 Since You Are Using Azure Cosmos DB (Not a Relational Database)
+📌 Mapper Code for Converting Between DTOs and Models
 
-You’re right! Since you are using Azure Cosmos DB and not a relational database (RDBMS like MySQL, PostgreSQL, etc.), JPA annotations like @Entity, @ManyToOne, @OneToMany, @Enumerated, etc., are NOT required.
-
-Cosmos DB is a NoSQL document database, so all data is stored as JSON documents, and there are no relational constraints like foreign keys.
+The Mapper Layer is responsible for converting DTOs ↔ Models. Since you are using Azure Cosmos DB and Lombok, the mapping needs to be manual (instead of using frameworks like MapStruct).
 
 ⸻
 
-🚀 Changes Based on Cosmos DB (NoSQL)
-
-✅ ❌ Remove all JPA annotations (@Entity, @Table, @OneToMany, @ManyToOne, etc.)
-✅ ✅ Keep only the model fields and Lombok annotations (@Getter, @Setter)
-✅ ✅ Use Cosmos DB SDK (@Container, @PartitionKey) instead of JPA annotations
-
-⸻
-
-📂 Updated Folder Structure
+📂 Folder Structure
 
 src/main/java/com/example/project/
 │── controller/
 │── service/
 │── repository/
 │── dto/
-│── model/  ✅ **(Cosmos DB models without JPA annotations)**
+│      ├── PolicyHolderDTO.java
+│      ├── NameDetailsDTO.java
+│      ├── AddressDetailsDTO.java
+│      ├── PhoneNumberDTO.java
+│      ├── ContactDTO.java
+│      ├── DigitalContactDTO.java
+│── model/
 │      ├── PolicyHolder.java
 │      ├── NameDetails.java
 │      ├── AddressDetails.java
 │      ├── PhoneNumber.java
 │      ├── Contact.java
 │      ├── DigitalContact.java
-│      ├── enums/  ✅ **(Enums remain the same)**
-│      │      ├── CustomerType.java
-│      │      ├── PartyType.java
-│      │      ├── CharacterSetType.java
-│      │      ├── AddressType.java
-│      │      ├── PhoneType.java
-│      │      ├── ContactType.java
-│      │      ├── DigitalType.java
-│      │      ├── ReceiptOfNotices.java
-│── repository/
-│      ├── PolicyHolderRepository.java ✅ (Uses Cosmos DB SDK, not JPA)
-│── mapper/
+│── mapper/ ✅ **(Mapper for DTO ↔ Model Conversion)**
+│      ├── PolicyHolderMapper.java
 │── config/
 │── exception/
 │── util/
@@ -48,176 +34,141 @@ src/main/java/com/example/project/
 
 ⸻
 
-✅ 1. Updated PolicyHolder.java (No JPA, Now Cosmos DB)
+🚀 1. PolicyHolderMapper.java (Main Mapper Class)
 
-package com.example.project.model;
+package com.example.project.mapper;
 
-import com.azure.spring.data.cosmos.core.mapping.Container;
-import com.azure.spring.data.cosmos.core.mapping.PartitionKey;
-import com.example.project.model.enums.*;
-import lombok.*;
-
+import com.example.project.dto.*;
+import com.example.project.model.*;
+import org.springframework.stereotype.Component;
 import java.util.List;
+import java.util.stream.Collectors;
 
-@Getter
-@Setter
-@NoArgsConstructor
-@AllArgsConstructor
-@Container(containerName = "policyHolder") // ✅ Cosmos DB container annotation
-public class PolicyHolder {
+@Component
+public class PolicyHolderMapper {
 
-    private String id;
+    // Convert DTO to Model (For Saving to Cosmos DB)
+    public PolicyHolder toModel(PolicyHolderDTO dto) {
+        if (dto == null) {
+            return null;
+        }
+        return new PolicyHolder(
+                dto.getId(),
+                dto.getPolicyId(),
+                dto.getCustomerType(),
+                dto.getCustomerId(),
+                dto.getPartyType(),
+                toNameDetailsModelList(dto.getName()),
+                toAddressDetailsModelList(dto.getAddress()),
+                toPhoneNumberModelList(dto.getPhone()),
+                toContactModelList(dto.getContact()),
+                toDigitalContactModelList(dto.getDigitalContact()),
+                dto.getReceiptOfNotices()
+        );
+    }
 
-    @PartitionKey // ✅ Needed for Cosmos DB partitioning
-    private String policyId;
+    // Convert Model to DTO (For Returning API Response)
+    public PolicyHolderDTO toDTO(PolicyHolder model) {
+        if (model == null) {
+            return null;
+        }
+        return new PolicyHolderDTO(
+                model.getId(),
+                model.getPolicyId(),
+                model.getCustomerType(),
+                model.getCustomerId(),
+                model.getPartyType(),
+                toNameDetailsDTOList(model.getName()),
+                toAddressDetailsDTOList(model.getAddress()),
+                toPhoneNumberDTOList(model.getPhone()),
+                toContactDTOList(model.getContact()),
+                toDigitalContactDTOList(model.getDigitalContact()),
+                model.getReceiptOfNotices()
+        );
+    }
 
-    private CustomerType customerType;
-    private String customerId;
-    private PartyType partyType;
+    // Helper Methods for Nested Objects
+    private List<NameDetails> toNameDetailsModelList(List<NameDetailsDTO> dtos) {
+        return dtos == null ? null : dtos.stream()
+                .map(dto -> new NameDetails(dto.getCharacterSetType(), dto.getFullName(), dto.getLastName(), dto.getFirstName()))
+                .collect(Collectors.toList());
+    }
 
-    private List<NameDetails> name;
-    private List<AddressDetails> address;
-    private List<PhoneNumber> phone;
-    private List<Contact> contact;
-    private List<DigitalContact> digitalContact;
+    private List<NameDetailsDTO> toNameDetailsDTOList(List<NameDetails> models) {
+        return models == null ? null : models.stream()
+                .map(model -> new NameDetailsDTO(model.getCharacterSetType(), model.getFullName(), model.getLastName(), model.getFirstName()))
+                .collect(Collectors.toList());
+    }
 
-    private ReceiptOfNotices receiptOfNotices;
+    private List<AddressDetails> toAddressDetailsModelList(List<AddressDetailsDTO> dtos) {
+        return dtos == null ? null : dtos.stream()
+                .map(dto -> new AddressDetails(dto.getAddressType(), dto.getPostalCode(), dto.getCountry(),
+                        dto.getState(), dto.getCity(), dto.getStreet(), dto.getEffectiveDate(), dto.getTerminationDate()))
+                .collect(Collectors.toList());
+    }
+
+    private List<AddressDetailsDTO> toAddressDetailsDTOList(List<AddressDetails> models) {
+        return models == null ? null : models.stream()
+                .map(model -> new AddressDetailsDTO(model.getAddressType(), model.getPostalCode(), model.getCountry(),
+                        model.getState(), model.getCity(), model.getStreet(), model.getEffectiveDate(), model.getTerminationDate()))
+                .collect(Collectors.toList());
+    }
+
+    private List<PhoneNumber> toPhoneNumberModelList(List<PhoneNumberDTO> dtos) {
+        return dtos == null ? null : dtos.stream()
+                .map(dto -> new PhoneNumber(dto.getPhoneType(), dto.getPhoneNumber()))
+                .collect(Collectors.toList());
+    }
+
+    private List<PhoneNumberDTO> toPhoneNumberDTOList(List<PhoneNumber> models) {
+        return models == null ? null : models.stream()
+                .map(model -> new PhoneNumberDTO(model.getPhoneType(), model.getPhoneNumber()))
+                .collect(Collectors.toList());
+    }
+
+    private List<Contact> toContactModelList(List<ContactDTO> dtos) {
+        return dtos == null ? null : dtos.stream()
+                .map(dto -> new Contact(dto.getContactType(), dto.getContactDetails()))
+                .collect(Collectors.toList());
+    }
+
+    private List<ContactDTO> toContactDTOList(List<Contact> models) {
+        return models == null ? null : models.stream()
+                .map(model -> new ContactDTO(model.getContactType(), model.getContactDetails()))
+                .collect(Collectors.toList());
+    }
+
+    private List<DigitalContact> toDigitalContactModelList(List<DigitalContactDTO> dtos) {
+        return dtos == null ? null : dtos.stream()
+                .map(dto -> new DigitalContact(dto.getDigitalType(), dto.getDigitalContactDetails()))
+                .collect(Collectors.toList());
+    }
+
+    private List<DigitalContactDTO> toDigitalContactDTOList(List<DigitalContact> models) {
+        return models == null ? null : models.stream()
+                .map(model -> new DigitalContactDTO(model.getDigitalType(), model.getDigitalContactDetails()))
+                .collect(Collectors.toList());
+    }
 }
 
 
 
 ⸻
 
-✅ 2. Updated NameDetails.java (No JPA, Pure Model)
+📌 Why This Approach?
 
-package com.example.project.model;
-
-import com.example.project.model.enums.CharacterSetType;
-import lombok.*;
-
-@Getter
-@Setter
-@NoArgsConstructor
-@AllArgsConstructor
-public class NameDetails {
-    private CharacterSetType characterSetType;
-    private String fullName;
-    private String lastName;
-    private String firstName;
-}
-
-
+✔ Manually maps DTO ↔ Model without using external libraries.
+✔ Ensures null safety to avoid NullPointerException.
+✔ Uses List<> mappings for nested objects (NameDetails, AddressDetails, etc.).
+✔ Can be extended easily for additional fields or custom mapping logic.
 
 ⸻
 
-✅ 3. Updated AddressDetails.java (No JPA, Pure Model)
-
-package com.example.project.model;
-
-import com.example.project.model.enums.AddressType;
-import lombok.*;
-
-import java.time.LocalDate;
-
-@Getter
-@Setter
-@NoArgsConstructor
-@AllArgsConstructor
-public class AddressDetails {
-    private AddressType addressType;
-    private String postalCode;
-    private String country;
-    private String state;
-    private String city;
-    private String street;
-    private LocalDate effectiveDate;
-    private LocalDate terminationDate;
-}
-
-
-
-⸻
-
-✅ 4. Updated PhoneNumber.java
-
-package com.example.project.model;
-
-import com.example.project.model.enums.PhoneType;
-import lombok.*;
-
-@Getter
-@Setter
-@NoArgsConstructor
-@AllArgsConstructor
-public class PhoneNumber {
-    private PhoneType phoneType;
-    private String phoneNumber;
-}
-
-
-
-⸻
-
-✅ 5. Updated Contact.java
-
-package com.example.project.model;
-
-import com.example.project.model.enums.ContactType;
-import lombok.*;
-
-@Getter
-@Setter
-@NoArgsConstructor
-@AllArgsConstructor
-public class Contact {
-    private ContactType contactType;
-    private String contactDetails;
-}
-
-
-
-⸻
-
-✅ 6. Updated DigitalContact.java
-
-package com.example.project.model;
-
-import com.example.project.model.enums.DigitalType;
-import lombok.*;
-
-@Getter
-@Setter
-@NoArgsConstructor
-@AllArgsConstructor
-public class DigitalContact {
-    private DigitalType digitalType;
-    private String digitalContactDetails;
-}
-
-
-
-⸻
-
-📌 What’s Changed?
-
-Aspect	Before (JPA, Relational DB)	Now (Cosmos DB, NoSQL)
-Annotations Used	@Entity, @Table, @OneToMany, @ManyToOne, @Enumerated	@Container, @PartitionKey
-Relationship Mapping	@OneToMany, @ManyToOne	Replaced with List<>
-Primary Key	@Id	Cosmos DB uses id field
-Partitioning	N/A (handled by RDBMS)	@PartitionKey on key fields
-JPA Repository	JpaRepository<PolicyHolder, String>	CosmosRepository<PolicyHolder, String>
-SQL Queries	@Query annotations	Uses Cosmos SQL API
-
-
-
-⸻
-
-✅ Next Steps
+📌 Next Steps
 
 Would you like me to:
-	1.	Generate the Repository Layer (PolicyHolderRepository.java using Cosmos SDK)?
-	2.	Generate the Mapper Layer (PolicyHolderMapper.java) to convert between DTO & Model?
-	3.	Generate the Service Layer (PolicyHolderService.java)?
-	4.	Generate the Controller (PolicyHolderController.java) with API Endpoints?
+	1.	Generate Repository Layer (PolicyHolderRepository.java)?
+	2.	Generate Service Layer (PolicyHolderService.java)?
+	3.	Generate Controller (PolicyHolderController.java)?
 
 Let me know how you’d like to proceed! 🚀
