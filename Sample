@@ -1,56 +1,134 @@
-<build>
-    <plugins>
-        <!-- Plugin to generate PUML files from Java source code -->
-        <plugin>
-            <groupId>com.github.jeluard</groupId>
-            <artifactId>plantuml-maven-plugin</artifactId>
-            <version>1.4</version> <!-- Use the latest stable version -->
-            <executions>
-                <execution>
-                    <id>generate-puml</id>
-                    <phase>generate-sources</phase>
-                    <goals>
-                        <goal>generate</goal>
-                    </goals>
-                    <configuration>
-                        <outputDirectory>${project.build.directory}/generated-puml</outputDirectory>
-                        <sourceFiles>
-                            <directory>src/main/java</directory> <!-- Java Source Code -->
-                            <includes>
-                                <include>**/*.java</include>
-                            </includes>
-                        </sourceFiles>
-                    </configuration>
-                </execution>
-            </executions>
-        </plugin>
+@startuml
 
-        <!-- Plugin to Convert PUML to Images -->
-        <plugin>
-            <groupId>org.apache.maven.plugins</groupId>
-            <artifactId>maven-antrun-plugin</artifactId>
-            <version>3.1.0</version>
-            <executions>
-                <execution>
-                    <id>convert-puml-to-images</id>
-                    <phase>generate-sources</phase>
-                    <goals>
-                        <goal>run</goal>
-                    </goals>
-                    <configuration>
-                        <target>
-                            <java classname="net.sourceforge.plantuml.Run" fork="true">
-                                <classpath>
-                                    <pathelement location="${user.home}/.m2/repository/net/sourceforge/plantuml/plantuml/1.2023.7/plantuml-1.2023.7.jar"/>
-                                </classpath>
-                                <arg value="${project.build.directory}/generated-puml/*.puml"/>  <!-- Convert PUML -->
-                                <arg value="-o"/>
-                                <arg value="target/plantuml-diagrams"/>  <!-- Output directory for images -->
-                            </java>
-                        </target>
-                    </configuration>
-                </execution>
-            </executions>
-        </plugin>
-    </plugins>
-</build>
+package "jp.co.neofirst.servicing" {
+    
+    package "config" {
+        class CosmosDBConfig {
+            - Logger logger
+            - String endpoint
+            - String key
+            - String database
+            - String container
+            + CosmosDBConfig()
+            + String getEndpoint()
+            + void setEndpoint(String endpoint)
+        }
+
+        class QueryPropertyFileConfig {
+            - Resource queriesResource
+            - Properties queries
+            + void loadQueries() throws Exception
+            + String getQuery(String key)
+        }
+    }
+
+    package "controller" {
+        class FinancialInstitutionController {
+            - Logger logger
+            - FinancialInstitutionService financialInstitutionService
+            + FinancialInstitutionController(FinancialInstitutionService service)
+            + ResponseEntity<?> searchFinancialInstitutions(FinancialInstitutionSearchConditionsDTO searchConditions)
+        }
+    }
+
+    package "service" {
+        interface FinancialInstitutionService {
+            + List<FinancialInstitutionDTO> searchInstitutions(FinancialInstitutionSearchConditionsDTO searchConditions)
+        }
+
+        package "impl" {
+            class FinancialInstitutionServiceImpl implements FinancialInstitutionService {
+                - Logger logger
+                - FinancialInstitutionRepository repository
+                - FinancialInstitutionMapper mapper
+                + FinancialInstitutionServiceImpl(FinancialInstitutionRepository repository, FinancialInstitutionMapper mapper)
+                + List<FinancialInstitutionDTO> searchInstitutions(FinancialInstitutionSearchConditionsDTO searchConditions, Map<String, Object> inputFields)
+            }
+        }
+    }
+
+    package "repository" {
+        class CosmosDBRepository {
+            - static final Logger logger
+            - CosmosClient cosmosClient
+            - CosmosContainer cosmosContainer
+            - CosmosDatabase cosmosDatabase
+            + CosmosDBRepository(CosmosDBConfig cosmosDBConfig)
+            + CosmosContainer getContainer()
+            + void close()
+        }
+
+        class FinancialInstitutionRepository {
+            - QueryPropertyFileConfig queryConfig
+            - CosmosContainer cosmosContainer
+            - Logger logger
+            + FinancialInstitutionRepository(CosmosDBRepository cosmosDBRepository)
+            + List<FinancialInstitutionModel> searchWithDynamicQuery(FinancialInstitutionSearchConditionsDTO searchConditions)
+        }
+    }
+
+    package "filter" {
+        class RequestIdFilter implements Filter {
+            + void doFilter(ServletRequest request, ServletResponse response, FilterChain chain) throws IOException, ServletException
+        }
+    }
+
+    package "util" {
+        class Utils {
+            - Utils()  ' Private constructor
+            + Map<String, Object> getNonNullInputFields(FinancialInstitutionSearchConditionsDTO searchConditions)
+            + String getNonNullInputFieldsInStr(FinancialInstitutionSearchConditionsDTO searchConditions)
+            - String formatValue(Object value)
+            + boolean isNullOrEmpty(String value)
+        }
+    }
+
+    package "exception" {
+        class GlobalExceptionHandler {
+            - Logger logger
+            + ResponseEntity<ErrorContainerDTO> handleValidationError(MethodArgumentNotValidException ex)
+            + ResponseEntity<ErrorContainerDTO> handleGenericException(Exception ex)
+            + ResponseEntity<ErrorContainerDTO> handleDataNotFoundError(CustomDataNotFoundException ex)
+            + ResponseEntity<ErrorContainerDTO> handleValidationError(CustomValidationException ex)
+            - ResponseEntity<ErrorContainerDTO> buildErrorResponse(HttpStatus status, String message, Map<String, Object> details)
+        }
+    }
+
+    package "dto" {
+        class FinancialInstitutionDTO
+        class FinancialInstitutionSearchConditionsDTO
+        class ErrorResponseDTO
+        class ErrorDetailDTO
+        class ErrorContainerDTO
+    }
+
+    package "model" {
+        class FinancialInstitutionModel
+        class PhoneNumberModel
+    }
+
+    package "mapper" {
+        class FinancialInstitutionMapper
+    }
+
+    class NeoApplication {
+        + static void main(String[] args)
+    }
+}
+
+' Relationships
+FinancialInstitutionController --> FinancialInstitutionService : uses
+FinancialInstitutionServiceImpl ..|> FinancialInstitutionService : implements
+FinancialInstitutionServiceImpl --> FinancialInstitutionRepository : uses
+FinancialInstitutionServiceImpl --> FinancialInstitutionMapper : uses
+FinancialInstitutionRepository --> CosmosDBRepository : uses
+FinancialInstitutionRepository --> QueryPropertyFileConfig : uses
+CosmosDBRepository --> CosmosDBConfig : uses
+RequestIdFilter ..|> Filter : implements
+Utils --> FinancialInstitutionSearchConditionsDTO : uses
+GlobalExceptionHandler --> ErrorResponseDTO : returns
+GlobalExceptionHandler --> ErrorDetailDTO : contains
+GlobalExceptionHandler --> ErrorContainerDTO : wraps multiple errors
+NeoApplication --> FinancialInstitutionController : initializes
+
+@enduml
