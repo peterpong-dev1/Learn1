@@ -3,30 +3,41 @@ import java.nio.file.*;
 import java.util.*;
 import java.util.regex.*;
 
-public class JavaToPlantUMLGenerator {
+public class DynamicJavaToPlantUML {
 
-    private static final String JAVA_DIR = "src/main/java"; // Change this to your Spring Boot source directory
-    private static final String OUTPUT_FILE = "diagram.puml";
+    private static final String JAVA_DIR = "src/main/java"; // Change this to your project's Java source folder
+    private static final String OUTPUT_FILE = "dynamic_diagram.puml";
 
     public static void main(String[] args) throws IOException {
         List<File> javaFiles = getJavaFiles(new File(JAVA_DIR));
         StringBuilder pumlContent = new StringBuilder("@startuml\n");
+        pumlContent.append("left to right direction\n"); // Better layout
 
+        Map<String, List<String>> packageGroups = new TreeMap<>();
         Map<String, String> classRelationships = new HashMap<>();
         Set<String> classes = new HashSet<>();
 
         for (File file : javaFiles) {
-            parseJavaFile(file, pumlContent, classRelationships, classes);
+            parseJavaFile(file, pumlContent, classRelationships, classes, packageGroups);
         }
 
-        // Add relationships to PlantUML
+        // Generate packages dynamically based on project structure
+        for (Map.Entry<String, List<String>> entry : packageGroups.entrySet()) {
+            pumlContent.append("package \"").append(entry.getKey()).append("\" {\n");
+            for (String className : entry.getValue()) {
+                pumlContent.append("  class ").append(className).append("\n");
+            }
+            pumlContent.append("}\n\n");
+        }
+
+        // Add relationships after all classes are defined
         for (Map.Entry<String, String> entry : classRelationships.entrySet()) {
             pumlContent.append(entry.getKey()).append(" ").append(entry.getValue()).append("\n");
         }
 
         pumlContent.append("@enduml");
 
-        // Save the generated PUML file
+        // Save the dynamic PlantUML file
         Files.write(Paths.get(OUTPUT_FILE), pumlContent.toString().getBytes());
         System.out.println("✅ PlantUML file generated: " + OUTPUT_FILE);
     }
@@ -45,17 +56,24 @@ public class JavaToPlantUMLGenerator {
         return javaFiles;
     }
 
-    private static void parseJavaFile(File file, StringBuilder pumlContent, Map<String, String> relationships, Set<String> classes) throws IOException {
+    private static void parseJavaFile(File file, StringBuilder pumlContent, Map<String, String> relationships,
+                                      Set<String> classes, Map<String, List<String>> packageGroups) throws IOException {
         List<String> lines = Files.readAllLines(file.toPath());
         String className = null;
         String classType = "class";
+        String packageName = "default";
         List<String> attributes = new ArrayList<>();
         List<String> methods = new ArrayList<>();
 
         for (String line : lines) {
             line = line.trim();
 
-            // Match class, interface, and annotations (@Component, @Service, @Repository)
+            // Extract package name
+            if (line.startsWith("package ")) {
+                packageName = line.replace("package ", "").replace(";", "").trim();
+            }
+
+            // Match class, interface, and annotations
             Matcher classMatcher = Pattern.compile("class\\s+(\\w+)").matcher(line);
             Matcher interfaceMatcher = Pattern.compile("interface\\s+(\\w+)").matcher(line);
             Matcher extendsMatcher = Pattern.compile("extends\\s+(\\w+)").matcher(line);
@@ -88,10 +106,10 @@ public class JavaToPlantUMLGenerator {
             if (fieldMatcher.find() && className != null) {
                 attributes.add("- " + fieldMatcher.group(3) + " : " + fieldMatcher.group(2));
 
-                // Check if the field represents an association (class field)
+                // Check for association (class field)
                 String fieldType = fieldMatcher.group(2);
                 if (classes.contains(fieldType)) {
-                    relationships.put(className, "-- " + fieldType);
+                    relationships.put(className, "-- " + fieldType + " : has");
                 }
             }
 
@@ -116,6 +134,9 @@ public class JavaToPlantUMLGenerator {
         }
 
         if (className != null) {
+            // Store the class under its detected package
+            packageGroups.computeIfAbsent(packageName, k -> new ArrayList<>()).add(className);
+
             pumlContent.append(classType).append(" ").append(className).append(" {\n");
             for (String attr : attributes) {
                 pumlContent.append("  ").append(attr).append("\n");
