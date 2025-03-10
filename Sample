@@ -1,122 +1,102 @@
 @startuml
 
-package "jp.co.neofirst.servicing" {
+' Grouping into logical sections
+package "Controller Layer" {
+    class FinancialInstitutionController {
+        - Logger logger
+        - FinancialInstitutionService financialInstitutionService
+        + FinancialInstitutionController(FinancialInstitutionService service)
+        + ResponseEntity<?> searchFinancialInstitutions(FinancialInstitutionSearchConditionsDTO searchConditions)
+    }
+}
+
+package "Service Layer" {
+    interface FinancialInstitutionService {
+        + List<FinancialInstitutionDTO> searchInstitutions(FinancialInstitutionSearchConditionsDTO searchConditions)
+    }
     
-    package "config" {
-        class CosmosDBConfig {
-            - Logger logger
-            - String endpoint
-            - String key
-            - String database
-            - String container
-            + CosmosDBConfig()
-            + String getEndpoint()
-            + void setEndpoint(String endpoint)
-        }
-
-        class QueryPropertyFileConfig {
-            - Resource queriesResource
-            - Properties queries
-            + void loadQueries() throws Exception
-            + String getQuery(String key)
-        }
+    class FinancialInstitutionServiceImpl implements FinancialInstitutionService {
+        - Logger logger
+        - FinancialInstitutionRepository repository
+        - FinancialInstitutionMapper mapper
+        + FinancialInstitutionServiceImpl(FinancialInstitutionRepository repository, FinancialInstitutionMapper mapper)
+        + List<FinancialInstitutionDTO> searchInstitutions(FinancialInstitutionSearchConditionsDTO searchConditions, Map<String, Object> inputFields)
     }
+}
 
-    package "controller" {
-        class FinancialInstitutionController {
-            - Logger logger
-            - FinancialInstitutionService financialInstitutionService
-            + FinancialInstitutionController(FinancialInstitutionService service)
-            + ResponseEntity<?> searchFinancialInstitutions(FinancialInstitutionSearchConditionsDTO searchConditions)
-        }
+package "Repository Layer" {
+    class FinancialInstitutionRepository {
+        - QueryPropertyFileConfig queryConfig
+        - CosmosContainer cosmosContainer
+        - Logger logger
+        + FinancialInstitutionRepository(CosmosDBRepository cosmosDBRepository)
+        + List<FinancialInstitutionModel> searchWithDynamicQuery(FinancialInstitutionSearchConditionsDTO searchConditions)
     }
+}
 
-    package "service" {
-        interface FinancialInstitutionService {
-            + List<FinancialInstitutionDTO> searchInstitutions(FinancialInstitutionSearchConditionsDTO searchConditions)
-        }
-
-        package "impl" {
-            class FinancialInstitutionServiceImpl implements FinancialInstitutionService {
-                - Logger logger
-                - FinancialInstitutionRepository repository
-                - FinancialInstitutionMapper mapper
-                + FinancialInstitutionServiceImpl(FinancialInstitutionRepository repository, FinancialInstitutionMapper mapper)
-                + List<FinancialInstitutionDTO> searchInstitutions(FinancialInstitutionSearchConditionsDTO searchConditions, Map<String, Object> inputFields)
-            }
-        }
+package "Database Layer" {
+    class CosmosDBRepository {
+        - static final Logger logger
+        - CosmosClient cosmosClient
+        - CosmosContainer cosmosContainer
+        - CosmosDatabase cosmosDatabase
+        + CosmosDBRepository(CosmosDBConfig cosmosDBConfig)
+        + CosmosContainer getContainer()
+        + void close()
     }
+}
 
-    package "repository" {
-        class CosmosDBRepository {
-            - static final Logger logger
-            - CosmosClient cosmosClient
-            - CosmosContainer cosmosContainer
-            - CosmosDatabase cosmosDatabase
-            + CosmosDBRepository(CosmosDBConfig cosmosDBConfig)
-            + CosmosContainer getContainer()
-            + void close()
-        }
-
-        class FinancialInstitutionRepository {
-            - QueryPropertyFileConfig queryConfig
-            - CosmosContainer cosmosContainer
-            - Logger logger
-            + FinancialInstitutionRepository(CosmosDBRepository cosmosDBRepository)
-            + List<FinancialInstitutionModel> searchWithDynamicQuery(FinancialInstitutionSearchConditionsDTO searchConditions)
-        }
+package "Utility Layer" {
+    class Utils {
+        - Utils()  ' Private constructor
+        + Map<String, Object> getNonNullInputFields(FinancialInstitutionSearchConditionsDTO searchConditions)
+        + String getNonNullInputFieldsInStr(FinancialInstitutionSearchConditionsDTO searchConditions)
+        - String formatValue(Object value)
+        + boolean isNullOrEmpty(String value)
     }
+}
 
-    package "filter" {
-        class RequestIdFilter implements Filter {
-            + void doFilter(ServletRequest request, ServletResponse response, FilterChain chain) throws IOException, ServletException
-        }
+package "Exception Handling" {
+    class GlobalExceptionHandler {
+        - Logger logger
+        + ResponseEntity<ErrorContainerDTO> handleValidationError(MethodArgumentNotValidException ex)
+        + ResponseEntity<ErrorContainerDTO> handleGenericException(Exception ex)
+        + ResponseEntity<ErrorContainerDTO> handleDataNotFoundError(CustomDataNotFoundException ex)
+        + ResponseEntity<ErrorContainerDTO> handleValidationError(CustomValidationException ex)
+        - ResponseEntity<ErrorContainerDTO> buildErrorResponse(HttpStatus status, String message, Map<String, Object> details)
     }
+}
 
-    package "util" {
-        class Utils {
-            - Utils()  ' Private constructor
-            + Map<String, Object> getNonNullInputFields(FinancialInstitutionSearchConditionsDTO searchConditions)
-            + String getNonNullInputFieldsInStr(FinancialInstitutionSearchConditionsDTO searchConditions)
-            - String formatValue(Object value)
-            + boolean isNullOrEmpty(String value)
-        }
+package "Filter Layer" {
+    class RequestIdFilter implements Filter {
+        + void doFilter(ServletRequest request, ServletResponse response, FilterChain chain) throws IOException, ServletException
     }
+}
 
-    package "exception" {
-        class GlobalExceptionHandler {
-            - Logger logger
-            + ResponseEntity<ErrorContainerDTO> handleValidationError(MethodArgumentNotValidException ex)
-            + ResponseEntity<ErrorContainerDTO> handleGenericException(Exception ex)
-            + ResponseEntity<ErrorContainerDTO> handleDataNotFoundError(CustomDataNotFoundException ex)
-            + ResponseEntity<ErrorContainerDTO> handleValidationError(CustomValidationException ex)
-            - ResponseEntity<ErrorContainerDTO> buildErrorResponse(HttpStatus status, String message, Map<String, Object> details)
-        }
-    }
-
-    package "dto" {
-        class FinancialInstitutionDTO
-        class FinancialInstitutionSearchConditionsDTO
-        class ErrorResponseDTO
-        class ErrorDetailDTO
-        class ErrorContainerDTO
-    }
-
-    package "model" {
-        class FinancialInstitutionModel
-        class PhoneNumberModel
-    }
-
-    package "mapper" {
-        class FinancialInstitutionMapper
-    }
-
+package "Application" {
     class NeoApplication {
         + static void main(String[] args)
     }
 }
 
-' Relationships
+package "DTO Layer" {
+    class FinancialInstitutionDTO
+    class FinancialInstitutionSearchConditionsDTO
+    class ErrorResponseDTO
+    class ErrorDetailDTO
+    class ErrorContainerDTO
+}
+
+package "Model Layer" {
+    class FinancialInstitutionModel
+    class PhoneNumberModel
+}
+
+package "Mapper Layer" {
+    class FinancialInstitutionMapper
+}
+
+' Optimized relationships with clear direction
 FinancialInstitutionController --> FinancialInstitutionService : uses
 FinancialInstitutionServiceImpl ..|> FinancialInstitutionService : implements
 FinancialInstitutionServiceImpl --> FinancialInstitutionRepository : uses
