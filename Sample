@@ -1,25 +1,51 @@
-<plugin>
-    <groupId>org.apache.maven.plugins</groupId>
-    <artifactId>maven-antrun-plugin</artifactId>
-    <version>3.1.0</version>
-    <executions>
-        <execution>
-            <phase>generate-sources</phase>
-            <goals>
-                <goal>run</goal>
-            </goals>
-            <configuration>
-                <target>
-                    <java classname="net.sourceforge.plantuml.Run" fork="true">
-                        <classpath>
-                            <pathelement location="${user.home}/.m2/repository/net/sourceforge/plantuml/plantuml/1.2023.7/plantuml-1.2023.7.jar"/>
-                        </classpath>
-                        <arg value="-o"/>
-                        <arg value="target/plantuml-diagrams"/>
-                        <arg value="src/main/resources/*.puml"/>
-                    </java>
-                </target>
-            </configuration>
-        </execution>
-    </executions>
-</plugin>
+<build>
+    <plugins>
+        <!-- Plugin to generate PlantUML (.puml) files from Java source code -->
+        <plugin>
+            <groupId>org.plantuml</groupId>
+            <artifactId>plantuml-generator-maven-plugin</artifactId>
+            <version>1.0.0</version> <!-- Update with the latest version if available -->
+            <executions>
+                <execution>
+                    <id>generate-puml</id>
+                    <phase>generate-sources</phase>
+                    <goals>
+                        <goal>generate</goal>
+                    </goals>
+                    <configuration>
+                        <outputDirectory>${project.build.directory}/generated-puml</outputDirectory>
+                        <sourceDirectory>src/main/java</sourceDirectory> <!-- Your Java classes -->
+                    </configuration>
+                </execution>
+            </executions>
+        </plugin>
+
+        <!-- Plugin to convert PUML to images -->
+        <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-antrun-plugin</artifactId>
+            <version>3.1.0</version>
+            <executions>
+                <execution>
+                    <id>convert-puml-to-images</id>
+                    <phase>generate-sources</phase>
+                    <goals>
+                        <goal>run</goal>
+                    </goals>
+                    <configuration>
+                        <target>
+                            <java classname="net.sourceforge.plantuml.Run" fork="true">
+                                <classpath>
+                                    <pathelement location="${user.home}/.m2/repository/net/sourceforge/plantuml/plantuml/1.2023.7/plantuml-1.2023.7.jar"/>
+                                </classpath>
+                                <arg value="${project.build.directory}/generated-puml/*.puml"/>  <!-- Convert PUML -->
+                                <arg value="-o"/>
+                                <arg value="target/plantuml-diagrams"/>  <!-- Output directory for images -->
+                            </java>
+                        </target>
+                    </configuration>
+                </execution>
+            </executions>
+        </plugin>
+    </plugins>
+</build>
