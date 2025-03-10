@@ -1,95 +1,15 @@
 @startuml
 
-' Define packages
-package "jp.co.neofirst.servicing" {
-    
-    package "controller" {
-        class FinancialInstitutionController {
-            - Logger logger
-            - FinancialInstitutionService financialInstitutionService
-            + FinancialInstitutionController(service: FinancialInstitutionService)
-            + searchFinancialInstitutions(searchConditions: FinancialInstitutionSearchConditionsDTO): ResponseEntity<List<FinancialInstitutionDTO>>
-        }
+package "dto" {
+    class FinancialInstitutionDTO {
+        - String name
+        - String address
     }
     
-    package "service" {
-        interface FinancialInstitutionService {
-            + searchInstitutions(searchConditions: FinancialInstitutionSearchConditionsDTO, inputFields: Map<String, Object>): List<FinancialInstitutionDTO>
-        }
-        
-        class FinancialInstitutionServiceImpl implements FinancialInstitutionService {
-            - FinancialInstitutionRepository financialInstitutionRepository
-            - FinancialInstitutionMapper financialInstitutionMapper
-        }
-    }
-    
-    package "repository" {
-        class FinancialInstitutionRepository {
-            + searchWithDynamicQuery(searchConditions: FinancialInstitutionSearchConditionsDTO): List<FinancialInstitutionModel>
-        }
-    }
-    
-    package "mapper" {
-        class FinancialInstitutionMapper {
-            + toDTO(model: FinancialInstitutionModel): FinancialInstitutionDTO
-            + toModel(dto: FinancialInstitutionDTO): FinancialInstitutionModel
-        }
-    }
-
-    package "dto" {
-        class FinancialInstitutionDTO
-        class FinancialInstitutionSearchConditionsDTO
-        class ErrorResponseDTO
-        class ErrorDetailDTO
-        class ErrorContainerDTO
-    }
-
-    package "model" {
-        class FinancialInstitutionModel
-        class PhoneNumberModel
-    }
-
-    package "exception" {
-        class GlobalExceptionHandler
-        class CustomDataNotFoundException
-        class CustomValidationException
-    }
-
-    package "filter" {
-        class RequestIdFilter
-    }
-
-    package "config" {
-        class CosmosDBConfig
-        class QueryPropertyFileConfig
-    }
-    
-    package "util" {
-        class Utils {
-            + getNonNullInputFields(obj: Object): Map<String, Object>
-            + getNonNullInputFieldsInStr(obj: Object): String
-        }
-    }
-
-    class NeoApplication
-
-    ' Define Relationships
-    FinancialInstitutionController --> FinancialInstitutionService : calls
-    FinancialInstitutionServiceImpl ..|> FinancialInstitutionService : implements
-    FinancialInstitutionServiceImpl --> FinancialInstitutionRepository : uses
-    FinancialInstitutionServiceImpl --> FinancialInstitutionMapper : uses
-    FinancialInstitutionRepository --> FinancialInstitutionModel : returns
-    FinancialInstitutionMapper --> FinancialInstitutionDTO : converts to
-    FinancialInstitutionMapper --> FinancialInstitutionModel : converts from
-    FinancialInstitutionController --> FinancialInstitutionSearchConditionsDTO : uses
-    FinancialInstitutionController --> ErrorResponseDTO : returns in case of error
-    GlobalExceptionHandler --> ErrorResponseDTO : handles
-    GlobalExceptionHandler --> ErrorDetailDTO : contains
-    GlobalExceptionHandler --> ErrorContainerDTO : wraps multiple errors
-    RequestIdFilter --> FinancialInstitutionController : applies filter
-    NeoApplication --> FinancialInstitutionController : initializes
-    FinancialInstitutionController --> Utils : uses for input field extraction
-
+    note right of FinancialInstitutionDTO
+    Uses @Getter and @Setter (Lombok)
+    @Data annotation also applies
+    end note
 }
 
 @enduml
