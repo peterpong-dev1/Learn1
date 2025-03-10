@@ -1,15 +1,88 @@
-@startuml
+1. Add PlantUML Maven Plugin for Development Only
 
-package "dto" {
-    class FinancialInstitutionDTO {
-        - String name
-        - String address
-    }
-    
-    note right of FinancialInstitutionDTO
-    Uses @Getter and @Setter (Lombok)
-    @Data annotation also applies
-    end note
-}
+To ensure that PlantUML is used only during development and not included in the production JAR, add the plugin under the <build> section with the maven-antrun-plugin or set the <scope> to provided (though plugins don’t usually require scopes).
 
-@enduml
+✅ Recommended Approach: Add the Plugin in pom.xml
+
+<build>
+    <plugins>
+        <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-antrun-plugin</artifactId>
+            <version>3.1.0</version>
+            <executions>
+                <execution>
+                    <phase>generate-sources</phase>  <!-- Runs only during development -->
+                    <goals>
+                        <goal>run</goal>
+                    </goals>
+                    <configuration>
+                        <tasks>
+                            <java 
+                                classname="net.sourceforge.plantuml.Run"
+                                fork="true">
+                                <classpath>
+                                    <pathelement location="src/main/resources"/>
+                                </classpath>
+                                <arg value="-o"/>
+                                <arg value="target/plantuml-diagrams"/>
+                                <arg value="src/main/resources/*.puml"/>
+                            </java>
+                        </tasks>
+                    </configuration>
+                </execution>
+            </executions>
+        </plugin>
+    </plugins>
+</build>
+
+2. Steps to Use PlantUML in Maven
+
+Step 1: Install PlantUML Dependency (Development Only)
+
+Since PlantUML is not needed in the final JAR, you can exclude it from the production package by adding it to the <dependencies> section with provided scope:
+
+<dependencies>
+    <dependency>
+        <groupId>net.sourceforge.plantuml</groupId>
+        <artifactId>plantuml</artifactId>
+        <version>1.2023.7</version>
+        <scope>provided</scope>  <!-- Ensures it's only for development -->
+    </dependency>
+</dependencies>
+
+Step 2: Generate UML Diagrams
+
+Run the following command to generate PlantUML diagrams:
+
+mvn generate-sources
+
+This will process .puml files inside src/main/resources/ and output the images in target/plantuml-diagrams/.
+
+Step 3: Verify Output
+
+Once the command executes, check the generated UML diagrams in:
+
+target/plantuml-diagrams/
+
+Step 4: Ensure It’s Not Packaged in JAR
+
+To confirm that plantuml.jar is not included in your final JAR, use:
+
+mvn package
+
+Then inspect the JAR:
+
+jar tf target/your-app.jar | grep plantuml
+
+If nothing is found, that means PlantUML is excluded from production packaging.
+
+⸻
+
+✅ Why This Approach?
+
+✔ Runs only during generate-sources phase (not affecting packaging).
+✔ Keeps PlantUML separate from production code (scope: provided).
+✔ Ensures UML diagrams are generated but not included in the JAR.
+
+Would you like further modifications based on your project structure? 🚀
