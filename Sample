@@ -1,149 +1,86 @@
 @startuml
 
-' Define Controller
-class AddressController {
-    + searchAddress(policyId: String): ResponseEntity<AddressResponseDTO>
+package "Config" {
+    class CosmosDBConfig
+    class QueryPropertyFileConfig
 }
 
-' Define Service
-class AddressService {
-    + searchAddress(policyId: String): AddressResponseDTO
+package "Controller" {
+    class FinancialInstitutionController
 }
 
-' Define Repository
-class AddressRepository {
-    + findByPolicyId(policyId: String): Optional<Address>
+package "DTO" {
+    class ErrorContainerDTO
+    class ErrorDetailDTO
+    class ErrorResponseDTO
+    class FinancialInstitutionDTO
+    class FinancialInstitutionSearchConditionsDTO
 }
 
-' Define Filter
-class RequestFilter {
-    + doFilter(request, response, filterChain): void
+package "Exception" {
+    class CustomDataNotFoundException
+    class CustomValidationException
+    class GlobalExceptionHandler
 }
 
-' Define Exception Handler
-class GlobalExceptionHandler {
-    + handleBadRequestException(exception: BadRequestException): ResponseEntity<ErrorResponseDTO>
-    + handleDataNotFoundException(exception: DataNotFoundException): ResponseEntity<ErrorResponseDTO>
+package "Filter" {
+    class RequestIdFilter
 }
 
-' Define DTOs
-class AddressRequestDTO <<DTO>> {
-    + String street
-    + String city
-    + String country
-    + String postalCode
+package "Mapper" {
+    class FinancialInstitutionMapper
 }
 
-class AddressResponseDTO <<DTO>> {
-    + String id
-    + String street
-    + String city
-    + String country
-    + String postalCode
-    + LocalDate effectiveDate
+package "Model" {
+    class FinancialInstitutionModel
+    class PhoneNumberModel
 }
 
-class AddressSummaryDTO <<DTO>> {
-    + String id
-    + String city
-    + String country
+package "Repository" {
+    class CosmosDBRepository
+    class FinancialInstitutionRepository
 }
 
-' Define Model (Database Entity)
-class Address {
-    + String id
-    + String street
-    + String city
-    + String country
-    + String postalCode
-    + LocalDate effectiveDate
+package "Service" {
+    class FinancialInstitutionService
+    class FinancialInstitutionServiceImpl
 }
 
-' Define Enum
-enum AddressType {
-    HOME
-    OFFICE
+package "Util" {
+    class Utils
+    class NeoApplication
+}
+
+package "Resources" {
+    class application_properties {
+        stereotype "file"
+    }
+    class logback_spring_xml {
+        stereotype "file"
+    }
+    class queries_properties {
+        stereotype "file"
+    }
 }
 
 ' Relationships
-AddressController --> AddressService : calls
-AddressService --> AddressRepository : calls
-RequestFilter ..> AddressController : applies filter
+FinancialInstitutionController --> FinancialInstitutionService : calls
+FinancialInstitutionService --> FinancialInstitutionRepository : uses
+FinancialInstitutionRepository --> CosmosDBConfig : uses
+
+FinancialInstitutionService --> FinancialInstitutionMapper : maps
+FinancialInstitutionMapper --> FinancialInstitutionDTO : converts
+FinancialInstitutionMapper --> FinancialInstitutionModel : converts
+
+FinancialInstitutionDTO --> FinancialInstitutionModel : maps
+FinancialInstitutionDTO --> PhoneNumberModel : contains
+FinancialInstitutionDTO --> FinancialInstitutionSearchConditionsDTO : uses
+
 GlobalExceptionHandler --> ErrorResponseDTO : returns
-AddressResponseDTO --> "*" AddressSummaryDTO : contains
-AddressRepository --> Address : returns data from DB
-AddressResponseDTO --> Address : maps to
-Address --> AddressType : uses
+ErrorResponseDTO --> ErrorContainerDTO : contains
+ErrorContainerDTO --> ErrorDetailDTO : contains
+
+RequestIdFilter --> FinancialInstitutionController : intercepts
+Utils --> FinancialInstitutionService : utility functions
 
 @enduml
-
-
-
-@startuml
-
-package "Controller Layer" {
-    class AddressController {
-        + searchAddress(policyId: String): ResponseEntity<AddressResponseDTO>
-    }
-}
-
-package "Service Layer" {
-    class AddressService {
-        + searchAddress(policyId: String): AddressResponseDTO
-    }
-}
-
-package "Repository Layer" {
-    class AddressRepository {
-        + findByPolicyId(policyId: String): Optional<Address>
-    }
-}
-
-package "DTOs" {
-    class AddressResponseDTO <<DTO>> {
-        + String id
-        + String street
-        + String city
-        + String country
-        + String postalCode
-        + LocalDate effectiveDate
-        + List<AddressDetailsDTO> details
-        + AddressType addressType
-    }
-    
-    class AddressDetailsDTO <<DTO>> {
-        + String detailId
-        + String additionalInfo
-        + String contactNumber
-    }
-    
-    class PolicyHolderDTO <<DTO>> {
-        + String holderName
-        + String holderId
-        + ContactType contactType
-    }
-}
-
-package "Enums" {
-    enum AddressType {
-        HOME
-        OFFICE
-    }
-
-    enum ContactType {
-        PRIMARY
-        SECONDARY
-    }
-}
-
-' Relationships
-AddressController --> AddressService : calls
-AddressService --> AddressRepository : calls
-AddressResponseDTO --> "*" AddressDetailsDTO : contains
-AddressResponseDTO --> PolicyHolderDTO : has
-AddressResponseDTO --> AddressType : uses
-PolicyHolderDTO --> ContactType : uses
-
-@enduml
-
-
