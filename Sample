@@ -10,18 +10,6 @@ package "jp.co.neofirst.servicing" {
             + FinancialInstitutionController(service: FinancialInstitutionService)
             + searchFinancialInstitutions(searchConditions: FinancialInstitutionSearchConditionsDTO): ResponseEntity<List<FinancialInstitutionDTO>>
         }
-        
-        ' Annotations
-        annotation RestController
-        annotation Validated
-        annotation RequestMapping("/common/financialInstitution")
-        annotation PostMapping("/search")
-
-        ' Relationships with annotations
-        FinancialInstitutionController -[#red]-> RestController
-        FinancialInstitutionController -[#red]-> Validated
-        FinancialInstitutionController -[#red]-> RequestMapping
-        searchFinancialInstitutions -[#red]-> PostMapping
     }
     
     package "service" {
