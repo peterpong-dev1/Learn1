@@ -1,86 +1,54 @@
 @startuml
+!define Validated <<annotation>>
+!define RestController <<annotation>>
+!define RequestMapping <<annotation>>
+!define PostMapping <<annotation>>
+!define Autowired <<annotation>>
+!define Valid <<annotation>>
+!define RequestBody <<annotation>>
 
-package "Config" {
-    class CosmosDBConfig
-    class QueryPropertyFileConfig
+' Define Controller
+class FinancialInstitutionController {
+    - Logger logger
+    - FinancialInstitutionService financialInstitutionService
+    
+    + FinancialInstitutionController(FinancialInstitutionService service)
+    + ResponseEntity<?> searchFinancialInstitutions(FinancialInstitutionSearchConditionsDTO searchConditions)
 }
 
-package "Controller" {
-    class FinancialInstitutionController
+' Define DTOs
+class FinancialInstitutionSearchConditionsDTO {
 }
 
-package "DTO" {
-    class ErrorContainerDTO
-    class ErrorDetailDTO
-    class ErrorResponseDTO
-    class FinancialInstitutionDTO
-    class FinancialInstitutionSearchConditionsDTO
+class FinancialInstitutionDTO {
 }
 
-package "Exception" {
-    class CustomDataNotFoundException
-    class CustomValidationException
-    class GlobalExceptionHandler
+' Define Service
+class FinancialInstitutionService {
+    + List<FinancialInstitutionDTO> searchFinancialInstitutions(FinancialInstitutionSearchConditionsDTO searchConditions)
 }
 
-package "Filter" {
-    class RequestIdFilter
+' Define Utility Class
+class Utils {
+    + static Map<String, Object> getNonNullInputFields(Object input)
 }
 
-package "Mapper" {
-    class FinancialInstitutionMapper
-}
+' Define Annotations
+@RestController
+@RequestMapping("/common/financialInstitution")
+FinancialInstitutionController : @RestController
+FinancialInstitutionController : @RequestMapping("/common/financialInstitution")
 
-package "Model" {
-    class FinancialInstitutionModel
-    class PhoneNumberModel
-}
+@PostMapping("/search")
+FinancialInstitutionController : @PostMapping("/search")
 
-package "Repository" {
-    class CosmosDBRepository
-    class FinancialInstitutionRepository
-}
-
-package "Service" {
-    class FinancialInstitutionService
-    class FinancialInstitutionServiceImpl
-}
-
-package "Util" {
-    class Utils
-    class NeoApplication
-}
-
-package "Resources" {
-    class application_properties {
-        stereotype "file"
-    }
-    class logback_spring_xml {
-        stereotype "file"
-    }
-    class queries_properties {
-        stereotype "file"
-    }
-}
+@Autowired
+FinancialInstitutionController : @Autowired
 
 ' Relationships
 FinancialInstitutionController --> FinancialInstitutionService : calls
-FinancialInstitutionService --> FinancialInstitutionRepository : uses
-FinancialInstitutionRepository --> CosmosDBConfig : uses
-
-FinancialInstitutionService --> FinancialInstitutionMapper : maps
-FinancialInstitutionMapper --> FinancialInstitutionDTO : converts
-FinancialInstitutionMapper --> FinancialInstitutionModel : converts
-
-FinancialInstitutionDTO --> FinancialInstitutionModel : maps
-FinancialInstitutionDTO --> PhoneNumberModel : contains
-FinancialInstitutionDTO --> FinancialInstitutionSearchConditionsDTO : uses
-
-GlobalExceptionHandler --> ErrorResponseDTO : returns
-ErrorResponseDTO --> ErrorContainerDTO : contains
-ErrorContainerDTO --> ErrorDetailDTO : contains
-
-RequestIdFilter --> FinancialInstitutionController : intercepts
-Utils --> FinancialInstitutionService : utility functions
+FinancialInstitutionController --> FinancialInstitutionSearchConditionsDTO : uses
+FinancialInstitutionController --> Utils : uses
+FinancialInstitutionService --> FinancialInstitutionDTO : returns
 
 @enduml
