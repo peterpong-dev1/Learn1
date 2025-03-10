@@ -1,54 +1,107 @@
 @startuml
-!define Validated <<annotation>>
-!define RestController <<annotation>>
-!define RequestMapping <<annotation>>
-!define PostMapping <<annotation>>
-!define Autowired <<annotation>>
-!define Valid <<annotation>>
-!define RequestBody <<annotation>>
 
-' Define Controller
-class FinancialInstitutionController {
-    - Logger logger
-    - FinancialInstitutionService financialInstitutionService
+' Define packages
+package "jp.co.neofirst.servicing" {
     
-    + FinancialInstitutionController(FinancialInstitutionService service)
-    + ResponseEntity<?> searchFinancialInstitutions(FinancialInstitutionSearchConditionsDTO searchConditions)
+    package "controller" {
+        class FinancialInstitutionController {
+            - Logger logger
+            - FinancialInstitutionService financialInstitutionService
+            + FinancialInstitutionController(service: FinancialInstitutionService)
+            + searchFinancialInstitutions(searchConditions: FinancialInstitutionSearchConditionsDTO): ResponseEntity<List<FinancialInstitutionDTO>>
+        }
+        
+        ' Annotations
+        annotation RestController
+        annotation Validated
+        annotation RequestMapping("/common/financialInstitution")
+        annotation PostMapping("/search")
+
+        ' Relationships with annotations
+        FinancialInstitutionController -[#red]-> RestController
+        FinancialInstitutionController -[#red]-> Validated
+        FinancialInstitutionController -[#red]-> RequestMapping
+        searchFinancialInstitutions -[#red]-> PostMapping
+    }
+    
+    package "service" {
+        interface FinancialInstitutionService {
+            + searchInstitutions(searchConditions: FinancialInstitutionSearchConditionsDTO, inputFields: Map<String, Object>): List<FinancialInstitutionDTO>
+        }
+        
+        class FinancialInstitutionServiceImpl implements FinancialInstitutionService {
+            - FinancialInstitutionRepository financialInstitutionRepository
+            - FinancialInstitutionMapper financialInstitutionMapper
+        }
+    }
+    
+    package "repository" {
+        class FinancialInstitutionRepository {
+            + searchWithDynamicQuery(searchConditions: FinancialInstitutionSearchConditionsDTO): List<FinancialInstitutionModel>
+        }
+    }
+    
+    package "mapper" {
+        class FinancialInstitutionMapper {
+            + toDTO(model: FinancialInstitutionModel): FinancialInstitutionDTO
+            + toModel(dto: FinancialInstitutionDTO): FinancialInstitutionModel
+        }
+    }
+
+    package "dto" {
+        class FinancialInstitutionDTO
+        class FinancialInstitutionSearchConditionsDTO
+        class ErrorResponseDTO
+        class ErrorDetailDTO
+        class ErrorContainerDTO
+    }
+
+    package "model" {
+        class FinancialInstitutionModel
+        class PhoneNumberModel
+    }
+
+    package "exception" {
+        class GlobalExceptionHandler
+        class CustomDataNotFoundException
+        class CustomValidationException
+    }
+
+    package "filter" {
+        class RequestIdFilter
+    }
+
+    package "config" {
+        class CosmosDBConfig
+        class QueryPropertyFileConfig
+    }
+    
+    package "util" {
+        class Utils {
+            + getNonNullInputFields(obj: Object): Map<String, Object>
+            + getNonNullInputFieldsInStr(obj: Object): String
+        }
+    }
+
+    class NeoApplication
+
+    ' Define Relationships
+    FinancialInstitutionController --> FinancialInstitutionService : calls
+    FinancialInstitutionServiceImpl ..|> FinancialInstitutionService : implements
+    FinancialInstitutionServiceImpl --> FinancialInstitutionRepository : uses
+    FinancialInstitutionServiceImpl --> FinancialInstitutionMapper : uses
+    FinancialInstitutionRepository --> FinancialInstitutionModel : returns
+    FinancialInstitutionMapper --> FinancialInstitutionDTO : converts to
+    FinancialInstitutionMapper --> FinancialInstitutionModel : converts from
+    FinancialInstitutionController --> FinancialInstitutionSearchConditionsDTO : uses
+    FinancialInstitutionController --> ErrorResponseDTO : returns in case of error
+    GlobalExceptionHandler --> ErrorResponseDTO : handles
+    GlobalExceptionHandler --> ErrorDetailDTO : contains
+    GlobalExceptionHandler --> ErrorContainerDTO : wraps multiple errors
+    RequestIdFilter --> FinancialInstitutionController : applies filter
+    NeoApplication --> FinancialInstitutionController : initializes
+    FinancialInstitutionController --> Utils : uses for input field extraction
+
 }
-
-' Define DTOs
-class FinancialInstitutionSearchConditionsDTO {
-}
-
-class FinancialInstitutionDTO {
-}
-
-' Define Service
-class FinancialInstitutionService {
-    + List<FinancialInstitutionDTO> searchFinancialInstitutions(FinancialInstitutionSearchConditionsDTO searchConditions)
-}
-
-' Define Utility Class
-class Utils {
-    + static Map<String, Object> getNonNullInputFields(Object input)
-}
-
-' Define Annotations
-@RestController
-@RequestMapping("/common/financialInstitution")
-FinancialInstitutionController : @RestController
-FinancialInstitutionController : @RequestMapping("/common/financialInstitution")
-
-@PostMapping("/search")
-FinancialInstitutionController : @PostMapping("/search")
-
-@Autowired
-FinancialInstitutionController : @Autowired
-
-' Relationships
-FinancialInstitutionController --> FinancialInstitutionService : calls
-FinancialInstitutionController --> FinancialInstitutionSearchConditionsDTO : uses
-FinancialInstitutionController --> Utils : uses
-FinancialInstitutionService --> FinancialInstitutionDTO : returns
 
 @enduml
