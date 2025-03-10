@@ -1,114 +1,129 @@
-@startuml
+import java.io.*;
+import java.nio.file.*;
+import java.util.*;
+import java.util.regex.*;
 
-' Grouping into logical sections
-package "Controller Layer" {
-    class FinancialInstitutionController {
-        - Logger logger
-        - FinancialInstitutionService financialInstitutionService
-        + FinancialInstitutionController(FinancialInstitutionService service)
-        + ResponseEntity<?> searchFinancialInstitutions(FinancialInstitutionSearchConditionsDTO searchConditions)
+public class JavaToPlantUMLGenerator {
+
+    private static final String JAVA_DIR = "src/main/java"; // Change this to your Spring Boot source directory
+    private static final String OUTPUT_FILE = "diagram.puml";
+
+    public static void main(String[] args) throws IOException {
+        List<File> javaFiles = getJavaFiles(new File(JAVA_DIR));
+        StringBuilder pumlContent = new StringBuilder("@startuml\n");
+
+        Map<String, String> classRelationships = new HashMap<>();
+        Set<String> classes = new HashSet<>();
+
+        for (File file : javaFiles) {
+            parseJavaFile(file, pumlContent, classRelationships, classes);
+        }
+
+        // Add relationships to PlantUML
+        for (Map.Entry<String, String> entry : classRelationships.entrySet()) {
+            pumlContent.append(entry.getKey()).append(" ").append(entry.getValue()).append("\n");
+        }
+
+        pumlContent.append("@enduml");
+
+        // Save the generated PUML file
+        Files.write(Paths.get(OUTPUT_FILE), pumlContent.toString().getBytes());
+        System.out.println("✅ PlantUML file generated: " + OUTPUT_FILE);
+    }
+
+    private static List<File> getJavaFiles(File rootDir) {
+        List<File> javaFiles = new ArrayList<>();
+        if (rootDir.isDirectory()) {
+            for (File file : Objects.requireNonNull(rootDir.listFiles())) {
+                if (file.isDirectory()) {
+                    javaFiles.addAll(getJavaFiles(file));
+                } else if (file.getName().endsWith(".java")) {
+                    javaFiles.add(file);
+                }
+            }
+        }
+        return javaFiles;
+    }
+
+    private static void parseJavaFile(File file, StringBuilder pumlContent, Map<String, String> relationships, Set<String> classes) throws IOException {
+        List<String> lines = Files.readAllLines(file.toPath());
+        String className = null;
+        String classType = "class";
+        List<String> attributes = new ArrayList<>();
+        List<String> methods = new ArrayList<>();
+
+        for (String line : lines) {
+            line = line.trim();
+
+            // Match class, interface, and annotations (@Component, @Service, @Repository)
+            Matcher classMatcher = Pattern.compile("class\\s+(\\w+)").matcher(line);
+            Matcher interfaceMatcher = Pattern.compile("interface\\s+(\\w+)").matcher(line);
+            Matcher extendsMatcher = Pattern.compile("extends\\s+(\\w+)").matcher(line);
+            Matcher implementsMatcher = Pattern.compile("implements\\s+([\\w, ]+)").matcher(line);
+            Matcher fieldMatcher = Pattern.compile("(private|protected|public)\\s+([\\w<>]+)\\s+(\\w+);").matcher(line);
+            Matcher methodMatcher = Pattern.compile("(public|private|protected)\\s+[\\w<>]+\\s+(\\w+)\\(.*\\)").matcher(line);
+            Matcher autowiredMatcher = Pattern.compile("@Autowired\\s+private\\s+(\\w+)\\s+(\\w+);").matcher(line);
+            Matcher constructorMatcher = Pattern.compile("public\\s+(\\w+)\\((.*?)\\)").matcher(line);
+
+            if (classMatcher.find()) {
+                className = classMatcher.group(1);
+                classType = "class";
+                classes.add(className);
+            } else if (interfaceMatcher.find()) {
+                className = interfaceMatcher.group(1);
+                classType = "interface";
+                classes.add(className);
+            }
+
+            if (extendsMatcher.find() && className != null) {
+                relationships.put(className, "--|> " + extendsMatcher.group(1));
+            }
+
+            if (implementsMatcher.find() && className != null) {
+                for (String iface : implementsMatcher.group(1).split(",")) {
+                    relationships.put(className, "..|> " + iface.trim());
+                }
+            }
+
+            if (fieldMatcher.find() && className != null) {
+                attributes.add("- " + fieldMatcher.group(3) + " : " + fieldMatcher.group(2));
+
+                // Check if the field represents an association (class field)
+                String fieldType = fieldMatcher.group(2);
+                if (classes.contains(fieldType)) {
+                    relationships.put(className, "-- " + fieldType);
+                }
+            }
+
+            if (methodMatcher.find() && className != null) {
+                methods.add("+ " + methodMatcher.group(2) + "()");
+            }
+
+            if (autowiredMatcher.find() && className != null) {
+                String dependencyClass = autowiredMatcher.group(1);
+                relationships.put(className, "-- " + dependencyClass + " : injected");
+            }
+
+            if (constructorMatcher.find() && className != null) {
+                String constructorParams = constructorMatcher.group(2);
+                for (String param : constructorParams.split(",")) {
+                    String[] paramParts = param.trim().split("\\s+");
+                    if (paramParts.length == 2 && classes.contains(paramParts[0])) {
+                        relationships.put(className, "-- " + paramParts[0] + " : injected");
+                    }
+                }
+            }
+        }
+
+        if (className != null) {
+            pumlContent.append(classType).append(" ").append(className).append(" {\n");
+            for (String attr : attributes) {
+                pumlContent.append("  ").append(attr).append("\n");
+            }
+            for (String method : methods) {
+                pumlContent.append("  ").append(method).append("\n");
+            }
+            pumlContent.append("}\n");
+        }
     }
 }
-
-package "Service Layer" {
-    interface FinancialInstitutionService {
-        + List<FinancialInstitutionDTO> searchInstitutions(FinancialInstitutionSearchConditionsDTO searchConditions)
-    }
-    
-    class FinancialInstitutionServiceImpl implements FinancialInstitutionService {
-        - Logger logger
-        - FinancialInstitutionRepository repository
-        - FinancialInstitutionMapper mapper
-        + FinancialInstitutionServiceImpl(FinancialInstitutionRepository repository, FinancialInstitutionMapper mapper)
-        + List<FinancialInstitutionDTO> searchInstitutions(FinancialInstitutionSearchConditionsDTO searchConditions, Map<String, Object> inputFields)
-    }
-}
-
-package "Repository Layer" {
-    class FinancialInstitutionRepository {
-        - QueryPropertyFileConfig queryConfig
-        - CosmosContainer cosmosContainer
-        - Logger logger
-        + FinancialInstitutionRepository(CosmosDBRepository cosmosDBRepository)
-        + List<FinancialInstitutionModel> searchWithDynamicQuery(FinancialInstitutionSearchConditionsDTO searchConditions)
-    }
-}
-
-package "Database Layer" {
-    class CosmosDBRepository {
-        - static final Logger logger
-        - CosmosClient cosmosClient
-        - CosmosContainer cosmosContainer
-        - CosmosDatabase cosmosDatabase
-        + CosmosDBRepository(CosmosDBConfig cosmosDBConfig)
-        + CosmosContainer getContainer()
-        + void close()
-    }
-}
-
-package "Utility Layer" {
-    class Utils {
-        - Utils()  ' Private constructor
-        + Map<String, Object> getNonNullInputFields(FinancialInstitutionSearchConditionsDTO searchConditions)
-        + String getNonNullInputFieldsInStr(FinancialInstitutionSearchConditionsDTO searchConditions)
-        - String formatValue(Object value)
-        + boolean isNullOrEmpty(String value)
-    }
-}
-
-package "Exception Handling" {
-    class GlobalExceptionHandler {
-        - Logger logger
-        + ResponseEntity<ErrorContainerDTO> handleValidationError(MethodArgumentNotValidException ex)
-        + ResponseEntity<ErrorContainerDTO> handleGenericException(Exception ex)
-        + ResponseEntity<ErrorContainerDTO> handleDataNotFoundError(CustomDataNotFoundException ex)
-        + ResponseEntity<ErrorContainerDTO> handleValidationError(CustomValidationException ex)
-        - ResponseEntity<ErrorContainerDTO> buildErrorResponse(HttpStatus status, String message, Map<String, Object> details)
-    }
-}
-
-package "Filter Layer" {
-    class RequestIdFilter implements Filter {
-        + void doFilter(ServletRequest request, ServletResponse response, FilterChain chain) throws IOException, ServletException
-    }
-}
-
-package "Application" {
-    class NeoApplication {
-        + static void main(String[] args)
-    }
-}
-
-package "DTO Layer" {
-    class FinancialInstitutionDTO
-    class FinancialInstitutionSearchConditionsDTO
-    class ErrorResponseDTO
-    class ErrorDetailDTO
-    class ErrorContainerDTO
-}
-
-package "Model Layer" {
-    class FinancialInstitutionModel
-    class PhoneNumberModel
-}
-
-package "Mapper Layer" {
-    class FinancialInstitutionMapper
-}
-
-' Optimized relationships with clear direction
-FinancialInstitutionController --> FinancialInstitutionService : uses
-FinancialInstitutionServiceImpl ..|> FinancialInstitutionService : implements
-FinancialInstitutionServiceImpl --> FinancialInstitutionRepository : uses
-FinancialInstitutionServiceImpl --> FinancialInstitutionMapper : uses
-FinancialInstitutionRepository --> CosmosDBRepository : uses
-FinancialInstitutionRepository --> QueryPropertyFileConfig : uses
-CosmosDBRepository --> CosmosDBConfig : uses
-RequestIdFilter ..|> Filter : implements
-Utils --> FinancialInstitutionSearchConditionsDTO : uses
-GlobalExceptionHandler --> ErrorResponseDTO : returns
-GlobalExceptionHandler --> ErrorDetailDTO : contains
-GlobalExceptionHandler --> ErrorContainerDTO : wraps multiple errors
-NeoApplication --> FinancialInstitutionController : initializes
-
-@enduml
