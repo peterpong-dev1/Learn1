@@ -1,53 +1,149 @@
 @startuml
-actor Client
-participant "Filter" as F
-participant "Controller" as C
-participant "Service Layer" as S
-participant "Validation Utility" as V
-participant "Repository" as R
-database "CosmosDB" as DB
-participant "Exception Handler" as EH
-participant "Logger" as L
 
-Client -> F: Sends API Request
-F -> L: Log Incoming Request and Extract Request ID
-F -> C: Passes Request to Controller
+' Define Controller
+class AddressController {
+    + searchAddress(policyId: String): ResponseEntity<AddressResponseDTO>
+}
 
-C -> L: Log Request Processing
-C -> S: Calls Service with Request Data
+' Define Service
+class AddressService {
+    + searchAddress(policyId: String): AddressResponseDTO
+}
 
-alt Input Validation Fails
-    S -> V: Validate Request Fields
-    V --> S: Returns Validation Error
-    S -> EH: Throws BadRequestException (400)
-    EH --> Client: Returns 400 Bad Request
-    L -> L: Log Validation Failure
-    return
-end
+' Define Repository
+class AddressRepository {
+    + findByPolicyId(policyId: String): Optional<Address>
+}
 
-S -> R: Call Repository to Query Database
+' Define Filter
+class RequestFilter {
+    + doFilter(request, response, filterChain): void
+}
 
-alt Data Not Found
-    R -> DB: Query Data
-    DB --> R: No Matching Data
-    R -> EH: Throws DataNotFoundException (404)
-    EH --> Client: Returns 404 Not Found
-    L -> L: Log Data Not Found
-    return
-end
+' Define Exception Handler
+class GlobalExceptionHandler {
+    + handleBadRequestException(exception: BadRequestException): ResponseEntity<ErrorResponseDTO>
+    + handleDataNotFoundException(exception: DataNotFoundException): ResponseEntity<ErrorResponseDTO>
+}
 
-alt Database Failure
-    R -> DB: Query Fails
-    DB --> R: Throws Exception
-    R -> EH: Global Exception Handler Catches Error
-    EH --> Client: Returns 500 Internal Server Error
-    L -> L: Log DB Failure
-    return
-end
+' Define DTOs
+class AddressRequestDTO <<DTO>> {
+    + String street
+    + String city
+    + String country
+    + String postalCode
+}
 
-DB --> R: Returns Retrieved Data
-R --> S: Returns Data
-S --> C: Returns Data
-C --> Client: Sends 200 OK Response
-L -> L: Log Successful Response
+class AddressResponseDTO <<DTO>> {
+    + String id
+    + String street
+    + String city
+    + String country
+    + String postalCode
+    + LocalDate effectiveDate
+}
+
+class AddressSummaryDTO <<DTO>> {
+    + String id
+    + String city
+    + String country
+}
+
+' Define Model (Database Entity)
+class Address {
+    + String id
+    + String street
+    + String city
+    + String country
+    + String postalCode
+    + LocalDate effectiveDate
+}
+
+' Define Enum
+enum AddressType {
+    HOME
+    OFFICE
+}
+
+' Relationships
+AddressController --> AddressService : calls
+AddressService --> AddressRepository : calls
+RequestFilter ..> AddressController : applies filter
+GlobalExceptionHandler --> ErrorResponseDTO : returns
+AddressResponseDTO --> "*" AddressSummaryDTO : contains
+AddressRepository --> Address : returns data from DB
+AddressResponseDTO --> Address : maps to
+Address --> AddressType : uses
+
 @enduml
+
+
+
+@startuml
+
+package "Controller Layer" {
+    class AddressController {
+        + searchAddress(policyId: String): ResponseEntity<AddressResponseDTO>
+    }
+}
+
+package "Service Layer" {
+    class AddressService {
+        + searchAddress(policyId: String): AddressResponseDTO
+    }
+}
+
+package "Repository Layer" {
+    class AddressRepository {
+        + findByPolicyId(policyId: String): Optional<Address>
+    }
+}
+
+package "DTOs" {
+    class AddressResponseDTO <<DTO>> {
+        + String id
+        + String street
+        + String city
+        + String country
+        + String postalCode
+        + LocalDate effectiveDate
+        + List<AddressDetailsDTO> details
+        + AddressType addressType
+    }
+    
+    class AddressDetailsDTO <<DTO>> {
+        + String detailId
+        + String additionalInfo
+        + String contactNumber
+    }
+    
+    class PolicyHolderDTO <<DTO>> {
+        + String holderName
+        + String holderId
+        + ContactType contactType
+    }
+}
+
+package "Enums" {
+    enum AddressType {
+        HOME
+        OFFICE
+    }
+
+    enum ContactType {
+        PRIMARY
+        SECONDARY
+    }
+}
+
+' Relationships
+AddressController --> AddressService : calls
+AddressService --> AddressRepository : calls
+AddressResponseDTO --> "*" AddressDetailsDTO : contains
+AddressResponseDTO --> PolicyHolderDTO : has
+AddressResponseDTO --> AddressType : uses
+PolicyHolderDTO --> ContactType : uses
+
+@enduml
+
+
