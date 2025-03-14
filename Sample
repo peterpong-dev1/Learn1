@@ -42,7 +42,89 @@ class AgentControllerTest {
     }
 }
 
+import static org.mockito.Mockito.*;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.slf4j.MDC;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+
+import java.util.Map;
+
+@ExtendWith(MockitoExtension.class)
+class AgentControllerTest {
+
+    private MockMvc mockMvc;
+
+    @Mock
+    private AgentDetailByAgentIdService agentDetailByAgentIdService; // ✅ Mocked Service
+
+    @InjectMocks
+    private AgentController agentController; // ✅ Inject service into controller
+
+    @BeforeEach
+    void setUp() {
+        mockMvc = MockMvcBuilders.standaloneSetup(agentController)
+                .setControllerAdvice(new GlobalExceptionHandler()) // ✅ Attach GlobalExceptionHandler
+                .build();
+        
+        MDC.put("requestId", "mock-request-id"); // ✅ Mock requestId in MDC
+    }
+
+    // ✅ Test: CustomValidationException (400 Bad Request)
+    @Test
+    void testValidationException_ReturnsBadRequest() throws Exception {
+        when(agentDetailByAgentIdService.searchUsingAgentId(eq(""), anyMap()))
+                .thenThrow(new CustomValidationException("Validation failed", Map.of("agentId", "Invalid or missing value")));
+
+        mockMvc.perform(get("/agents/") // ✅ Simulate request
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isBadRequest()) // ✅ Expect 400 Bad Request
+                .andExpect(jsonPath("$.errorResponse.code").value("400")) // ✅ Validate error code
+                .andExpect(jsonPath("$.errorResponse.message").value("Validation failed")) // ✅ Validate error message
+                .andExpect(jsonPath("$.errorResponse.details[0].field").value("agentId")) // ✅ Validate field name
+                .andExpect(jsonPath("$.errorResponse.details[0].issue").value("Invalid or missing value")) // ✅ Validate issue
+                .andExpect(jsonPath("$.errorResponse.requestId").value("mock-request-id")); // ✅ Validate requestId
+    }
+
+    // ✅ Test: CustomDataNotFoundException (404 Not Found)
+    @Test
+    void testDataNotFoundException_ReturnsNotFound() throws Exception {
+        when(agentDetailByAgentIdService.searchUsingAgentId(eq("999"), anyMap()))
+                .thenThrow(new CustomDataNotFoundException("No Agent found matching the given criteria"));
+
+        mockMvc.perform(get("/agents/999")
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isNotFound()) // ✅ Expect 404 Not Found
+                .andExpect(jsonPath("$.errorResponse.code").value("404")) // ✅ Validate error code
+                .andExpect(jsonPath("$.errorResponse.message").value("No Agent found matching the given criteria")) // ✅ Validate error message
+                .andExpect(jsonPath("$.errorResponse.details").doesNotExist()) // ✅ Validate that details are null
+                .andExpect(jsonPath("$.errorResponse.requestId").value("mock-request-id")); // ✅ Validate requestId
+    }
+
+    // ✅ Test: Generic Exception (500 Internal Server Error)
+    @Test
+    void testGenericException_ReturnsInternalServerError() throws Exception {
+        when(agentDetailByAgentIdService.searchUsingAgentId(eq("456"), anyMap()))
+                .thenThrow(new RuntimeException("Unexpected server error"));
+
+        mockMvc.perform(get("/agents/456")
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isInternalServerError()) // ✅ Expect 500 Internal Server Error
+                .andExpect(jsonPath("$.errorResponse.code").value("500")) // ✅ Validate error code
+                .andExpect(jsonPath("$.errorResponse.message").value("Unexpected server error")) // ✅ Validate error message
+                .andExpect(jsonPath("$.errorResponse.details").doesNotExist()) // ✅ Validate that details are null
+                .andExpect(jsonPath("$.errorResponse.requestId").value("mock-request-id")); // ✅ Validate requestId
+    }
+}
 
 
 
