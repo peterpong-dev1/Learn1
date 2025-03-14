@@ -25,18 +25,24 @@ class AgentControllerTest {
     @BeforeEach
     void setUp() {
         mockMvc = MockMvcBuilders.standaloneSetup(agentController)
-                .setControllerAdvice(new GlobalExceptionHandler()) // ✅ Attach Global Exception Handler
+                .setControllerAdvice(new GlobalExceptionHandler()) // ✅ Attach GlobalExceptionHandler
                 .build();
     }
 
-    // ✅ Test: MethodArgumentNotValidException (400 Bad Request)
+    // ✅ Test: `MethodArgumentNotValidException` (400 Bad Request)
     @Test
     void testMethodArgumentNotValidException() throws Exception {
-        mockMvc.perform(get("/agents/ ") // ✅ Sending invalid input (blank agentId)
+        mockMvc.perform(get("/agents/ ") // ✅ Sending invalid blank agentId
                         .accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isBadRequest()) // ✅ Expect 400 Bad Request
                 .andExpect(jsonPath("$.errorResponse.code").value("400")) // ✅ Validate error code
-                .andExpect(jsonPath("$.errorResponse.message").exists()) // ✅ Validate error message exists
-                .andExpect(jsonPath("$.errorResponse.details").exists()); // ✅ Validate details field exists
+                .andExpect(jsonPath("$.errorResponse.message").exists()) // ✅ Error message should exist
+                .andExpect(jsonPath("$.errorResponse.details[0].field").value("agentId")) // ✅ Validate field name
+                .andExpect(jsonPath("$.errorResponse.details[0].issue").value("Agent ID is required")); // ✅ Validate issue
     }
 }
+
+
+
+
+
