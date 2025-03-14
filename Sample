@@ -1,20 +1,3 @@
-Here is a JUnit test template for your AgentController using Mockito and MockMvc. This includes all possible test cases for the GET /agents/{agentId} API.
-
-⸻
-
-✅ Features of This Test Class
-	•	Mocks the AgentDetailByAgentIdService (No real DB calls).
-	•	Uses MockMvc to test API endpoints.
-	•	Covers edge cases:
-	•	Successful request (valid agentId).
-	•	Agent not found.
-	•	Validation failure (agentId is blank).
-	•	Service throws an exception.
-
-⸻
-
-📌 JUnit Test Class for AgentController
-
 import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
@@ -35,9 +18,9 @@ import java.util.List;
 @ExtendWith(MockitoExtension.class) // ✅ Enables Mockito support
 class AgentControllerTest {
 
-    private MockMvc mockMvc; // ✅ MockMvc simulates API requests
+    private MockMvc mockMvc; // ✅ Simulates API requests
 
-    @Mock // ✅ Mocking the Service Layer (No real DB calls)
+    @Mock // ✅ Mock the Service Layer (No real DB calls)
     private AgentDetailByAgentIdService agentDetailByAgentIdService;
 
     @InjectMocks // ✅ Inject the mocked service into the Controller
@@ -50,13 +33,22 @@ class AgentControllerTest {
         mockMvc = MockMvcBuilders.standaloneSetup(agentController).build(); // ✅ Initialize MockMvc
     }
 
-    // ✅ 1. Test GET /agents/{agentId} - Success
+    // ✅ 1. Test GET /agents/{agentId} - Success (Valid Agent)
     @Test
     void testGetAgentById_Success() throws Exception {
-        // ✅ Mock response data
-        List<AgentDTO> mockAgents = List.of(new AgentDTO("123", "John Doe", "john@example.com"));
+        // ✅ Mock agent with correct eMail mapping
+        List<AgentDTO> mockAgents = List.of(new AgentDTO(
+                "123", "456", "CL001", "Admin",
+                List.of(new NameDTO("John", "Doe")), true, false, "1990-01-01",
+                Gender.MALE, List.of(new PhoneNumberDTO("mobile", "home", "1234567890")),
+                List.of(new EmailDTO("john@example.com", true)), // ✅ eMail correctly mapped
+                List.of(new DigitalTouchpointDTO("portalSite", "98765")),
+                new SolicitorDTO("emp123", "SOL001", "Legal Advisor"),
+                new AgencyDTO("AG001", "10010", "Some Agency"),
+                new AgencyOfficeDTO("0000", "Main Office")
+        ));
 
-        // ✅ Mock service method
+        // ✅ Mock service call
         when(agentDetailByAgentIdService.searchUsingAgentId(eq("123"), anyMap())).thenReturn(mockAgents);
 
         // ✅ Perform GET request and verify response
@@ -64,15 +56,16 @@ class AgentControllerTest {
                 .andExpect(status().isOk()) // ✅ HTTP 200
                 .andExpect(jsonPath("$.size()").value(1))
                 .andExpect(jsonPath("$[0].id").value("123"))
-                .andExpect(jsonPath("$[0].name").value("John Doe"));
+                .andExpect(jsonPath("$[0].eMail[0].address").value("john@example.com")) // ✅ eMail validation
+                .andExpect(jsonPath("$[0].eMail[0].addressValidated").value(true));
 
-        verify(agentDetailByAgentIdService, times(1)).searchUsingAgentId(eq("123"), anyMap()); // ✅ Verify method call
+        verify(agentDetailByAgentIdService, times(1)).searchUsingAgentId(eq("123"), anyMap());
     }
 
-    // ✅ 2. Test GET /agents/{agentId} - Not Found
+    // ✅ 2. Test GET /agents/{agentId} - Not Found (Empty List)
     @Test
     void testGetAgentById_NotFound() throws Exception {
-        // ✅ Mock service method to return empty list
+        // ✅ Mock service call to return empty list
         when(agentDetailByAgentIdService.searchUsingAgentId(eq("999"), anyMap())).thenReturn(Collections.emptyList());
 
         // ✅ Perform GET request and verify response
@@ -108,26 +101,3 @@ class AgentControllerTest {
         verify(agentDetailByAgentIdService, times(1)).searchUsingAgentId(eq("123"), anyMap());
     }
 }
-
-
-
-⸻
-
-📌 Test Cases Covered
-
-Test Case	Expected HTTP Status	Scenario
-✅ GET /agents/{agentId} (Valid ID)	200 OK	Agent found successfully
-✅ GET /agents/{agentId} (Not Found)	404 Not Found	No agent found for the given ID
-✅ GET /agents/{agentId} (Blank ID)	400 Bad Request	Validation error
-✅ GET /agents/{agentId} (Service Exception)	500 Internal Server Error	Exception thrown in service
-
-
-
-⸻
-
-🚀 How to Use This?
-	1.	Copy the test class into your test package.
-	2.	Ensure Mockito, JUnit, and MockMvc are in your dependencies.
-	3.	Run the test class to verify the API behavior.
-
-Would you like me to add more test scenarios or help you integrate this into your project? 🚀
