@@ -1,26 +1,5 @@
-📌 Unit Test for Service Layer (AgentDetailByAgentIdServiceImpl)
-
-Now that I have seen the full service layer, I will write a complete unit test for it.
-
-⸻
-
-✅ What This Test Will Cover
-
-✔️ Mocking AgentRepository (since the service calls it).
-✔️ Mocking AgentMapper (to simulate DTO conversion).
-✔️ Testing various scenarios:
-	•	Valid agent found ✅
-	•	Agent ID missing ❌
-	•	No matching agent found ❌
-	•	Validation exception for missing fields ❌
-	•	Database error (exception handling) ❌
-
-⸻
-
-✅ AgentDetailByAgentIdServiceImplTest.java
-
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.Mockito.*;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -28,149 +7,36 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.slf4j.MDC;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
-import java.util.List;
-import java.util.Map;
-import java.util.HashMap;
-import java.util.Collections;
+@ExtendWith(MockitoExtension.class)
+class AgentControllerTest {
 
-@ExtendWith(MockitoExtension.class) // ✅ Enable Mockito
-class AgentDetailByAgentIdServiceImplTest {
-
-    @Mock
-    private AgentRepository agentRepository; // ✅ Mock repository
+    private MockMvc mockMvc;
 
     @Mock
-    private AgentMapper agentMapper; // ✅ Mock DTO mapper
+    private AgentDetailByAgentIdService agentDetailByAgentIdService; // ✅ Mocked Service
 
     @InjectMocks
-    private AgentDetailByAgentIdServiceImpl agentDetailByAgentIdService; // ✅ Inject Mocks
-
-    private AgentModel mockAgentModel;
-    private AgentDTO mockAgentDTO;
+    private AgentController agentController; // ✅ Inject service into controller
 
     @BeforeEach
     void setUp() {
-        // ✅ Mock data for agent model (DB entity)
-        mockAgentModel = new AgentModel(
-                "001", "456", "CL001", "Admin"
-        );
-
-        // ✅ Mock data for agent DTO (Response format)
-        mockAgentDTO = new AgentDTO(
-                "001", "456", "CL001", "Admin"
-        );
+        mockMvc = MockMvcBuilders.standaloneSetup(agentController)
+                .setControllerAdvice(new GlobalExceptionHandler()) // ✅ Attach Global Exception Handler
+                .build();
     }
 
-    // ✅ Test: Service returns agent when found
+    // ✅ Test: MethodArgumentNotValidException (400 Bad Request)
     @Test
-    void testSearchUsingAgentId_Success() {
-        // ✅ Mock repository response
-        when(agentRepository.searchWithDynamicQuery(eq("456"), anyMap()))
-                .thenReturn(List.of(mockAgentModel));
-
-        // ✅ Mock mapper response
-        when(agentMapper.toDTO(mockAgentModel)).thenReturn(mockAgentDTO);
-
-        // ✅ Call service method
-        List<AgentDTO> result = agentDetailByAgentIdService.searchUsingAgentId("456", new HashMap<>());
-
-        // ✅ Assertions
-        assertNotNull(result);
-        assertEquals(1, result.size());
-        assertEquals("456", result.get(0).getAgentId());
-
-        // ✅ Verify repository and mapper calls
-        verify(agentRepository, times(1)).searchWithDynamicQuery(eq("456"), anyMap());
-        verify(agentMapper, times(1)).toDTO(mockAgentModel);
-    }
-
-    // ✅ Test: Throws Exception when agentId is missing
-    @Test
-    void testSearchUsingAgentId_ThrowsValidationException_WhenAgentIdIsMissing() {
-        Exception exception = assertThrows(CustomValidationException.class, () ->
-                agentDetailByAgentIdService.searchUsingAgentId("", new HashMap<>()));
-
-        assertEquals("At least one search condition must be provided", exception.getMessage());
-    }
-
-    // ✅ Test: Throws Exception when Request ID is missing in MDC
-    @Test
-    void testSearchUsingAgentId_ThrowsValidationException_WhenRequestIdIsMissing() {
-        MDC.clear(); // ✅ Simulate missing requestId
-        Exception exception = assertThrows(CustomValidationException.class, () ->
-                agentDetailByAgentIdService.searchUsingAgentId("456", new HashMap<>()));
-
-        assertEquals("RequestId is null or empty in request", exception.getMessage());
-    }
-
-    // ✅ Test: Returns empty list if no agent found
-    @Test
-    void testSearchUsingAgentId_NoAgentFound() {
-        when(agentRepository.searchWithDynamicQuery(eq("456"), anyMap()))
-                .thenReturn(Collections.emptyList());
-
-        List<AgentDTO> result = agentDetailByAgentIdService.searchUsingAgentId("456", new HashMap<>());
-
-        assertNotNull(result);
-        assertTrue(result.isEmpty());
-
-        verify(agentRepository, times(1)).searchWithDynamicQuery(eq("456"), anyMap());
-    }
-
-    // ✅ Test: Throws Exception when data validation fails
-    @Test
-    void testSearchUsingAgentId_ThrowsValidationException_WhenDataIsInvalid() {
-        // ✅ Simulate missing ID in response
-        mockAgentDTO.setId(null);
-        when(agentRepository.searchWithDynamicQuery(eq("456"), anyMap()))
-                .thenReturn(List.of(mockAgentModel));
-
-        when(agentMapper.toDTO(mockAgentModel)).thenReturn(mockAgentDTO);
-
-        Exception exception = assertThrows(CustomValidationException.class, () ->
-                agentDetailByAgentIdService.searchUsingAgentId("456", new HashMap<>()));
-
-        assertEquals("Id, AgentId must be present in response.", exception.getMessage());
-    }
-
-    // ✅ Test: Throws Exception when database query fails
-    @Test
-    void testSearchUsingAgentId_ThrowsException_WhenDatabaseFails() {
-        when(agentRepository.searchWithDynamicQuery(eq("456"), anyMap()))
-                .thenThrow(new RuntimeException("Database Error"));
-
-        Exception exception = assertThrows(RuntimeException.class, () ->
-                agentDetailByAgentIdService.searchUsingAgentId("456", new HashMap<>()));
-
-        assertEquals("Database Error", exception.getMessage());
+    void testMethodArgumentNotValidException() throws Exception {
+        mockMvc.perform(get("/agents/ ") // ✅ Sending invalid input (blank agentId)
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isBadRequest()) // ✅ Expect 400 Bad Request
+                .andExpect(jsonPath("$.errorResponse.code").value("400")) // ✅ Validate error code
+                .andExpect(jsonPath("$.errorResponse.message").exists()) // ✅ Validate error message exists
+                .andExpect(jsonPath("$.errorResponse.details").exists()); // ✅ Validate details field exists
     }
 }
-
-
-
-⸻
-
-✅ What This Test Covers
-
-Test Case	Scenario Tested	Expected Outcome
-testSearchUsingAgentId_Success	Agent exists	✅ Returns List<AgentDTO>
-testSearchUsingAgentId_ThrowsValidationException_WhenAgentIdIsMissing	Missing agentId	❌ Throws CustomValidationException
-testSearchUsingAgentId_ThrowsValidationException_WhenRequestIdIsMissing	requestId missing in MDC	❌ Throws CustomValidationException
-testSearchUsingAgentId_NoAgentFound	No matching agent	✅ Returns empty list []
-testSearchUsingAgentId_ThrowsValidationException_WhenDataIsInvalid	Missing ID in response	❌ Throws CustomValidationException
-testSearchUsingAgentId_ThrowsException_WhenDatabaseFails	Database query fails	❌ Throws RuntimeException
-
-
-
-⸻
-
-✅ Run the Tests
-
-Use the following Maven command:
-
-mvn test -Dtest=AgentDetailByAgentIdServiceImplTest
-
-🚀 Now, your service layer is fully covered with unit tests!
-If you need any modifications, let me know! 😊
