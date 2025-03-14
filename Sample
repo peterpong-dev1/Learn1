@@ -1,12 +1,133 @@
+Here is a JUnit test template for your AgentController using Mockito and MockMvc. This includes all possible test cases for the GET /agents/{agentId} API.
+
+⸻
+
+✅ Features of This Test Class
+	•	Mocks the AgentDetailByAgentIdService (No real DB calls).
+	•	Uses MockMvc to test API endpoints.
+	•	Covers edge cases:
+	•	Successful request (valid agentId).
+	•	Agent not found.
+	•	Validation failure (agentId is blank).
+	•	Service throws an exception.
+
+⸻
+
+📌 JUnit Test Class for AgentController
+
+import static org.mockito.Mockito.*;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import java.util.Collections;
 import java.util.List;
 
-public static void printListAsJson(List<?> list) {
-    try {
-        ObjectMapper objectMapper = new ObjectMapper();
-        String json = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(list);
-        System.out.println(json);
-    } catch (Exception e) {
-        e.printStackTrace();
+@ExtendWith(MockitoExtension.class) // ✅ Enables Mockito support
+class AgentControllerTest {
+
+    private MockMvc mockMvc; // ✅ MockMvc simulates API requests
+
+    @Mock // ✅ Mocking the Service Layer (No real DB calls)
+    private AgentDetailByAgentIdService agentDetailByAgentIdService;
+
+    @InjectMocks // ✅ Inject the mocked service into the Controller
+    private AgentController agentController;
+
+    private final ObjectMapper objectMapper = new ObjectMapper(); // ✅ Converts Java objects to JSON
+
+    @BeforeEach
+    void setUp() {
+        mockMvc = MockMvcBuilders.standaloneSetup(agentController).build(); // ✅ Initialize MockMvc
+    }
+
+    // ✅ 1. Test GET /agents/{agentId} - Success
+    @Test
+    void testGetAgentById_Success() throws Exception {
+        // ✅ Mock response data
+        List<AgentDTO> mockAgents = List.of(new AgentDTO("123", "John Doe", "john@example.com"));
+
+        // ✅ Mock service method
+        when(agentDetailByAgentIdService.searchUsingAgentId(eq("123"), anyMap())).thenReturn(mockAgents);
+
+        // ✅ Perform GET request and verify response
+        mockMvc.perform(get("/agents/123"))
+                .andExpect(status().isOk()) // ✅ HTTP 200
+                .andExpect(jsonPath("$.size()").value(1))
+                .andExpect(jsonPath("$[0].id").value("123"))
+                .andExpect(jsonPath("$[0].name").value("John Doe"));
+
+        verify(agentDetailByAgentIdService, times(1)).searchUsingAgentId(eq("123"), anyMap()); // ✅ Verify method call
+    }
+
+    // ✅ 2. Test GET /agents/{agentId} - Not Found
+    @Test
+    void testGetAgentById_NotFound() throws Exception {
+        // ✅ Mock service method to return empty list
+        when(agentDetailByAgentIdService.searchUsingAgentId(eq("999"), anyMap())).thenReturn(Collections.emptyList());
+
+        // ✅ Perform GET request and verify response
+        mockMvc.perform(get("/agents/999"))
+                .andExpect(status().isNotFound()); // ✅ HTTP 404
+
+        verify(agentDetailByAgentIdService, times(1)).searchUsingAgentId(eq("999"), anyMap());
+    }
+
+    // ✅ 3. Test GET /agents/{agentId} - Validation Failure (Blank agentId)
+    @Test
+    void testGetAgentById_BlankAgentId() throws Exception {
+        // ✅ Perform GET request with blank agentId
+        mockMvc.perform(get("/agents/ "))
+                .andExpect(status().isBadRequest()) // ✅ HTTP 400
+                .andExpect(jsonPath("$.message").value("Agent ID is required")); // ✅ Matches validation message
+
+        verifyNoInteractions(agentDetailByAgentIdService); // ✅ Ensure service was NOT called
+    }
+
+    // ✅ 4. Test GET /agents/{agentId} - Internal Server Error (Service Exception)
+    @Test
+    void testGetAgentById_ServiceException() throws Exception {
+        // ✅ Simulate service throwing an exception
+        when(agentDetailByAgentIdService.searchUsingAgentId(eq("123"), anyMap()))
+                .thenThrow(new RuntimeException("Database error"));
+
+        // ✅ Perform GET request and verify error response
+        mockMvc.perform(get("/agents/123"))
+                .andExpect(status().isInternalServerError()) // ✅ HTTP 500
+                .andExpect(jsonPath("$.message").value("Internal Server Error"));
+
+        verify(agentDetailByAgentIdService, times(1)).searchUsingAgentId(eq("123"), anyMap());
     }
 }
+
+
+
+⸻
+
+📌 Test Cases Covered
+
+Test Case	Expected HTTP Status	Scenario
+✅ GET /agents/{agentId} (Valid ID)	200 OK	Agent found successfully
+✅ GET /agents/{agentId} (Not Found)	404 Not Found	No agent found for the given ID
+✅ GET /agents/{agentId} (Blank ID)	400 Bad Request	Validation error
+✅ GET /agents/{agentId} (Service Exception)	500 Internal Server Error	Exception thrown in service
+
+
+
+⸻
+
+🚀 How to Use This?
+	1.	Copy the test class into your test package.
+	2.	Ensure Mockito, JUnit, and MockMvc are in your dependencies.
+	3.	Run the test class to verify the API behavior.
+
+Would you like me to add more test scenarios or help you integrate this into your project? 🚀
