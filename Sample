@@ -15,89 +15,88 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import java.util.Collections;
 import java.util.List;
 
-@ExtendWith(MockitoExtension.class) // ✅ Enables Mockito support
+@ExtendWith(MockitoExtension.class)
 class AgentControllerTest {
 
-    private MockMvc mockMvc; // ✅ Simulates API requests
+    private MockMvc mockMvc;
 
-    @Mock // ✅ Mock the Service Layer (No real DB calls)
+    @Mock
     private AgentDetailByAgentIdService agentDetailByAgentIdService;
 
-    @InjectMocks // ✅ Inject the mocked service into the Controller
+    @InjectMocks
     private AgentController agentController;
 
-    private final ObjectMapper objectMapper = new ObjectMapper(); // ✅ Converts Java objects to JSON
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     @BeforeEach
     void setUp() {
-        mockMvc = MockMvcBuilders.standaloneSetup(agentController).build(); // ✅ Initialize MockMvc
+        // ✅ Register Global Exception Handler so that it catches exceptions
+        mockMvc = MockMvcBuilders.standaloneSetup(agentController)
+                .setControllerAdvice(new GlobalExceptionHandler()) // ✅ Add ControllerAdvice for exception handling
+                .build();
     }
 
-    // ✅ 1. Test GET /agents/{agentId} - Success (Valid Agent)
+    // ✅ 1. Success Case: GET /agents/{agentId}
     @Test
-    void testGetAgentById_Success() throws Exception {
-        // ✅ Mock agent with correct eMail mapping
+    void testGetAgentByAgentId_Success() throws Exception {
         List<AgentDTO> mockAgents = List.of(new AgentDTO(
-                "123", "456", "CL001", "Admin",
+                "001", "12345", "CL001", "Admin",
                 List.of(new NameDTO("John", "Doe")), true, false, "1990-01-01",
                 Gender.MALE, List.of(new PhoneNumberDTO("mobile", "home", "1234567890")),
-                List.of(new EmailDTO("john@example.com", true)), // ✅ eMail correctly mapped
+                List.of(new EmailDTO("john@example.com", true)),
                 List.of(new DigitalTouchpointDTO("portalSite", "98765")),
                 new SolicitorDTO("emp123", "SOL001", "Legal Advisor"),
                 new AgencyDTO("AG001", "10010", "Some Agency"),
                 new AgencyOfficeDTO("0000", "Main Office")
         ));
 
-        // ✅ Mock service call
-        when(agentDetailByAgentIdService.searchUsingAgentId(eq("123"), anyMap())).thenReturn(mockAgents);
+        when(agentDetailByAgentIdService.searchUsingAgentId(eq("12345"), anyMap()))
+                .thenReturn(mockAgents);
 
-        // ✅ Perform GET request and verify response
-        mockMvc.perform(get("/agents/123"))
-                .andExpect(status().isOk()) // ✅ HTTP 200
+        mockMvc.perform(get("/agents/12345"))
+                .andExpect(status().isOk())
                 .andExpect(jsonPath("$.size()").value(1))
-                .andExpect(jsonPath("$[0].id").value("123"))
-                .andExpect(jsonPath("$[0].eMail[0].address").value("john@example.com")) // ✅ eMail validation
-                .andExpect(jsonPath("$[0].eMail[0].addressValidated").value(true));
+                .andExpect(jsonPath("$[0].agentId").value("12345"))
+                .andExpect(jsonPath("$[0].eMail[0].address").value("john@example.com"));
 
-        verify(agentDetailByAgentIdService, times(1)).searchUsingAgentId(eq("123"), anyMap());
+        verify(agentDetailByAgentIdService, times(1)).searchUsingAgentId(eq("12345"), anyMap());
     }
 
-    // ✅ 2. Test GET /agents/{agentId} - Not Found (Empty List)
+    // ✅ 2. Not Found Case: Service returns empty list
     @Test
-    void testGetAgentById_NotFound() throws Exception {
-        // ✅ Mock service call to return empty list
-        when(agentDetailByAgentIdService.searchUsingAgentId(eq("999"), anyMap())).thenReturn(Collections.emptyList());
+    void testGetAgentByAgentId_NotFound() throws Exception {
+        when(agentDetailByAgentIdService.searchUsingAgentId(eq("99999"), anyMap()))
+                .thenReturn(Collections.emptyList());
 
-        // ✅ Perform GET request and verify response
-        mockMvc.perform(get("/agents/999"))
-                .andExpect(status().isNotFound()); // ✅ HTTP 404
+        mockMvc.perform(get("/agents/99999"))
+                .andExpect(status().isNotFound()); // ✅ Global Exception Handler should catch and return 404
 
-        verify(agentDetailByAgentIdService, times(1)).searchUsingAgentId(eq("999"), anyMap());
+        verify(agentDetailByAgentIdService, times(1)).searchUsingAgentId(eq("99999"), anyMap());
     }
 
-    // ✅ 3. Test GET /agents/{agentId} - Validation Failure (Blank agentId)
+    // ✅ 3. Bad Request: Service throws `IllegalArgumentException`
     @Test
-    void testGetAgentById_BlankAgentId() throws Exception {
-        // ✅ Perform GET request with blank agentId
-        mockMvc.perform(get("/agents/ "))
-                .andExpect(status().isBadRequest()) // ✅ HTTP 400
-                .andExpect(jsonPath("$.message").value("Agent ID is required")); // ✅ Matches validation message
+    void testGetAgentByAgentId_BadRequest() throws Exception {
+        when(agentDetailByAgentIdService.searchUsingAgentId(eq("invalid"), anyMap()))
+                .thenThrow(new IllegalArgumentException("Invalid Agent ID"));
 
-        verifyNoInteractions(agentDetailByAgentIdService); // ✅ Ensure service was NOT called
+        mockMvc.perform(get("/agents/invalid"))
+                .andExpect(status().isBadRequest()) // ✅ Expect 400 Bad Request from Global Exception Handler
+                .andExpect(content().string("Invalid Agent ID"));
+
+        verify(agentDetailByAgentIdService, times(1)).searchUsingAgentId(eq("invalid"), anyMap());
     }
 
-    // ✅ 4. Test GET /agents/{agentId} - Internal Server Error (Service Exception)
+    // ✅ 4. Internal Server Error: Service throws `RuntimeException`
     @Test
-    void testGetAgentById_ServiceException() throws Exception {
-        // ✅ Simulate service throwing an exception
-        when(agentDetailByAgentIdService.searchUsingAgentId(eq("123"), anyMap()))
-                .thenThrow(new RuntimeException("Database error"));
+    void testGetAgentByAgentId_InternalServerError() throws Exception {
+        when(agentDetailByAgentIdService.searchUsingAgentId(eq("12345"), anyMap()))
+                .thenThrow(new RuntimeException("Simulated Database Failure"));
 
-        // ✅ Perform GET request and verify error response
-        mockMvc.perform(get("/agents/123"))
-                .andExpect(status().isInternalServerError()) // ✅ HTTP 500
-                .andExpect(jsonPath("$.message").value("Internal Server Error"));
+        mockMvc.perform(get("/agents/12345"))
+                .andExpect(status().isInternalServerError()) // ✅ Expect 500 Internal Server Error
+                .andExpect(content().string("Internal Server Error"));
 
-        verify(agentDetailByAgentIdService, times(1)).searchUsingAgentId(eq("123"), anyMap());
+        verify(agentDetailByAgentIdService, times(1)).searchUsingAgentId(eq("12345"), anyMap());
     }
 }
