@@ -131,3 +131,151 @@ public class SpringUMLGenerator {
         }
     }
 }
+
+
+
+===============
+
+import java.io.*;
+import java.nio.file.*;
+import java.util.*;
+import java.util.regex.*;
+import java.util.stream.Collectors;
+
+public class SpringUMLGenerator {
+    private static String PROJECT_PATH; // Now set dynamically
+    private static String OUTPUT_FILE;
+
+    private static final List<File> javaFiles = new ArrayList<>();
+    private static final Map<String, Set<String>> inheritanceMap = new HashMap<>();
+    private static final Map<String, Set<String>> implementationMap = new HashMap<>();
+    private static final Map<String, Set<String>> dependencyMap = new HashMap<>();
+
+    public static void main(String[] args) throws IOException {
+        if (args.length == 0) {
+            System.out.println("❌ Please provide the Spring Boot project path as an argument.");
+            System.out.println("Usage: java SpringUMLGenerator.java /path/to/springboot/project");
+            return;
+        }
+
+        PROJECT_PATH = args[0] + "/src/main/java"; // Automatically detect main Java directory
+        OUTPUT_FILE = args[0] + "/uml.puml"; // Save UML inside the given project
+
+        System.out.println("📂 Scanning Project: " + PROJECT_PATH);
+        scanJavaFiles(new File(PROJECT_PATH));
+        parseJavaFiles();
+        generatePumlFile();
+        System.out.println("✅ UML file generated: " + OUTPUT_FILE);
+    }
+
+    private static void scanJavaFiles(File folder) {
+        if (folder.isDirectory()) {
+            for (File file : Objects.requireNonNull(folder.listFiles())) {
+                if (file.isDirectory()) {
+                    scanJavaFiles(file);
+                } else if (file.getName().endsWith(".java")) {
+                    javaFiles.add(file);
+                }
+            }
+        }
+    }
+
+    private static void parseJavaFiles() throws IOException {
+        for (File file : javaFiles) {
+            List<String> lines = Files.readAllLines(file.toPath());
+            String className = null;
+            Set<String> extendsClasses = new HashSet<>();
+            Set<String> implementsInterfaces = new HashSet<>();
+            Set<String> dependencies = new HashSet<>();
+
+            for (String line : lines) {
+                line = line.trim();
+
+                // Match class declaration
+                Matcher classMatcher = Pattern.compile("class\\s+(\\w+)").matcher(line);
+                if (classMatcher.find()) {
+                    className = classMatcher.group(1);
+                }
+
+                // Match interface implementation
+                Matcher implementsMatcher = Pattern.compile("implements\\s+([\\w, ]+)").matcher(line);
+                if (implementsMatcher.find()) {
+                    implementsInterfaces.addAll(Arrays.asList(implementsMatcher.group(1).split(",\\s*")));
+                }
+
+                // Match inheritance
+                Matcher extendsMatcher = Pattern.compile("extends\\s+(\\w+)").matcher(line);
+                if (extendsMatcher.find()) {
+                    extendsClasses.add(extendsMatcher.group(1));
+                }
+
+                // Match @Autowired Field Injection
+                Matcher autowiredFieldMatcher = Pattern.compile("@Autowired\\s*\\n?\\s*(private|protected|public)?\\s*(\\w+)\\s+(\\w+);").matcher(line);
+                if (autowiredFieldMatcher.find()) {
+                    dependencies.add(autowiredFieldMatcher.group(2)); // Dependency class name
+                }
+
+                // Match Constructor-Based Dependency Injection
+                Matcher constructorMatcher = Pattern.compile("public\\s+" + (className != null ? className : "") + "\\(([^)]*)\\)").matcher(line);
+                if (constructorMatcher.find()) {
+                    String params = constructorMatcher.group(1);
+                    String[] paramTypes = params.split(",");
+                    for (String param : paramTypes) {
+                        param = param.trim().split("\\s+")[0]; // Extract class type
+                        if (!param.isEmpty() && !param.equals("String") && !param.equals("int") && !param.equals("boolean")) {
+                            dependencies.add(param);
+                        }
+                    }
+                }
+
+                // Match Setter Injection
+                Matcher setterMatcher = Pattern.compile("@Autowired\\s*\\n?\\s*public\\s+void\\s+set(\\w+)\\((\\w+)\\s+\\w+\\)").matcher(line);
+                if (setterMatcher.find()) {
+                    dependencies.add(setterMatcher.group(2)); // Extract class type from setter method
+                }
+
+                // Match @Bean method dependencies in @Configuration classes
+                Matcher beanMatcher = Pattern.compile("@Bean\\s*\\n?\\s*public\\s+(\\w+)\\s+\\w+\\(").matcher(line);
+                if (beanMatcher.find()) {
+                    dependencies.add(beanMatcher.group(1)); // Extract the return type of the @Bean method
+                }
+            }
+
+            if (className != null) {
+                inheritanceMap.put(className, extendsClasses);
+                implementationMap.put(className, implementsInterfaces);
+                dependencyMap.put(className, dependencies);
+            }
+        }
+    }
+
+    private static void generatePumlFile() throws IOException {
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter(OUTPUT_FILE))) {
+            writer.write("@startuml\n");
+            writer.write("skinparam classAttributeIconSize 0\n"); // Simplify diagram
+
+            // Process Inheritance
+            for (Map.Entry<String, Set<String>> entry : inheritanceMap.entrySet()) {
+                for (String parent : entry.getValue()) {
+                    writer.write(parent + " <|-- " + entry.getKey() + "\n");
+                }
+            }
+
+            // Process Interface Implementations
+            for (Map.Entry<String, Set<String>> entry : implementationMap.entrySet()) {
+                for (String interfaceName : entry.getValue()) {
+                    writer.write(interfaceName + " <|.. " + entry.getKey() + "\n");
+                }
+            }
+
+            // Process Dependencies (Field, Constructor, Setter, and @Bean)
+            for (Map.Entry<String, Set<String>> entry : dependencyMap.entrySet()) {
+                for (String dependency : entry.getValue()) {
+                    writer.write(entry.getKey() + " --> " + dependency + "\n");
+                }
+            }
+
+            writer.write("@enduml\n");
+        }
+    }
+}
