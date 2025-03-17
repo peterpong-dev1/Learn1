@@ -1,1 +1,149 @@
-Get-ChildItem -Path "src/main/java" -Filter "*.java" -Recurse -Name
+import java.io.*;
+import java.nio.file.*;
+import java.util.*;
+import java.util.regex.*;
+
+public class SpringUMLGenerator {
+    private static String PROJECT_PATH;
+    private static String OUTPUT_FILE;
+    private static final List<File> javaFiles = new ArrayList<>();
+    private static final Map<String, String> packageMap = new HashMap<>();
+    private static final Map<String, Set<String>> inheritanceMap = new HashMap<>();
+    private static final Map<String, Set<String>> implementationMap = new HashMap<>();
+    private static final Map<String, Set<String>> dependencyMap = new HashMap<>();
+
+    public static void main(String[] args) throws IOException {
+        if (args.length == 0) {
+            System.out.println("❌ Please provide the Spring Boot project path as an argument.");
+            System.out.println("Usage: java SpringUMLGenerator.java /path/to/springboot/project");
+            return;
+        }
+
+        PROJECT_PATH = args[0] + "/src/main/java"; // Path to Java source code
+        OUTPUT_FILE = args[0] + "/uml-class.puml"; // Output UML class file
+
+        System.out.println("📂 Scanning Project: " + PROJECT_PATH);
+        scanJavaFiles(new File(PROJECT_PATH));
+        parseJavaFiles();
+        generatePumlFile();
+        System.out.println("✅ UML Class Diagram generated: " + OUTPUT_FILE);
+    }
+
+    private static void scanJavaFiles(File folder) {
+        if (folder.isDirectory()) {
+            for (File file : Objects.requireNonNull(folder.listFiles())) {
+                if (file.isDirectory()) {
+                    scanJavaFiles(file);
+                } else if (file.getName().endsWith(".java")) {
+                    javaFiles.add(file);
+                }
+            }
+        }
+    }
+
+    private static void parseJavaFiles() throws IOException {
+        for (File file : javaFiles) {
+            List<String> lines = Files.readAllLines(file.toPath());
+            String className = null;
+            String packageName = "";
+            Set<String> extendsClasses = new HashSet<>();
+            Set<String> implementsInterfaces = new HashSet<>();
+            Set<String> dependencies = new HashSet<>();
+
+            for (String line : lines) {
+                line = line.trim();
+
+                // Match package declaration
+                Matcher packageMatcher = Pattern.compile("package\\s+([\\w.]+);").matcher(line);
+                if (packageMatcher.find()) {
+                    packageName = packageMatcher.group(1);
+                }
+
+                // Match class declaration
+                Matcher classMatcher = Pattern.compile("class\\s+(\\w+)").matcher(line);
+                if (classMatcher.find()) {
+                    className = classMatcher.group(1);
+                    packageMap.put(className, packageName);
+                    dependencyMap.put(className, new HashSet<>());
+                }
+
+                // Match interface implementation
+                Matcher implementsMatcher = Pattern.compile("implements\\s+([\\w, ]+)").matcher(line);
+                if (implementsMatcher.find()) {
+                    implementsInterfaces.addAll(Arrays.asList(implementsMatcher.group(1).split(",\\s*")));
+                }
+
+                // Match inheritance
+                Matcher extendsMatcher = Pattern.compile("extends\\s+(\\w+)").matcher(line);
+                if (extendsMatcher.find()) {
+                    extendsClasses.add(extendsMatcher.group(1));
+                }
+
+                // Match field-based dependencies (@Autowired, private Service service;)
+                Matcher fieldDependencyMatcher = Pattern.compile("(private|protected|public)?\\s+(\\w+)\\s+(\\w+);").matcher(line);
+                if (fieldDependencyMatcher.find()) {
+                    String dependencyClass = fieldDependencyMatcher.group(2);
+                    if (!dependencyClass.equals("String") && !dependencyClass.equals("int") && !dependencyClass.equals("boolean")) {
+                        dependencies.add(dependencyClass);
+                    }
+                }
+
+                // Match constructor-based dependencies (e.g., public Class(Service service))
+                Matcher constructorDependencyMatcher = Pattern.compile("\\((\\w+)\\s+(\\w+)\\)").matcher(line);
+                while (constructorDependencyMatcher.find()) {
+                    dependencies.add(constructorDependencyMatcher.group(1));
+                }
+            }
+
+            if (className != null) {
+                inheritanceMap.put(className, extendsClasses);
+                implementationMap.put(className, implementsInterfaces);
+                dependencyMap.put(className, dependencies);
+            }
+        }
+    }
+
+    private static void generatePumlFile() throws IOException {
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter(OUTPUT_FILE))) {
+            writer.write("@startuml\n");
+            writer.write("skinparam classAttributeIconSize 0\n"); // Clean formatting
+
+            // Group by package
+            Map<String, List<String>> packageGroups = new HashMap<>();
+            for (Map.Entry<String, String> entry : packageMap.entrySet()) {
+                packageGroups.computeIfAbsent(entry.getValue(), k -> new ArrayList<>()).add(entry.getKey());
+            }
+
+            for (Map.Entry<String, List<String>> entry : packageGroups.entrySet()) {
+                writer.write("package " + entry.getKey() + " {\n");
+                for (String className : entry.getValue()) {
+                    writer.write("  class " + className + "\n");
+                }
+                writer.write("}\n");
+            }
+
+            // Process Inheritance
+            for (Map.Entry<String, Set<String>> entry : inheritanceMap.entrySet()) {
+                for (String parent : entry.getValue()) {
+                    writer.write(parent + " <|-- " + entry.getKey() + "\n");
+                }
+            }
+
+            // Process Interface Implementations
+            for (Map.Entry<String, Set<String>> entry : implementationMap.entrySet()) {
+                for (String interfaceName : entry.getValue()) {
+                    writer.write(interfaceName + " <|.. " + entry.getKey() + "\n");
+                }
+            }
+
+            // Process Dependencies
+            for (Map.Entry<String, Set<String>> entry : dependencyMap.entrySet()) {
+                for (String dependency : entry.getValue()) {
+                    writer.write(entry.getKey() + " --> " + dependency + "\n");
+                }
+            }
+
+            writer.write("@enduml\n");
+        }
+    }
+}
