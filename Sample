@@ -5,3 +5,9 @@ Repository --> Model : returns
 Service ..> Mapper : converts
 Mapper ..> DTO : generates DTO
 Service ..> DTO : returns DTO
+
+
+Service ..> CustomException : throws
+
+' Force exception to appear below Service
+CustomException -[hidden]-> Service
