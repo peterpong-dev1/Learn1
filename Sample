@@ -1,40 +1,7 @@
-UML Relationship
-Arrow Notation
-Meaning
-When to Use?
-Example
-Association
-A --> B
-Class A has a reference to Class B (Field, Method Parameter)
-When one class “uses” another as a dependency
-UserService --> UserRepository
-Bidirectional Association
-A -- B
-Both A & B refer to each other (No clear ownership)
-When two classes depend on each other
-Customer -- Product
-Aggregation
-A o-- B
-A contains B, but B can exist independently
-When B is a part of A, but not strongly coupled
-Company o-- Employee
-Composition
-A *-- B
-A owns B, and B cannot exist without A
-When B is tightly coupled with A
-Car *-- Engine
-Dependency
-A ..> B
-A temporarily depends on B (Method Parameter, Local Variable)
-When A only needs B for a short time
-Controller ..> DTO
-Inheritance (Generalization)
-`A <
-– B`
-B inherits from A (Extends a Class)
-When one class extends another
-Interface Implementation (Realization)
-`A <
-.. B`
-B implements interface A
-When a class implements an interface
+Service --> Repository : injected
+Service --> Mapper : injected
+Service --> Repository : fetches Model
+Repository --> Model : returns
+Service ..> Mapper : converts
+Mapper ..> DTO : generates DTO
+Service ..> DTO : returns DTO
