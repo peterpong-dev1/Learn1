@@ -1,130 +1,132 @@
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+import java.io.*;
+import java.nio.file.*;
+import java.util.*;
+import java.util.regex.*;
+import java.util.stream.Collectors;
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.http.MediaType;
-import org.springframework.test.web.servlet.MockMvc;
-import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+public class SpringUMLGenerator {
+    private static final String PROJECT_PATH = "src/main/java"; // Change to your project path
+    private static final String OUTPUT_FILE = "uml.puml";
 
-@ExtendWith(MockitoExtension.class)
-class AgentControllerTest {
+    private static final List<File> javaFiles = new ArrayList<>();
+    private static final Map<String, Set<String>> inheritanceMap = new HashMap<>();
+    private static final Map<String, Set<String>> implementationMap = new HashMap<>();
+    private static final Map<String, Set<String>> dependencyMap = new HashMap<>();
 
-    private MockMvc mockMvc;
-
-    @Mock
-    private AgentDetailByAgentIdService agentDetailByAgentIdService; // ✅ Mocked Service
-
-    @InjectMocks
-    private AgentController agentController; // ✅ Inject service into controller
-
-    @BeforeEach
-    void setUp() {
-        mockMvc = MockMvcBuilders.standaloneSetup(agentController)
-                .setControllerAdvice(new GlobalExceptionHandler()) // ✅ Attach GlobalExceptionHandler
-                .build();
+    public static void main(String[] args) throws IOException {
+        scanJavaFiles(new File(PROJECT_PATH));
+        parseJavaFiles();
+        generatePumlFile();
+        System.out.println("✅ UML file generated: " + OUTPUT_FILE);
     }
 
-    // ✅ Test: `MethodArgumentNotValidException` (400 Bad Request)
-    @Test
-    void testMethodArgumentNotValidException() throws Exception {
-        mockMvc.perform(get("/agents/ ") // ✅ Sending invalid blank agentId
-                        .accept(MediaType.APPLICATION_JSON))
-                .andExpect(status().isBadRequest()) // ✅ Expect 400 Bad Request
-                .andExpect(jsonPath("$.errorResponse.code").value("400")) // ✅ Validate error code
-                .andExpect(jsonPath("$.errorResponse.message").exists()) // ✅ Error message should exist
-                .andExpect(jsonPath("$.errorResponse.details[0].field").value("agentId")) // ✅ Validate field name
-                .andExpect(jsonPath("$.errorResponse.details[0].issue").value("Agent ID is required")); // ✅ Validate issue
+    private static void scanJavaFiles(File folder) {
+        if (folder.isDirectory()) {
+            for (File file : Objects.requireNonNull(folder.listFiles())) {
+                if (file.isDirectory()) {
+                    scanJavaFiles(file);
+                } else if (file.getName().endsWith(".java")) {
+                    javaFiles.add(file);
+                }
+            }
+        }
+    }
+
+    private static void parseJavaFiles() throws IOException {
+        for (File file : javaFiles) {
+            List<String> lines = Files.readAllLines(file.toPath());
+            String className = null;
+            Set<String> extendsClasses = new HashSet<>();
+            Set<String> implementsInterfaces = new HashSet<>();
+            Set<String> dependencies = new HashSet<>();
+
+            for (String line : lines) {
+                line = line.trim();
+
+                // Match class declaration
+                Matcher classMatcher = Pattern.compile("class\\s+(\\w+)").matcher(line);
+                if (classMatcher.find()) {
+                    className = classMatcher.group(1);
+                }
+
+                // Match interface implementation
+                Matcher implementsMatcher = Pattern.compile("implements\\s+([\\w, ]+)").matcher(line);
+                if (implementsMatcher.find()) {
+                    implementsInterfaces.addAll(Arrays.asList(implementsMatcher.group(1).split(",\\s*")));
+                }
+
+                // Match inheritance
+                Matcher extendsMatcher = Pattern.compile("extends\\s+(\\w+)").matcher(line);
+                if (extendsMatcher.find()) {
+                    extendsClasses.add(extendsMatcher.group(1));
+                }
+
+                // Match @Autowired Field Injection
+                Matcher autowiredFieldMatcher = Pattern.compile("@Autowired\\s*\\n?\\s*(private|protected|public)?\\s*(\\w+)\\s+(\\w+);").matcher(line);
+                if (autowiredFieldMatcher.find()) {
+                    dependencies.add(autowiredFieldMatcher.group(2)); // Dependency class name
+                }
+
+                // Match Constructor-Based Dependency Injection
+                Matcher constructorMatcher = Pattern.compile("public\\s+" + (className != null ? className : "") + "\\(([^)]*)\\)").matcher(line);
+                if (constructorMatcher.find()) {
+                    String params = constructorMatcher.group(1);
+                    String[] paramTypes = params.split(",");
+                    for (String param : paramTypes) {
+                        param = param.trim().split("\\s+")[0]; // Extract class type
+                        if (!param.isEmpty() && !param.equals("String") && !param.equals("int") && !param.equals("boolean")) {
+                            dependencies.add(param);
+                        }
+                    }
+                }
+
+                // Match Setter Injection
+                Matcher setterMatcher = Pattern.compile("@Autowired\\s*\\n?\\s*public\\s+void\\s+set(\\w+)\\((\\w+)\\s+\\w+\\)").matcher(line);
+                if (setterMatcher.find()) {
+                    dependencies.add(setterMatcher.group(2)); // Extract class type from setter method
+                }
+
+                // Match @Bean method dependencies in @Configuration classes
+                Matcher beanMatcher = Pattern.compile("@Bean\\s*\\n?\\s*public\\s+(\\w+)\\s+\\w+\\(").matcher(line);
+                if (beanMatcher.find()) {
+                    dependencies.add(beanMatcher.group(1)); // Extract the return type of the @Bean method
+                }
+            }
+
+            if (className != null) {
+                inheritanceMap.put(className, extendsClasses);
+                implementationMap.put(className, implementsInterfaces);
+                dependencyMap.put(className, dependencies);
+            }
+        }
+    }
+
+    private static void generatePumlFile() throws IOException {
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter(OUTPUT_FILE))) {
+            writer.write("@startuml\n");
+
+            // Process Inheritance
+            for (Map.Entry<String, Set<String>> entry : inheritanceMap.entrySet()) {
+                for (String parent : entry.getValue()) {
+                    writer.write(parent + " <|-- " + entry.getKey() + "\n");
+                }
+            }
+
+            // Process Interface Implementations
+            for (Map.Entry<String, Set<String>> entry : implementationMap.entrySet()) {
+                for (String interfaceName : entry.getValue()) {
+                    writer.write(interfaceName + " <|.. " + entry.getKey() + "\n");
+                }
+            }
+
+            // Process Dependencies (Field, Constructor, Setter, and @Bean)
+            for (Map.Entry<String, Set<String>> entry : dependencyMap.entrySet()) {
+                for (String dependency : entry.getValue()) {
+                    writer.write(entry.getKey() + " --> " + dependency + "\n");
+                }
+            }
+
+            writer.write("@enduml\n");
+        }
     }
 }
-
-import static org.mockito.Mockito.*;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
-
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
-import org.slf4j.MDC;
-import org.springframework.http.MediaType;
-import org.springframework.test.web.servlet.MockMvc;
-import org.springframework.test.web.servlet.setup.MockMvcBuilders;
-
-import java.util.Map;
-
-@ExtendWith(MockitoExtension.class)
-class AgentControllerTest {
-
-    private MockMvc mockMvc;
-
-    @Mock
-    private AgentDetailByAgentIdService agentDetailByAgentIdService; // ✅ Mocked Service
-
-    @InjectMocks
-    private AgentController agentController; // ✅ Inject service into controller
-
-    @BeforeEach
-    void setUp() {
-        mockMvc = MockMvcBuilders.standaloneSetup(agentController)
-                .setControllerAdvice(new GlobalExceptionHandler()) // ✅ Attach GlobalExceptionHandler
-                .build();
-        
-        MDC.put("requestId", "mock-request-id"); // ✅ Mock requestId in MDC
-    }
-
-    // ✅ Test: CustomValidationException (400 Bad Request)
-    @Test
-    void testValidationException_ReturnsBadRequest() throws Exception {
-        when(agentDetailByAgentIdService.searchUsingAgentId(eq(""), anyMap()))
-                .thenThrow(new CustomValidationException("Validation failed", Map.of("agentId", "Invalid or missing value")));
-
-        mockMvc.perform(get("/agents/") // ✅ Simulate request
-                        .accept(MediaType.APPLICATION_JSON))
-                .andExpect(status().isBadRequest()) // ✅ Expect 400 Bad Request
-                .andExpect(jsonPath("$.errorResponse.code").value("400")) // ✅ Validate error code
-                .andExpect(jsonPath("$.errorResponse.message").value("Validation failed")) // ✅ Validate error message
-                .andExpect(jsonPath("$.errorResponse.details[0].field").value("agentId")) // ✅ Validate field name
-                .andExpect(jsonPath("$.errorResponse.details[0].issue").value("Invalid or missing value")) // ✅ Validate issue
-                .andExpect(jsonPath("$.errorResponse.requestId").value("mock-request-id")); // ✅ Validate requestId
-    }
-
-    // ✅ Test: CustomDataNotFoundException (404 Not Found)
-    @Test
-    void testDataNotFoundException_ReturnsNotFound() throws Exception {
-        when(agentDetailByAgentIdService.searchUsingAgentId(eq("999"), anyMap()))
-                .thenThrow(new CustomDataNotFoundException("No Agent found matching the given criteria"));
-
-        mockMvc.perform(get("/agents/999")
-                        .accept(MediaType.APPLICATION_JSON))
-                .andExpect(status().isNotFound()) // ✅ Expect 404 Not Found
-                .andExpect(jsonPath("$.errorResponse.code").value("404")) // ✅ Validate error code
-                .andExpect(jsonPath("$.errorResponse.message").value("No Agent found matching the given criteria")) // ✅ Validate error message
-                .andExpect(jsonPath("$.errorResponse.details").doesNotExist()) // ✅ Validate that details are null
-                .andExpect(jsonPath("$.errorResponse.requestId").value("mock-request-id")); // ✅ Validate requestId
-    }
-
-    // ✅ Test: Generic Exception (500 Internal Server Error)
-    @Test
-    void testGenericException_ReturnsInternalServerError() throws Exception {
-        when(agentDetailByAgentIdService.searchUsingAgentId(eq("456"), anyMap()))
-                .thenThrow(new RuntimeException("Unexpected server error"));
-
-        mockMvc.perform(get("/agents/456")
-                        .accept(MediaType.APPLICATION_JSON))
-                .andExpect(status().isInternalServerError()) // ✅ Expect 500 Internal Server Error
-                .andExpect(jsonPath("$.errorResponse.code").value("500")) // ✅ Validate error code
-                .andExpect(jsonPath("$.errorResponse.message").value("Unexpected server error")) // ✅ Validate error message
-                .andExpect(jsonPath("$.errorResponse.details").doesNotExist()) // ✅ Validate that details are null
-                .andExpect(jsonPath("$.errorResponse.requestId").value("mock-request-id")); // ✅ Validate requestId
-    }
-}
-
-
-
