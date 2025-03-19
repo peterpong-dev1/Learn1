@@ -1,13 +1,39 @@
-Service --> Repository : injected
-Service --> Mapper : injected
-Service --> Repository : fetches Model
-Repository --> Model : returns
-Service ..> Mapper : converts
-Mapper ..> DTO : generates DTO
-Service ..> DTO : returns DTO
+@ExtendWith(MockitoExtension.class)
+public class AgentControllerTest {
 
+    @Spy // Spy allows actual method execution
+    private Logger neoControllerLogger = LoggerFactory.getLogger(AgentController.class);
 
-Service ..> CustomException : throws
+    @Spy
+    private Logger neoGlobalExceptionHandlerLogger = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
-' Force exception to appear below Service
-CustomException -[hidden]-> Service
+    @Mock
+    private AgentDetailByAgentIdService agentDetailByAgentIdService; // Mock Service
+
+    @InjectMocks
+    private AgentController agentController; // Inject Mocks into Controller
+
+    private MockMvc mockMvc;
+
+    @BeforeEach
+    void setUp() {
+        // Use real GlobalExceptionHandler with spy logger
+        GlobalExceptionHandler globalExceptionHandler = new GlobalExceptionHandler(neoGlobalExceptionHandlerLogger);
+
+        mockMvc = MockMvcBuilders.standaloneSetup(agentController)
+            .setControllerAdvice(globalExceptionHandler) // Use real instance
+            .build();
+
+        MDC.put("requestId", "mock-request-id"); // Mock requestId in MDC
+    }
+
+    @Test
+    void testGetAgentById_Success() throws Exception {
+        // Execute API call
+        mockMvc.perform(get("/agents/456")).andExpect(status().isOk());
+
+        // Verify log statements were actually printed
+        verify(neoControllerLogger, atLeastOnce()).info(anyString(), any());
+        verify(neoGlobalExceptionHandlerLogger, atLeastOnce()).error(anyString(), any());
+    }
+}
