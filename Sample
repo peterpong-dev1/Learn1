@@ -1,69 +1,72 @@
 @startuml AgentSearch
+top to bottom direction
+skinparam packageStyle rectangle
 skinparam linetype ortho
+skinparam ranksep 50
+skinparam nodesep 30
 skinparam dpi 300
+hide empty methods
 
-' ========== Main Class to Controller ==========
-NeoAgentSearchApplication --> AgentController : Initializes (Spring Boot)
+' ========== Main Class ==========
+NeoAgentSearchApplication -down-> AgentController : Initializes
 
-' ========== Interceptor to Controller ==========
-HttpHeaderInterceptor --> AgentController : Intercepts Requests
+' ========== Interceptor Layer ==========
+HttpHeaderInterceptor -down-> AgentController : Intercepts Requests
 
-' ========== Controller to Service ==========
-AgentController --> AgentDetailByAgentIdService : Uses
-AgentController --> AgentDTO : Returns List<AgentDTO>
-AgentController --> LoggerConfig : Logs Requests
-AgentController --> GlobalExceptionHandler : Catches and Handles
+' ========== Controller Layer ==========
+AgentController -down-> AgentDetailByAgentIdService : Uses
+AgentController -right-> LoggerConfig : Logs Requests
+AgentController -down-> GlobalExceptionHandler : Handles Exceptions
 
-' ========== Service to Repository & Utils ==========
-AgentDetailByAgentIdServiceImpl --> AgentRepository : Uses
-AgentDetailByAgentIdServiceImpl --> AgentMapper : Uses (Dependency)
-AgentDetailByAgentIdServiceImpl --> LoggerConfig : Logs Information
-AgentDetailByAgentIdServiceImpl --> Utils : Calls Static Methods
-AgentDetailByAgentIdServiceImpl --> AgentDTO : Returns List<AgentDTO>
+' ========== Service Layer ==========
+AgentDetailByAgentIdServiceImpl -down-> AgentRepository : Uses
+AgentDetailByAgentIdServiceImpl -right-> AgentMapper : Maps Entity to DTO
+AgentDetailByAgentIdServiceImpl -down-> Utils : Calls Static Methods
+AgentDetailByAgentIdServiceImpl -down-> AgentDTO : Returns List<AgentDTO>
 
-' ========== Repository and Mapper Relationships ==========
-AgentRepository --> AgentEntity : Fetches Data
-AgentMapper --> AgentDTO : Maps Entity to DTO
-AgentRepository --> CosmosContainer : Uses (Dependency)
-AgentRepository --> QueryPropertyFileConfig : Reads Query Config
-AgentRepository --> LoggerConfig : Logs Information
-AgentRepository --> CosmosDBConfig : For Connection
-CosmosDBConfig --> KeyVaultConfig : Uses (Dependency)
+' ========== Repository and Mapper (At Same Level) ==========
+together {
+    AgentRepository
+    AgentMapper
+}
+AgentRepository -right-> CosmosDBConfig : Uses
+CosmosDBConfig -down-> KeyVaultConfig : Uses Dependency
+AgentRepository -down-> QueryPropertyFileConfig : Reads Query Config
 
-' ========== Global Exception Handling ==========
-GlobalExceptionHandler --> CustomDataNotFoundException : Catches
-GlobalExceptionHandler --> CustomValidationException : Catches
-GlobalExceptionHandler --> ErrorContainerDTO : Returns Error Details
-ErrorContainerDTO --> ErrorResponseDTO : Has
-ErrorResponseDTO --> ErrorDetailDTO : Uses List<ErrorDetailDTO>
-
-' ========== Service and Repository Exception Throwing ==========
-AgentDetailByAgentIdServiceImpl --> CustomValidationException : Throws
-AgentDetailByAgentIdServiceImpl --> CustomDataNotFoundException : Throws
+' ========== Exception Handling ==========
+together {
+    CustomValidationException
+    CustomDataNotFoundException
+}
+GlobalExceptionHandler -down-> CustomValidationException : Catches
+GlobalExceptionHandler -down-> CustomDataNotFoundException : Catches
+GlobalExceptionHandler -down-> ErrorContainerDTO : Returns Error Details
+ErrorContainerDTO -down-> ErrorResponseDTO : Has
+ErrorResponseDTO -down-> ErrorDetailDTO : Uses List<ErrorDetailDTO>
 
 ' ========== DTO Relationships ==========
-AgentDTO --> NameDTO : Uses
-AgentDTO --> PhoneNumberDTO : Uses
-AgentDTO --> EmailDTO : Uses
-AgentDTO --> DigitalTouchpointDTO : Uses
-AgentDTO --> SolicitorDTO : Uses
-AgentDTO --> AgencyDTO : Uses
-AgentDTO --> AgencyOfficeDTO : Uses
+AgentDTO -down-> NameDTO : Uses
+AgentDTO -down-> PhoneNumberDTO : Uses
+AgentDTO -down-> EmailDTO : Uses
+AgentDTO -down-> DigitalTouchpointDTO : Uses
+AgentDTO -down-> SolicitorDTO : Uses
+AgentDTO -down-> AgencyDTO : Uses
+AgentDTO -down-> AgencyOfficeDTO : Uses
 
 ' ========== Entity Relationships ==========
-AgentEntity --> NameEntity : Uses
-AgentEntity --> PhoneNumberEntity : Uses
-AgentEntity --> EmailEntity : Uses
-AgentEntity --> DigitalTouchpointEntity : Uses
-AgentEntity --> SolicitorEntity : Uses
-AgentEntity --> AgencyEntity : Uses
-AgentEntity --> AgencyOfficeEntity : Uses
+AgentEntity -down-> NameEntity : Uses
+AgentEntity -down-> PhoneNumberEntity : Uses
+AgentEntity -down-> EmailEntity : Uses
+AgentEntity -down-> DigitalTouchpointEntity : Uses
+AgentEntity -down-> SolicitorEntity : Uses
+AgentEntity -down-> AgencyEntity : Uses
+AgentEntity -down-> AgencyOfficeEntity : Uses
 
 ' ========== Enum Relationships ==========
-NameEntity --> CharacterSetType : Uses
-DigitalTouchpointEntity --> DigitalTouchPointType : Uses
-PhoneNumberEntity --> ContactType : Uses
-PhoneNumberEntity --> PhoneType : Uses
-AgentEntity --> Gender : Uses
+NameEntity -down-> CharacterSetType : Uses
+DigitalTouchpointEntity -down-> DigitalTouchPointType : Uses
+PhoneNumberEntity -down-> ContactType : Uses
+PhoneNumberEntity -down-> PhoneType : Uses
+AgentEntity -down-> Gender : Uses
 
 @enduml
