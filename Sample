@@ -1,106 +1,22 @@
-Yes, I can help debug this! Since you are using LoggerConfig with a Bean method, and mocking the Logger in your JUnit test, but getting 500 instead of 400, let’s go step by step.
+@startuml
 
-⸻
+class AgentController
+class AgentDetailByAgentIdService
+class AgentDetailByAgentIdServiceImpl
+class AgentRepository
+class AgentMapper
+class Logger
+class Utils
+class AgentDTO
 
-1️⃣ Possible Issues with Logger in Tests
+AgentController --> AgentDetailByAgentIdService : Uses (Dependency)
+AgentController --> AgentDTO : Returns List<AgentDTO>
 
-Since you are using Spring Boot’s @Bean method for Logger, here’s what could be happening:
-	1.	The logger is null inside the controller during the test → If the bean is not injected correctly.
-	2.	Mockito doesn’t mock logger.info(...) properly → If Spring still tries to call the real logger instead of the mock.
-	3.	Spring tries to create the Logger bean but fails in the test environment.
+AgentDetailByAgentIdServiceImpl ..|> AgentDetailByAgentIdService : Implements
+AgentDetailByAgentIdServiceImpl --> AgentRepository : Uses (Dependency)
+AgentDetailByAgentIdServiceImpl --> AgentMapper : Uses (Dependency)
+AgentDetailByAgentIdServiceImpl --> Logger : Logs Information
+AgentDetailByAgentIdServiceImpl ..> Utils : Calls Static Methods
+AgentDetailByAgentIdServiceImpl --> AgentDTO : Returns List<AgentDTO>
 
-⸻
-
-2️⃣ Fix: Ensure Logger Is Properly Mocked
-
-In your JUnit test, add this to correctly mock the logger:
-
-@WebMvcTest(AddressController.class)
-class AddressControllerTest {
-
-    @Autowired
-    private MockMvc mockMvc;
-
-    @MockBean
-    private Logger logger; // ✅ Ensures logger is mocked in tests
-
-    @MockBean
-    private AddressService addressService;
-
-    @Test
-    void testInvalidRequest_ReturnsBadRequest() throws Exception {
-        when(addressService.searchAddress(any(), anyMap()))
-            .thenThrow(new CustomValidationException("Agent Id must be provided as input"));
-
-        mockMvc.perform(post("/common/address/search")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content("{}") // Invalid request
-                .accept(MediaType.APPLICATION_JSON))
-                .andExpect(status().isBadRequest());
-
-        verify(logger, atLeastOnce()).info(anyString()); // ✅ Verifies logging was called
-    }
-}
-
-🚀 Why This Works?
-	•	Ensures the logger is injected correctly in tests (@MockBean private Logger logger;).
-	•	Prevents NullPointerException when calling logger.info(...) in the controller.
-	•	Verifies if logging is the issue (verify(logger, atLeastOnce()).info(anyString());).
-
-⸻
-
-3️⃣ Debugging Steps to Confirm If Logger Is the Issue
-
-If you’re still getting 500 Internal Server Error, add a debugging print statement inside the controller:
-
-@PostMapping("/search")
-public ResponseEntity<List<AddressDTO>> searchAddress(@Valid @RequestBody AddressSearchConditionsDTO searchConditions) {
-    System.out.println("Inside Controller - Before Logging");
-    logger.info("Received request: {}", searchConditions);
-    System.out.println("Inside Controller - After Logging");
-
-    List<AddressDTO> results = addressService.searchAddress(searchConditions, new HashMap<>());
-    return ResponseEntity.ok(results);
-}
-
-Then, run the test and check logs:
-	•	If “Inside Controller - Before Logging” appears but “After Logging” does not, the issue is with the logger.
-	•	If both messages appear, but you still get 500, the issue is somewhere else.
-
-⸻
-
-4️⃣ If Logger Is Causing 500, Try a Workaround
-
-If the logger is causing the issue, try disabling logging in tests:
-
-✅ Option 1: Disable Logger Bean Injection in Tests
-
-@TestConfiguration
-static class TestConfig {
-    @Bean
-    public Logger logger() {
-        return mock(Logger.class); // ✅ Mocks logger as a Spring bean
-    }
-}
-
-🚀 Why?
-	•	Ensures that even in Spring Boot tests, the logger is mocked properly.
-
-✅ Option 2: Remove Logger in Tests Using @TestPropertySource
-
-If you don’t need logging in tests, disable it in application-test.properties:
-
-logging.level.org.springframework.web=ERROR
-
-🚀 Why?
-	•	Prevents logs from causing unwanted issues in tests.
-
-⸻
-
-5️⃣ Next Steps
-	1.	Run the test after adding System.out.println("Inside Controller - Before Logging");
-	2.	Check logs to confirm where execution stops.
-	3.	If logger is the issue, try @MockBean private Logger logger; or disable logging.
-	4.	If 500 persists, check @ExceptionHandler to ensure validation failures return 400.
-
-Let me know what the logs say after running with the print statements! 🚀
+@enduml
