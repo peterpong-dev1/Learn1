@@ -1,22 +1,58 @@
 @startuml
 
-class AgentController
-class AgentDetailByAgentIdService
-class AgentDetailByAgentIdServiceImpl
-class AgentRepository
-class AgentMapper
-class Logger
-class Utils
-class AgentDTO
+' ========== Packages for Better Organization ==========
+package "Controller Layer" {
+    class AgentController
+}
 
+package "Service Layer" {
+    interface AgentDetailByAgentIdService
+    class AgentDetailByAgentIdServiceImpl
+}
+
+package "Repository Layer" {
+    class AgentRepository
+}
+
+package "Mapper Layer" {
+    class AgentMapper
+}
+
+package "Utility Layer" {
+    class Utils
+    class Logger
+}
+
+package "DTO Layer" {
+    class AgentDTO
+}
+
+package "Interceptor Layer" {
+    class HttpHeaderInterceptor
+    interface HandlerInterceptor
+}
+
+' ========== Relationships ==========
+
+' Controller relationships
 AgentController --> AgentDetailByAgentIdService : Uses (Dependency)
 AgentController --> AgentDTO : Returns List<AgentDTO>
+AgentController --> Logger : Logs Requests
 
+' Service relationships
 AgentDetailByAgentIdServiceImpl ..|> AgentDetailByAgentIdService : Implements
 AgentDetailByAgentIdServiceImpl --> AgentRepository : Uses (Dependency)
 AgentDetailByAgentIdServiceImpl --> AgentMapper : Uses (Dependency)
 AgentDetailByAgentIdServiceImpl --> Logger : Logs Information
 AgentDetailByAgentIdServiceImpl ..> Utils : Calls Static Methods
 AgentDetailByAgentIdServiceImpl --> AgentDTO : Returns List<AgentDTO>
+
+' Repository and Mapper relationships
+AgentRepository --> AgentDTO : Fetches Data
+AgentMapper --> AgentDTO : Maps Entity to DTO
+
+' Interceptor relationships
+HttpHeaderInterceptor ..|> HandlerInterceptor
+HttpHeaderInterceptor ..> AgentController : Intercepts Requests
 
 @enduml
