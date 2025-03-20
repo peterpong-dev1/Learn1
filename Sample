@@ -1,80 +1,15 @@
-@startuml
+@startuml AgentSearch
 skinparam packageStyle rectangle
+skinparam linetype ortho
+skinparam dpi 300
 
-' ========== Package Colors ==========
-skinparam packageBackgroundColor Black
-package "Main Class" {
+' ========== Main Package ==========
+package "jp.co.neofirst.api.agent" {
     class NeoAgentSearchApplication
 }
 
-skinparam packageBackgroundColor Navy
-package "Controller Layer" {
-    class AgentController
-}
-
-skinparam packageBackgroundColor DarkBlue
-package "Service Layer" {
-    interface AgentDetailByAgentIdService
-    class AgentDetailByAgentIdServiceImpl
-}
-
-skinparam packageBackgroundColor DarkOrange
-package "Repository Layer" {
-    class AgentRepository
-}
-
-skinparam packageBackgroundColor SaddleBrown
-package "Exception Layer" {
-    class GlobalExceptionHandler
-    class CustomValidationException
-    class CustomDataNotFoundException
-    class ErrorContainerDTO
-    class ErrorResponseDTO
-    class ErrorDetailDTO
-}
-
-skinparam packageBackgroundColor DimGray
-package "Interceptor Layer" {
-    class HttpHeaderInterceptor
-    interface HandlerInterceptor
-}
-
-skinparam packageBackgroundColor DarkRed
-package "Spring OOTB Exceptions" {
-    class RuntimeException
-    class MethodArgumentNotValidException
-    class HttpRequestMethodNotSupportedException
-}
-
-skinparam packageBackgroundColor DarkSlateGray
-package "DTO Layer" {
-    class AgentDTO
-    class NameDTO
-    class PhoneNumberDTO
-    class EmailDTO
-    class DigitalTouchpointDTO
-    class SolicitorDTO
-    class AgencyDTO
-    class AgencyOfficeDTO
-    class ErrorContainerDTO
-    class ErrorDetailDTO
-    class ErrorResponseDTO
-}
-
-skinparam packageBackgroundColor Brown
-package "Entity Layer" {
-    class AgentEntity
-    class NameEntity
-    class PhoneNumberEntity
-    class EmailEntity
-    class DigitalTouchpointEntity
-    class SolicitorEntity
-    class AgencyEntity
-    class AgencyOfficeEntity
-}
-
-skinparam packageBackgroundColor DarkOliveGreen
-package "Config Layer" {
+' ========== Configuration Layer ==========
+package "jp.co.neofirst.api.agent.config" {
     class CosmosDBConfig
     class KeyVaultConfig
     class LoggerConfig
@@ -82,8 +17,40 @@ package "Config Layer" {
     class WebConfig
 }
 
-skinparam packageBackgroundColor DarkSlateBlue
-package "Enum Layer" {
+' ========== Controller Layer ==========
+package "jp.co.neofirst.api.agent.controller" {
+    class AgentController
+}
+
+' ========== DTO Layer ==========
+package "jp.co.neofirst.api.agent.dto" {
+    class AgencyDTO
+    class AgencyOfficeDTO
+    class AgentDTO
+    class DigitalTouchpointDTO
+    class EmailDTO
+    class ErrorContainerDTO
+    class ErrorDetailDTO
+    class ErrorResponseDTO
+    class NameDTO
+    class PhoneNumberDTO
+    class SolicitorDTO
+}
+
+' ========== Entity Layer ==========
+package "jp.co.neofirst.api.agent.entity" {
+    class AgencyEntity
+    class AgencyOfficeEntity
+    class AgentEntity
+    class DigitalTouchpointEntity
+    class EmailEntity
+    class NameEntity
+    class PhoneNumberEntity
+    class SolicitorEntity
+}
+
+' ========== Enum Layer ==========
+package "jp.co.neofirst.api.agent.entity.enums" {
     class CharacterSetType
     class ContactType
     class DigitalTouchPointType
@@ -91,73 +58,41 @@ package "Enum Layer" {
     class PhoneType
 }
 
-skinparam packageBackgroundColor Black
-package "Utility Layer" {
-    class Utils
+' ========== Exception Layer ==========
+package "jp.co.neofirst.api.agent.exception" {
+    class CustomDataNotFoundException
+    class CustomValidationException
+    class GlobalExceptionHandler
 }
 
-' ========== Relationships ==========
-NeoAgentSearchApplication --> AgentController : Initializes (Spring Boot)
+' ========== Interceptor Layer ==========
+package "jp.co.neofirst.api.agent.interceptor" {
+    class HttpHeaderInterceptor
+}
 
-' Controller relationships
-AgentController -[Blue]> AgentDetailByAgentIdService : Uses
-AgentController -[Blue]> AgentDTO : Returns List<AgentDTO>
-AgentController -[Blue]> LoggerConfig : Logs Requests
-AgentController -[Red]> GlobalExceptionHandler : Catches and Handles
+' ========== Mapper Layer ==========
+package "jp.co.neofirst.api.agent.mapper" {
+    class AgentMapper
+}
 
-' Service relationships
-AgentDetailByAgentIdServiceImpl -[DarkBlue]> AgentRepository : Uses
-AgentDetailByAgentIdServiceImpl -[DarkBlue]> AgentMapper : Uses (Dependency)
-AgentDetailByAgentIdServiceImpl -[DarkBlue]> LoggerConfig : Logs Information
-AgentDetailByAgentIdServiceImpl -[DarkBlue]> Utils : Calls Static Methods
-AgentDetailByAgentIdServiceImpl -[DarkBlue]> AgentDTO : Returns List<AgentDTO>
+' ========== Repository Layer ==========
+package "jp.co.neofirst.api.agent.repository" {
+    class AgentRepository
+}
 
-' Repository and Mapper relationships
-AgentRepository -[DarkOrange]> AgentEntity : Fetches Data
-AgentMapper -[DarkOrange]> AgentDTO : Maps Entity to DTO
-AgentRepository -[DarkOrange]> CosmosContainer : Uses (Dependency)
-AgentRepository -[DarkOrange]> QueryPropertyFileConfig : Reads Query Config
-AgentRepository -[DarkOrange]> LoggerConfig : Logs Information
-AgentRepository -[DarkOrange]> CosmosDBConfig : For Connection
-CosmosDBConfig -[DarkOrange]> KeyVaultConfig : Uses (Dependency)
+' ========== Service Layer ==========
+package "jp.co.neofirst.api.agent.service" {
+    class AgentDetailByAgentIdService
+}
 
-' Interceptor relationships
-HttpHeaderInterceptor -[DimGray]> AgentController : Intercepts Requests
+' ========== Service Implementation Layer ==========
+package "jp.co.neofirst.api.agent.service.impl" {
+    class AgentDetailByAgentIdServiceImpl
+}
 
-' Global Exception relationships
-GlobalExceptionHandler -[Red]> CustomDataNotFoundException : Catches
-GlobalExceptionHandler -[Red]> CustomValidationException : Catches
-GlobalExceptionHandler -[Red]> ErrorContainerDTO : Returns Error Details
-ErrorContainerDTO -[Red]> ErrorResponseDTO : Has
-ErrorResponseDTO -[Red]> ErrorDetailDTO : Uses List<ErrorDetailDTO>
-
-' Service and Repository throwing exceptions
-AgentDetailByAgentIdServiceImpl -[Red]> CustomValidationException : Throws
-AgentDetailByAgentIdServiceImpl -[Red]> CustomDataNotFoundException : Throws
-
-' DTO Relationships
-AgentDTO -[Gray]> NameDTO : Uses
-AgentDTO -[Gray]> PhoneNumberDTO : Uses
-AgentDTO -[Gray]> EmailDTO : Uses
-AgentDTO -[Gray]> DigitalTouchpointDTO : Uses
-AgentDTO -[Gray]> SolicitorDTO : Uses
-AgentDTO -[Gray]> AgencyDTO : Uses
-AgentDTO -[Gray]> AgencyOfficeDTO : Uses
-
-' Entity Relationships
-AgentEntity -[Gray]> NameEntity : Uses
-AgentEntity -[Gray]> PhoneNumberEntity : Uses
-AgentEntity -[Gray]> EmailEntity : Uses
-AgentEntity -[Gray]> DigitalTouchpointEntity : Uses
-AgentEntity -[Gray]> SolicitorEntity : Uses
-AgentEntity -[Gray]> AgencyEntity : Uses
-AgentEntity -[Gray]> AgencyOfficeEntity : Uses
-
-' Enum Relationships
-CharacterSetType -[Gray]> AgentEntity : Uses
-ContactType -[Gray]> AgentEntity : Uses
-DigitalTouchPointType -[Gray]> AgentEntity : Uses
-Gender -[Gray]> AgentEntity : Uses
-PhoneType -[Gray]> AgentEntity : Uses
+' ========== Utility Layer ==========
+package "jp.co.neofirst.api.agent.util" {
+    class Utils
+}
 
 @enduml
