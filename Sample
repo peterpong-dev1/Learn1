@@ -1,98 +1,69 @@
 @startuml AgentSearch
-skinparam packageStyle rectangle
 skinparam linetype ortho
 skinparam dpi 300
 
-' ========== Main Package ==========
-package "jp.co.neofirst.api.agent" {
-    class NeoAgentSearchApplication
-}
+' ========== Main Class to Controller ==========
+NeoAgentSearchApplication --> AgentController : Initializes (Spring Boot)
 
-' ========== Configuration Layer ==========
-package "jp.co.neofirst.api.agent.config" {
-    class CosmosDBConfig
-    class KeyVaultConfig
-    class LoggerConfig
-    class QueryPropertyFileConfig
-    class WebConfig
-}
+' ========== Interceptor to Controller ==========
+HttpHeaderInterceptor --> AgentController : Intercepts Requests
 
-' ========== Controller Layer ==========
-package "jp.co.neofirst.api.agent.controller" {
-    class AgentController
-}
+' ========== Controller to Service ==========
+AgentController --> AgentDetailByAgentIdService : Uses
+AgentController --> AgentDTO : Returns List<AgentDTO>
+AgentController --> LoggerConfig : Logs Requests
+AgentController --> GlobalExceptionHandler : Catches and Handles
 
-' ========== DTO Layer ==========
-package "jp.co.neofirst.api.agent.dto" {
-    class AgencyDTO
-    class AgencyOfficeDTO
-    class AgentDTO
-    class DigitalTouchpointDTO
-    class EmailDTO
-    class ErrorContainerDTO
-    class ErrorDetailDTO
-    class ErrorResponseDTO
-    class NameDTO
-    class PhoneNumberDTO
-    class SolicitorDTO
-}
+' ========== Service to Repository & Utils ==========
+AgentDetailByAgentIdServiceImpl --> AgentRepository : Uses
+AgentDetailByAgentIdServiceImpl --> AgentMapper : Uses (Dependency)
+AgentDetailByAgentIdServiceImpl --> LoggerConfig : Logs Information
+AgentDetailByAgentIdServiceImpl --> Utils : Calls Static Methods
+AgentDetailByAgentIdServiceImpl --> AgentDTO : Returns List<AgentDTO>
 
-' ========== Entity Layer ==========
-package "jp.co.neofirst.api.agent.entity" {
-    class AgencyEntity
-    class AgencyOfficeEntity
-    class AgentEntity
-    class DigitalTouchpointEntity
-    class EmailEntity
-    class NameEntity
-    class PhoneNumberEntity
-    class SolicitorEntity
-}
+' ========== Repository and Mapper Relationships ==========
+AgentRepository --> AgentEntity : Fetches Data
+AgentMapper --> AgentDTO : Maps Entity to DTO
+AgentRepository --> CosmosContainer : Uses (Dependency)
+AgentRepository --> QueryPropertyFileConfig : Reads Query Config
+AgentRepository --> LoggerConfig : Logs Information
+AgentRepository --> CosmosDBConfig : For Connection
+CosmosDBConfig --> KeyVaultConfig : Uses (Dependency)
 
-' ========== Enum Layer ==========
-package "jp.co.neofirst.api.agent.entity.enums" {
-    class CharacterSetType
-    class ContactType
-    class DigitalTouchPointType
-    class Gender
-    class PhoneType
-}
+' ========== Global Exception Handling ==========
+GlobalExceptionHandler --> CustomDataNotFoundException : Catches
+GlobalExceptionHandler --> CustomValidationException : Catches
+GlobalExceptionHandler --> ErrorContainerDTO : Returns Error Details
+ErrorContainerDTO --> ErrorResponseDTO : Has
+ErrorResponseDTO --> ErrorDetailDTO : Uses List<ErrorDetailDTO>
 
-' ========== Exception Layer ==========
-package "jp.co.neofirst.api.agent.exception" {
-    class CustomDataNotFoundException
-    class CustomValidationException
-    class GlobalExceptionHandler
-}
+' ========== Service and Repository Exception Throwing ==========
+AgentDetailByAgentIdServiceImpl --> CustomValidationException : Throws
+AgentDetailByAgentIdServiceImpl --> CustomDataNotFoundException : Throws
 
-' ========== Interceptor Layer ==========
-package "jp.co.neofirst.api.agent.interceptor" {
-    class HttpHeaderInterceptor
-}
+' ========== DTO Relationships ==========
+AgentDTO --> NameDTO : Uses
+AgentDTO --> PhoneNumberDTO : Uses
+AgentDTO --> EmailDTO : Uses
+AgentDTO --> DigitalTouchpointDTO : Uses
+AgentDTO --> SolicitorDTO : Uses
+AgentDTO --> AgencyDTO : Uses
+AgentDTO --> AgencyOfficeDTO : Uses
 
-' ========== Mapper Layer ==========
-package "jp.co.neofirst.api.agent.mapper" {
-    class AgentMapper
-}
+' ========== Entity Relationships ==========
+AgentEntity --> NameEntity : Uses
+AgentEntity --> PhoneNumberEntity : Uses
+AgentEntity --> EmailEntity : Uses
+AgentEntity --> DigitalTouchpointEntity : Uses
+AgentEntity --> SolicitorEntity : Uses
+AgentEntity --> AgencyEntity : Uses
+AgentEntity --> AgencyOfficeEntity : Uses
 
-' ========== Repository Layer ==========
-package "jp.co.neofirst.api.agent.repository" {
-    class AgentRepository
-}
-
-' ========== Service Layer ==========
-package "jp.co.neofirst.api.agent.service" {
-    class AgentDetailByAgentIdService
-}
-
-' ========== Service Implementation Layer ==========
-package "jp.co.neofirst.api.agent.service.impl" {
-    class AgentDetailByAgentIdServiceImpl
-}
-
-' ========== Utility Layer ==========
-package "jp.co.neofirst.api.agent.util" {
-    class Utils
-}
+' ========== Enum Relationships ==========
+NameEntity --> CharacterSetType : Uses
+DigitalTouchpointEntity --> DigitalTouchPointType : Uses
+PhoneNumberEntity --> ContactType : Uses
+PhoneNumberEntity --> PhoneType : Uses
+AgentEntity --> Gender : Uses
 
 @enduml
