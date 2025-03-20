@@ -3,102 +3,23 @@ top to bottom direction
 skinparam packageStyle rectangle
 skinparam linetype ortho
 skinparam ranksep 60
-skinparam nodesep 40
+skinparam nodesep 50
 skinparam dpi 300
 hide empty methods
 
-' ========== Main Class ==========
-NeoAgentSearchApplication -down-> AgentController : Initializes
+' ========== Repository & Utility Layer ==========
+package "Repository & Utils" {
+    
+    ' Keep Repository & Utility Functions at the Same Level
+    AgentRepository -down-> AgentEntity : Fetches Data
+    AgentRepository -down-> QueryPropertyFileConfig : Reads Query Config
+    AgentRepository -down-> LoggerConfig : Logs Information
+    AgentRepository -down-> CosmosDBConfig : Uses
+    CosmosDBConfig -down-> KeyVaultConfig : Uses Dependency
 
-' ========== Interceptor Layer ==========
-HttpHeaderInterceptor -down-> AgentController : Intercepts Requests
-
-' ========== Controller Layer ==========
-AgentController -down-> AgentDetailByAgentIdService : Uses
-AgentController -right-> LoggerConfig : Logs Requests
-AgentController -down-> GlobalExceptionHandler : Handles Exceptions
-
-' ========== Service Layer ==========
-AgentDetailByAgentIdServiceImpl -down-> AgentRepository : Uses
-AgentDetailByAgentIdServiceImpl -right-> AgentMapper : Maps Entity to DTO
-AgentDetailByAgentIdServiceImpl -down-> Utils : Calls Static Methods
-AgentDetailByAgentIdServiceImpl -down-> AgentDTO : Returns List<AgentDTO>
-
-' ========== Repository and Mapper (Grouped in a Package) ==========
-package "Repository & Mapper" {
-    AgentRepository
-    AgentMapper
+    ' Separate Utils to Avoid Overlap
+    Utils -right-> AgentRepository : Calls Static Methods
+    Utils -right-> AgentDTO : Assists with Data Transformation
 }
-AgentRepository -right-> CosmosDBConfig : Uses
-CosmosDBConfig -down-> KeyVaultConfig : Uses Dependency
-AgentRepository -down-> QueryPropertyFileConfig : Reads Query Config
-AgentRepository -down-> LoggerConfig : Logs Information
-
-' ========== Exception Handling (Red Lines) ==========
-package "Global Exception Handling" {
-    GlobalExceptionHandler
-    CustomValidationException
-    CustomDataNotFoundException
-    ErrorContainerDTO
-    ErrorResponseDTO
-    ErrorDetailDTO
-}
-GlobalExceptionHandler -[#Red]-down-> CustomValidationException : Catches
-GlobalExceptionHandler -[#Red]-down-> CustomDataNotFoundException : Catches
-GlobalExceptionHandler -[#Red]-down-> ErrorContainerDTO : Returns Error Details
-ErrorContainerDTO -[#Red]-down-> ErrorResponseDTO : Has
-ErrorResponseDTO -[#Red]-down-> ErrorDetailDTO : Uses List<ErrorDetailDTO>
-
-' ========== DTO Relationships ==========
-package "DTO Layer" {
-    AgentDTO
-    NameDTO
-    PhoneNumberDTO
-    EmailDTO
-    DigitalTouchpointDTO
-    SolicitorDTO
-    AgencyDTO
-    AgencyOfficeDTO
-}
-AgentDTO -down-> NameDTO : Uses
-AgentDTO -down-> PhoneNumberDTO : Uses
-AgentDTO -down-> EmailDTO : Uses
-AgentDTO -down-> DigitalTouchpointDTO : Uses
-AgentDTO -down-> SolicitorDTO : Uses
-AgentDTO -down-> AgencyDTO : Uses
-AgentDTO -down-> AgencyOfficeDTO : Uses
-
-' ========== Entity Relationships ==========
-package "Entity Layer" {
-    AgentEntity
-    NameEntity
-    PhoneNumberEntity
-    EmailEntity
-    DigitalTouchpointEntity
-    SolicitorEntity
-    AgencyEntity
-    AgencyOfficeEntity
-}
-AgentEntity -down-> NameEntity : Uses
-AgentEntity -down-> PhoneNumberEntity : Uses
-AgentEntity -down-> EmailEntity : Uses
-AgentEntity -down-> DigitalTouchpointEntity : Uses
-AgentEntity -down-> SolicitorEntity : Uses
-AgentEntity -down-> AgencyEntity : Uses
-AgentEntity -down-> AgencyOfficeEntity : Uses
-
-' ========== Enum Relationships ==========
-package "Enum Layer" {
-    CharacterSetType
-    ContactType
-    DigitalTouchPointType
-    Gender
-    PhoneType
-}
-NameEntity -down-> CharacterSetType : Uses
-DigitalTouchpointEntity -down-> DigitalTouchPointType : Uses
-PhoneNumberEntity -down-> ContactType : Uses
-PhoneNumberEntity -down-> PhoneType : Uses
-AgentEntity -down-> Gender : Uses
 
 @enduml
