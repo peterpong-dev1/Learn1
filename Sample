@@ -1,25 +1,47 @@
-@startuml AgentSearch
-top to bottom direction
-skinparam packageStyle rectangle
-skinparam linetype ortho
-skinparam ranksep 60
-skinparam nodesep 50
-skinparam dpi 300
-hide empty methods
+@startuml
+' === Main Class ===
+NeoSearchAddressApplication -down-> AddressController : Initializes
 
-' ========== Repository & Utility Layer ==========
-package "Repository & Utils" {
-    
-    ' Keep Repository & Utility Functions at the Same Level
-    AgentRepository -down-> AgentEntity : Fetches Data
-    AgentRepository -down-> QueryPropertyFileConfig : Reads Query Config
-    AgentRepository -down-> LoggerConfig : Logs Information
-    AgentRepository -down-> CosmosDBConfig : Uses
-    CosmosDBConfig -down-> KeyVaultConfig : Uses Dependency
+' === Interceptor Layer ===
+HttpHeaderInterceptor -down-> AddressController : Intercepts Requests
+WebConfig -down-> HttpHeaderInterceptor : Registers
 
-    ' Separate Utils to Avoid Overlap
-    Utils -right-> AgentRepository : Calls Static Methods
-    Utils -right-> AgentDTO : Assists with Data Transformation
-}
+' === Controller Layer ===
+AddressController -down-> AddressService : Uses
+AddressController -right-> LoggerConfig : Logs Requests
+AddressController -down[#Red]-> GlobalExceptionHandler : Handles Exceptions
+
+' === Service Layer ===
+AddressServiceImpl -down-> AddressService : Implements
+AddressServiceImpl -down-> AddressRepository : Uses
+AddressServiceImpl -right-> AddressMapper : Maps Entity to DTO
+AddressServiceImpl -down-> Utils : Calls Static Methods
+AddressServiceImpl -down[#DarkOrange]-> AddressDTO : Returns Address
+AddressServiceImpl -down-> AddressSearchConditionsDTO : Uses
+AddressDTO -down-> AddressDetailsDTO : Contains
+AddressSearchConditionsDTO -down-> AddressSearchDetailsDTO : Contains
+
+' === Repository and Mapper Layer ===
+AddressRepository -right-> CosmosDBConfig : Uses
+CosmosDBConfig -down-> KeyVaultConfig : Uses Dependency
+AddressRepository -down-> QueryPropertyFileConfig : Reads Query Config
+AddressRepository -down-> LoggerConfig : Logs Information
+AddressRepository -right[#DarkOrange]-> AddressEntity : Returns List<AddressEntity>
+
+AddressMapper -down-> AddressDTO : Converts
+AddressMapper -down-> AddressDetailsDTO : Converts
+AddressMapper -down-> AddressEntity : Uses
+AddressMapper -down-> AddressDetailsEntity : Uses
+
+' === Exception Handling (Red Lines) ===
+GlobalExceptionHandler -[#Red]-> CustomValidationException : Catches
+GlobalExceptionHandler -[#Red]-> CustomDataNotFoundException : Catches
+GlobalExceptionHandler -[#Red]-> ErrorContainerDTO : Returns Error Details
+ErrorContainerDTO -[#Red]-> ErrorResponseDTO : Has
+ErrorResponseDTO -[#Red]-> ErrorDetailDTO : Uses List<ErrorDetailDTO>
+
+' === Entity Relationships ===
+AddressEntity -down-> AddressDetailsEntity : Uses
+AddressDetailsEntity -down-> CharacterSetType : Uses enum class
 
 @enduml
