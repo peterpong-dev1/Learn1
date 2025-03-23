@@ -1,47 +1,67 @@
 @startuml
-' === Main Class ===
-NeoSearchAddressApplication -down-> AddressController : Initializes
+package "jp.co.neofirst.api.common" {
 
-' === Interceptor Layer ===
-HttpHeaderInterceptor -down-> AddressController : Intercepts Requests
-WebConfig -down-> HttpHeaderInterceptor : Registers
+  package config {
+    class CosmosDBConfig
+    class KeyVaultConfig
+    class LoggerConfig
+    class QueryPropertyFileConfig
+    class WebConfig
+  }
 
-' === Controller Layer ===
-AddressController -down-> AddressService : Uses
-AddressController -right-> LoggerConfig : Logs Requests
-AddressController -down[#Red]-> GlobalExceptionHandler : Handles Exceptions
+  package controller {
+    class FinancialInstitutionController
+  }
 
-' === Service Layer ===
-AddressServiceImpl -down-> AddressService : Implements
-AddressServiceImpl -down-> AddressRepository : Uses
-AddressServiceImpl -right-> AddressMapper : Maps Entity to DTO
-AddressServiceImpl -down-> Utils : Calls Static Methods
-AddressServiceImpl -down[#DarkOrange]-> AddressDTO : Returns Address
-AddressServiceImpl -down-> AddressSearchConditionsDTO : Uses
-AddressDTO -down-> AddressDetailsDTO : Contains
-AddressSearchConditionsDTO -down-> AddressSearchDetailsDTO : Contains
+  package dto {
+    class ErrorContainerDTO
+    class ErrorDetailDTO
+    class ErrorResponseDTO
+    class FinancialInstitutionDTO
+    class FinancialInstitutionSearchConditionsDTO
+    class PhoneNumberDTO
+  }
 
-' === Repository and Mapper Layer ===
-AddressRepository -right-> CosmosDBConfig : Uses
-CosmosDBConfig -down-> KeyVaultConfig : Uses Dependency
-AddressRepository -down-> QueryPropertyFileConfig : Reads Query Config
-AddressRepository -down-> LoggerConfig : Logs Information
-AddressRepository -right[#DarkOrange]-> AddressEntity : Returns List<AddressEntity>
+  package entity {
+    class FinancialInstitutionEntity
+    class PhoneNumberEntity
 
-AddressMapper -down-> AddressDTO : Converts
-AddressMapper -down-> AddressDetailsDTO : Converts
-AddressMapper -down-> AddressEntity : Uses
-AddressMapper -down-> AddressDetailsEntity : Uses
+    package enums {
+      class ContactType
+      class PhoneType
+    }
+  }
 
-' === Exception Handling (Red Lines) ===
-GlobalExceptionHandler -[#Red]-> CustomValidationException : Catches
-GlobalExceptionHandler -[#Red]-> CustomDataNotFoundException : Catches
-GlobalExceptionHandler -[#Red]-> ErrorContainerDTO : Returns Error Details
-ErrorContainerDTO -[#Red]-> ErrorResponseDTO : Has
-ErrorResponseDTO -[#Red]-> ErrorDetailDTO : Uses List<ErrorDetailDTO>
+  package exception {
+    class CustomDataNotFoundException
+    class CustomValidationException
+    class GlobalExceptionHandler
+  }
 
-' === Entity Relationships ===
-AddressEntity -down-> AddressDetailsEntity : Uses
-AddressDetailsEntity -down-> CharacterSetType : Uses enum class
+  package interceptor {
+    class HttpHeaderInterceptor
+  }
 
+  package mapper {
+    class FinancialInstitutionMapper
+  }
+
+  package repository {
+    class FinancialInstitutionRepository
+  }
+
+  package service {
+    interface FinancialInstitutionService
+
+    package impl {
+      class FinancialInstitutionServiceImpl
+    }
+
+    FinancialInstitutionServiceImpl --|> FinancialInstitutionService
+  }
+
+  package util {
+    class Utils
+  }
+}
 @enduml
