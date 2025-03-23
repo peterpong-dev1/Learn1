@@ -65,3 +65,58 @@ package "jp.co.neofirst.api.common" {
   }
 }
 @enduml
+
+The OCR from the second image was too messy to extract meaningful text directly. But since we already have a clear list of classes from your first image and we understand the structure from the previous relationship image, I’ll now reconstruct a clean and updated class relationship list using the correct class names from your system.
+
+⸻
+
+Updated Relationships Based on Your Classes
+
+Main Class
+
+NeoApplication --> FinancialInstitutionController : Initializes
+
+Interceptor Layer
+
+HttpHeaderInterceptor --> FinancialInstitutionController : Intercepts Requests
+
+Controller Layer
+
+FinancialInstitutionController --> FinancialInstitutionService : Uses
+FinancialInstitutionController --> LoggerConfig : Logs Requests
+FinancialInstitutionController --> GlobalExceptionHandler : Handles Exceptions
+
+Service Layer
+
+FinancialInstitutionServiceImpl --> FinancialInstitutionService : Implements
+FinancialInstitutionServiceImpl --> FinancialInstitutionRepository : Uses
+FinancialInstitutionServiceImpl --> FinancialInstitutionMapper : Maps Entity to DTO
+FinancialInstitutionServiceImpl --> Utils : Calls Static Methods
+FinancialInstitutionServiceImpl --> FinancialInstitutionDTO : Returns Data
+FinancialInstitutionServiceImpl --> FinancialInstitutionSearchConditionsDTO : Uses
+
+Repository and Mapper
+
+FinancialInstitutionRepository --> CosmosDBConfig : Uses
+CosmosDBConfig --> KeyVaultConfig : Uses Dependency
+FinancialInstitutionRepository --> QueryPropertyFileConfig : Reads Query Config
+FinancialInstitutionRepository --> LoggerConfig : Logs Information
+FinancialInstitutionRepository --> FinancialInstitutionEntity : returns Entity
+FinancialInstitutionMapper --> FinancialInstitutionDTO : Converts
+FinancialInstitutionMapper --> FinancialInstitutionEntity : Uses
+
+Exception Handling
+
+GlobalExceptionHandler --> CustomValidationException : Catches
+GlobalExceptionHandler --> CustomDataNotFoundException : Catches
+GlobalExceptionHandler --> ErrorContainerDTO : Returns Error Details
+ErrorContainerDTO --> ErrorResponseDTO : Has
+ErrorResponseDTO --> ErrorDetailDTO : Uses List<ErrorDetailDTO>
+
+
+
+⸻
+
+Would you like this converted into PlantUML format too? I can generate the full PUML with these relationships! ￼
+
+
