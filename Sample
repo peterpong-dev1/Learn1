@@ -1,122 +1,102 @@
-@startuml
-package "jp.co.neofirst.api.common" {
+Perfect — since you’re using VS Code, here’s how you can automatically validate REST API responses against your Swagger (OpenAPI) spec during testing or development in a Spring Boot project:
 
-  package config {
-    class CosmosDBConfig
-    class KeyVaultConfig
-    class LoggerConfig
-    class QueryPropertyFileConfig
-    class WebConfig
-  }
+⸻
 
-  package controller {
-    class FinancialInstitutionController
-  }
+✅ Goal:
 
-  package dto {
-    class ErrorContainerDTO
-    class ErrorDetailDTO
-    class ErrorResponseDTO
-    class FinancialInstitutionDTO
-    class FinancialInstitutionSearchConditionsDTO
-    class PhoneNumberDTO
-  }
+When you hit your API (e.g. in tests), you want to ensure the actual response matches the Swagger-defined schema.
 
-  package entity {
-    class FinancialInstitutionEntity
-    class PhoneNumberEntity
+⸻
 
-    package enums {
-      class ContactType
-      class PhoneType
+Recommended Setup in VS Code
+
+1. Make sure your Swagger/OpenAPI spec is available
+	•	If you’re using springdoc-openapi, your spec is usually available at:
+
+http://localhost:8080/v3/api-docs
+
+
+	•	You can also download it and save as openapi.yaml or openapi.json in your project.
+
+⸻
+
+2. Add Dependencies (in pom.xml)
+
+<!-- REST-assured -->
+<dependency>
+    <groupId>io.rest-assured</groupId>
+    <artifactId>rest-assured</artifactId>
+    <version>5.3.0</version>
+    <scope>test</scope>
+</dependency>
+
+<!-- OpenAPI Validation Filter -->
+<dependency>
+    <groupId>com.atlassian.oai</groupId>
+    <artifactId>rest-assured-openapi-validation</artifactId>
+    <version>2.20.0</version>
+    <scope>test</scope>
+</dependency>
+
+
+
+⸻
+
+3. Add OpenAPI spec to your resources
+
+Put your Swagger file (JSON or YAML) in src/test/resources/openapi.yaml
+
+⸻
+
+4. Write a validation test
+
+import com.atlassian.oai.validator.restassured.OpenApiValidationFilter;
+import org.junit.jupiter.api.Test;
+
+import static io.restassured.RestAssured.given;
+import static org.hamcrest.Matchers.equalTo;
+
+public class ApiContractTest {
+
+    private final OpenApiValidationFilter validationFilter =
+            new OpenApiValidationFilter("openapi.yaml"); // points to your file in resources
+
+    @Test
+    public void testUserEndpointContract() {
+        given()
+            .filter(validationFilter)
+            .when()
+            .get("/api/v1/users/1")
+            .then()
+            .statusCode(200);
     }
-  }
-
-  package exception {
-    class CustomDataNotFoundException
-    class CustomValidationException
-    class GlobalExceptionHandler
-  }
-
-  package interceptor {
-    class HttpHeaderInterceptor
-  }
-
-  package mapper {
-    class FinancialInstitutionMapper
-  }
-
-  package repository {
-    class FinancialInstitutionRepository
-  }
-
-  package service {
-    interface FinancialInstitutionService
-
-    package impl {
-      class FinancialInstitutionServiceImpl
-    }
-
-    FinancialInstitutionServiceImpl --|> FinancialInstitutionService
-  }
-
-  package util {
-    class Utils
-  }
 }
-@enduml
 
-The OCR from the second image was too messy to extract meaningful text directly. But since we already have a clear list of classes from your first image and we understand the structure from the previous relationship image, I’ll now reconstruct a clean and updated class relationship list using the correct class names from your system.
+This will fail the test if your actual response doesn’t match the schema in the Swagger spec — automatic response validation.
 
 ⸻
 
-Updated Relationships Based on Your Classes
+5. Run the test in VS Code
 
-Main Class
+You can use:
+	•	Test Explorer in VS Code (Java extensions)
+	•	Or just run with Maven:
 
-NeoApplication --> FinancialInstitutionController : Initializes
-
-Interceptor Layer
-
-HttpHeaderInterceptor --> FinancialInstitutionController : Intercepts Requests
-
-Controller Layer
-
-FinancialInstitutionController --> FinancialInstitutionService : Uses
-FinancialInstitutionController --> LoggerConfig : Logs Requests
-FinancialInstitutionController --> GlobalExceptionHandler : Handles Exceptions
-
-Service Layer
-
-FinancialInstitutionServiceImpl --> FinancialInstitutionService : Implements
-FinancialInstitutionServiceImpl --> FinancialInstitutionRepository : Uses
-FinancialInstitutionServiceImpl --> FinancialInstitutionMapper : Maps Entity to DTO
-FinancialInstitutionServiceImpl --> Utils : Calls Static Methods
-FinancialInstitutionServiceImpl --> FinancialInstitutionDTO : Returns Data
-FinancialInstitutionServiceImpl --> FinancialInstitutionSearchConditionsDTO : Uses
-
-Repository and Mapper
-
-FinancialInstitutionRepository --> CosmosDBConfig : Uses
-CosmosDBConfig --> KeyVaultConfig : Uses Dependency
-FinancialInstitutionRepository --> QueryPropertyFileConfig : Reads Query Config
-FinancialInstitutionRepository --> LoggerConfig : Logs Information
-FinancialInstitutionRepository --> FinancialInstitutionEntity : returns Entity
-FinancialInstitutionMapper --> FinancialInstitutionDTO : Converts
-FinancialInstitutionMapper --> FinancialInstitutionEntity : Uses
-
-Exception Handling
-
-GlobalExceptionHandler --> CustomValidationException : Catches
-GlobalExceptionHandler --> CustomDataNotFoundException : Catches
-GlobalExceptionHandler --> ErrorContainerDTO : Returns Error Details
-ErrorContainerDTO --> ErrorResponseDTO : Has
-ErrorResponseDTO --> ErrorDetailDTO : Uses List<ErrorDetailDTO>
+mvn test
 
 
 
 ⸻
 
-Would you like this converted into PlantUML format too? I can generate the full PUML with these relationships! ￼
+Optional: Live Preview & Edit Swagger in VS Code
 
+Install extensions:
+	•	Swagger Viewer
+	•	YAML
+	•	OpenAPI (Swagger) Editor
 
+These help with syntax highlighting, autocompletion, and previewing your Swagger spec.
+
+⸻
+
+Want help setting up a launch.json or test runner in VS Code for this?
