@@ -99,4 +99,84 @@ These help with syntax highlighting, autocompletion, and previewing your Swagger
 
 ⸻
 
+
+Here’s the latest (as of early 2025) version info for the libraries you’re using for API testing and validation:
+
+⸻
+
+1. REST-assured
+
+Latest stable version: 5.4.0
+
+<dependency>
+    <groupId>io.rest-assured</groupId>
+    <artifactId>rest-assured</artifactId>
+    <version>5.4.0</version>
+    <scope>test</scope>
+</dependency>
+
+
+
+⸻
+
+2. OpenAPI Validation Filter (by Atlassian)
+
+Latest stable version: 2.22.0
+
+<dependency>
+    <groupId>com.atlassian.oai</groupId>
+    <artifactId>rest-assured-openapi-validation</artifactId>
+    <version>2.22.0</version>
+    <scope>test</scope>
+</dependency>
+
+
+
+⸻
+
+3. (Optional) JSON Schema Validator
+
+If you’re validating raw JSON against schema:
+
+<dependency>
+    <groupId>com.github.everit-org.json-schema</groupId>
+    <artifactId>org.everit.json.schema</artifactId>
+    <version>1.14.3</version>
+    <scope>test</scope>
+</dependency>
+
+
+
+⸻
+
+Optional Companion:
+	•	springdoc-openapi (for generating OpenAPI spec from your code)
+
+<dependency>
+    <groupId>org.springdoc</groupId>
+    <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+    <version>2.3.0</version>
+</dependency>
+
+
+
+⸻
+
+Tip: How to Always Stay Up-to-date
+
+You can check Maven Central:
+	•	search.maven.org
+	•	Or use the Maven Helper or Versions Maven Plugin in VS Code/IDE to see outdated dependencies.
+
+⸻
+
+Let me know if you’re using Gradle, and I’ll give you the latest for that format too.
+
+
+
+
+
+
+
+
 Want help setting up a launch.json or test runner in VS Code for this?
