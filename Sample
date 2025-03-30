@@ -1,129 +1,63 @@
 @startuml
+skinparam packageStyle rectangle
+skinparam linetype ortho
+top to bottom direction
 
-package "jp.co.neofirst.api.common" {
+hide class circle
 
-    class CommonSearchApplication
+' Main flow
+[CommonSearchApplication] --> [interceptor]
+[interceptor] --> [controller.calendar]
+[interceptor] --> [controller.address]
+[interceptor] --> [controller.financialInstitution]
 
-    package "config" {
-        class CosmosDBConfig
-        class LoggerConfig
-        class WebConfig
-        class ConfigWebConfig
+[controller.calendar] --> [service.calendar]
+[controller.address] --> [service.address]
+[controller.financialInstitution] --> [service.financialInstitution]
 
-        package "properties" {
-            class CosmosSecretProperties
-            class CosmosProperties
-            class KeyVaultProperties
-        }
-    }
+[service.calendar] --> [repository.calendar]
+[service.address] --> [repository.address]
+[service.financialInstitution] --> [repository.financialInstitution]
 
-    package "controller" {
-        package "calendar" #FFEEDD {
-            class CalenderController
-        }
-        package "financialInstitution" #E6FFDD {
-            class FinancialInstitutionController
-        }
-    }
+[repository.calendar] --> [entity.calendar]
+[repository.address] --> [entity.address]
+[repository.financialInstitution] --> [entity.financialInstitution]
 
-    package "dto" {
-        class ErrorContainerDTO
-        class ErrorResponseDTO
-        class ResponseDTO
+' Mapping: service uses mapper to convert entity to dto
+[service.calendar] --> [mapper.address]
+[service.address] --> [mapper.address]
+[service.financialInstitution] --> [mapper.financialInstitution]
 
-        package "address" #DDEEFF {
-            class AddressDTO
-            class AddressDetailsDTO
-            class AddressSearchConditionsDTO
-        }
+[mapper.address] --> [dto.address]
+[mapper.financialInstitution] --> [dto.financialInstitution]
 
-        package "calendar" #FFEEDD {
-            class CalendarDTO
-            class CalendarSearchConditionsDTO
-        }
+' Controller returns DTO
+[controller.calendar] --> [dto.calendar]
+[controller.address] --> [dto.address]
+[controller.financialInstitution] --> [dto.financialInstitution]
 
-        package "financialInstitution" #E6FFDD {
-            class FinancialInstitutionDTO
-            class PhoneNumberDTO
-            class FinancialInstitutionSearchConditionsDTO
-        }
-    }
+' Exception handling (red dashed)
+[service.calendar] ..[#red,dashed]> [exception]
+[service.address] ..[#red,dashed]> [exception]
+[service.financialInstitution] ..[#red,dashed]> [exception]
 
-    package "entity" {
-        class CharacterSetType
+[repository.calendar] ..[#red,dashed]> [exception]
+[repository.address] ..[#red,dashed]> [exception]
+[repository.financialInstitution] ..[#red,dashed]> [exception]
 
-        package "address" #DDEEFF {
-            class AddressEntity
-        }
+[exception] --> [logging]
 
-        package "calendar" #FFEEDD {
-            class CalendarEntity
-        }
+' Utils usage
+[controller.calendar] ..> [utils]
+[controller.address] ..> [utils]
+[controller.financialInstitution] ..> [utils]
 
-        package "financialInstitution" #E6FFDD {
-            class FinancialInstitutionEntity
-            class PhoneNumberEntity
-            class ContactType
-            class PhoneNumberType
-        }
-    }
+[service.calendar] ..> [utils]
+[service.address] ..> [utils]
+[service.financialInstitution] ..> [utils]
 
-    package "exception" {
-        class CustomDataNotFoundException
-        class CustomValidationException
-    }
-
-    package "interceptor" {
-        class HttpInterceptor
-    }
-
-    package "logging" {
-        class GlobalExceptionHandler
-    }
-
-    package "mapper" {
-        package "address" #DDEEFF {
-            class AddressMapper
-        }
-
-        package "financialInstitution" #E6FFDD {
-            class FinancialInstitutionMapper
-        }
-    }
-
-    package "repository" {
-        package "calendar" #FFEEDD {
-            class CalendarRepository
-        }
-
-        package "financialInstitution" #E6FFDD {
-            class FinancialInstitutionRepository
-        }
-    }
-
-    package "service" {
-        package "address" #DDEEFF {
-            class AddressService
-        }
-
-        package "calendar" #FFEEDD {
-            class CalendarService
-        }
-
-        package "financialInstitution" #E6FFDD {
-            class FinancialInstitutionService
-        }
-    }
-
-    package "service.impl" {
-        package "financialInstitution" #E6FFDD {
-            class FinancialInstitutionServiceImpl
-        }
-    }
-
-    package "utils" {
-        class CommonUtil
-    }
-}
+[repository.calendar] ..> [utils]
+[repository.address] ..> [utils]
+[repository.financialInstitution] ..> [utils]
 
 @enduml
