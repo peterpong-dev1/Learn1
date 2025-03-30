@@ -1,144 +1,20 @@
-Perfect! Let’s walk through two things:
-
-⸻
-
-Part 1: Swagger Integration in Spring Boot — Without SwaggerConfig
-
-This is the quickest, cleanest way to get Swagger running — with no custom config class, and disabled in production.
-
-⸻
-
-1. Add Swagger Dependency (pom.xml)
-
-<dependency>
-    <groupId>org.springdoc</groupId>
-    <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
-    <version>2.3.0</version>
-</dependency>
-
-
-
-⸻
-
-2. Setup application.yml and application-prod.yml
-
-application.yml (for dev/default profile):
-
-spring:
-  profiles:
-    active: dev
-
-application-prod.yml (to disable Swagger in prod):
-
-springdoc:
-  api-docs:
-    enabled: false
-  swagger-ui:
-    enabled: false
-
-
-
-⸻
-
-3. Run and Access Swagger UI
-
-Run in dev:
-
-mvn spring-boot:run -Dspring-boot.run.profiles=dev
-
-Access:
-	•	Swagger UI: http://localhost:8080/swagger-ui.html
-	•	OpenAPI Spec: http://localhost:8080/v3/api-docs
-
-In prod:
-
--Dspring.profiles.active=prod
-
-Swagger will be disabled entirely.
-
-⸻
-
-✅ Done! No SwaggerConfig needed, fully working.
-
-⸻
-
-Part 2: Validate Swagger Against Actual API Responses
-
-You want to ensure:
-
-“My Swagger documentation (request/response schema) matches what the API actually returns.”
-
-⸻
-
-Approach 1: Use Annotations to Bind Swagger to Real Models
-
-Swagger/OpenAPI automatically uses:
-	•	@RestController
-	•	@RequestBody, @PathVariable, @RequestParam
-	•	Model classes with @Schema annotations (optional)
-
-Example:
-
-@RestController
-@RequestMapping("/users")
-public class UserController {
-
-    @GetMapping("/{id}")
-    public ResponseEntity<User> getUser(@PathVariable String id) {
-        return ResponseEntity.ok(new User("123", "John Doe"));
-    }
-
-    @PostMapping
-    public ResponseEntity<User> createUser(@RequestBody User user) {
-        return ResponseEntity.ok(user);
-    }
-}
-
-public class User {
-    @Schema(description = "Unique identifier of the user", example = "123")
-    private String id;
-
-    @Schema(description = "Full name of the user", example = "John Doe")
-    private String name;
-
-    // getters and setters
-}
-
-
-
-⸻
-
-Approach 2: Validate API Against Swagger Using Tools
-
-Tool: Swagger Validator or Postman
-	•	Export the OpenAPI JSON from /v3/api-docs
-	•	Use a validator tool like:
-	•	https://editor.swagger.io/
-	•	Postman with schema validation
-	•	CI tools like Swagger Codegen
-
-They’ll compare your OpenAPI spec to example responses.
-
-⸻
-
-Approach 3: Integration Testing with Spring + OpenAPI Spec
-
-Use libraries like:
-	•	Spring REST Docs + Swagger2Markup (advanced)
-	•	AssertJ + OpenAPI Generator to verify models
-
-⸻
-
-✅ Summary: Validate Swagger Responses
-
-Method	What It Does	Effort
-Use @Schema in model classes	Binds API docs to real model	Easy
-Use Swagger Editor	Validates OpenAPI spec format	Easy
-Use Postman or CI tool	Validates response format vs spec	Medium
-Use Spring REST Docs	Generates docs from tests	Advanced but very accurate
-
-
-
-⸻
-
-Let me know which validation route fits your team — happy to show a working example or CI integration next!
+restassured-openapi-validation/
+├── pom.xml
+├── README.md
+├── src
+│   ├── main
+│   │   └── java
+│   │       └── (optional: support classes, like config or utils)
+│   └── test
+│       ├── java
+│       │   └── com
+│       │       └── example
+│       │           ├── base
+│       │           │   └── BaseTest.java
+│       │           ├── users
+│       │           │   └── UserApiTest.java
+│       │           └── login
+│       │               └── LoginApiTest.java
+│       └── resources
+│           └── api-specs
+│               └── openapi.yaml
