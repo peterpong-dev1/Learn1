@@ -1,40 +1,39 @@
 @startuml
-skinparam packageStyle rectangle
 skinparam linetype ortho
+skinparam packageStyle rectangle
+skinparam nodesep 80
+skinparam ranksep 60
 top to bottom direction
 
-' Node definitions
-class CommonSearchApplication
-package interceptor
-package controller
-package service
-package repository
-package entity
-package mapper
-package dto
-package exception
-package logging
-package utils
+' Define invisible spacers
+package spacer1 <<Invisible>>
+package spacer2 <<Invisible>>
+package spacer3 <<Invisible>>
 
 ' Main flow
-CommonSearchApplication --> interceptor
-interceptor --> controller
-controller --> service
-service --> repository
-repository --> entity
+NeoCommonSearchApplication -down-> interceptor : Start flow
+interceptor -down-> controller : Extract request id
+controller -down-> service : Calls method
+service -down-> spacer1
+spacer1 -down-> repository : Calls method
+repository -down-> config : Uses DB connection
+repository -down-> entity : Returns
 
 ' Mapper and DTO
-service --> mapper
-mapper --> dto
-controller --> dto
+service -down-> spacer2
+spacer2 -down-> mapper : Uses
+mapper -down-> entity : Input
+mapper -down-> dto : Returns as DTO
+controller -down-> dto : Returns as response
 
 ' Exception handling (red dashed)
-service ..[#red,dashed]> exception
-repository ..[#red,dashed]> exception
+service -down-> spacer3
+spacer3 .[#red,dashed,thickness=2].> exception : Throws to GlobalExceptionHandler
+repository .[#red,dashed,thickness=2].> exception : Throws to GlobalExceptionHandler
 exception --> logging
 
 ' Utils usage (dotted)
-controller ..> utils
-service ..> utils
+controller ..down-> utils : Uses utility methods
+service ..down-> utils : Uses utility methods
 
 @enduml
