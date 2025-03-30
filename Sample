@@ -277,4 +277,179 @@ Let me know if you want:
 	•	Error response tests (400, 404, etc.)
 	•	Zip/download of this starter project
 
+
+Here’s how to enhance your setup to include 400 Bad Request responses in the OpenAPI spec and tests for all three APIs: Calendar, Address, and Financial Institution.
+
+⸻
+
+1. Updated openapi.yaml with 400 Response
+
+Update your OpenAPI spec to define 400 responses for invalid or missing query parameters.
+
+openapi: 3.0.1
+info:
+  title: Search APIs
+  version: 1.0.0
+paths:
+  /calendar/search:
+    get:
+      summary: Search calendar
+      parameters:
+        - in: query
+          name: date
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: List of events
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+        '400':
+          description: Invalid date input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /address/search:
+    get:
+      summary: Search address
+      parameters:
+        - in: query
+          name: postalCode
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of addresses
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    street:
+                      type: string
+                    city:
+                      type: string
+        '400':
+          description: Missing postal code
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /financialinstitution/search:
+    get:
+      summary: Search financial institutions
+      parameters:
+        - in: query
+          name: name
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of financial institutions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+                    name:
+                      type: string
+        '400':
+          description: Missing institution name
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+components:
+  schemas:
+    Error:
+      type: object
+      properties:
+        code:
+          type: integer
+        message:
+          type: string
+
+
+
+⸻
+
+2. Add 400 Response Tests
+
+CalendarApiTest.java
+
+@Test
+public void testCalendarSearchInvalidRequest() {
+    given()
+        .filter(validationFilter) // no date param
+    .when()
+        .get("/calendar/search")
+    .then()
+        .statusCode(400);
+}
+
+
+
+⸻
+
+AddressApiTest.java
+
+@Test
+public void testAddressSearchMissingPostalCode() {
+    given()
+        .filter(validationFilter) // no postalCode
+    .when()
+        .get("/address/search")
+    .then()
+        .statusCode(400);
+}
+
+
+
+⸻
+
+FinancialInstitutionApiTest.java
+
+@Test
+public void testFinancialInstitutionSearchMissingName() {
+    given()
+        .filter(validationFilter) // no name param
+    .when()
+        .get("/financialinstitution/search")
+    .then()
+        .statusCode(400);
+}
+
+
+
+⸻
+
+Optional: Add Mock Support
+
+If you’re testing locally and your backend doesn’t return 400 by default, consider:
+	•	Adding validation in the backend
+	•	Using WireMock or MockServer to simulate responses
+
+⸻
+
+Let me know if you’d like a full mock server setup or a zipped project ready to run.
+
+
 Want me to package and share a GitHub version of this?
