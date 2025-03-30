@@ -6,3 +6,11 @@ given()
     .post("/v1/common/address/search")
 .then()
     .statusCode(200);
+
+ErrorResponseDTO errorResponse = new ErrorResponseDTO(
+    String.valueOf(status.value()),
+    message,
+    errorDetails,
+    OffsetDateTime.now(ZoneOffset.UTC).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME), // formatted String
+    MDC.get("requestId")
+);
