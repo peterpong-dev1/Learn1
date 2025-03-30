@@ -1,309 +1,83 @@
-Perfect — since you’re using VS Code, here’s how you can automatically validate REST API responses against your Swagger (OpenAPI) spec during testing or development in a Spring Boot project:
-
-⸻
-
-✅ Goal:
-
-When you hit your API (e.g. in tests), you want to ensure the actual response matches the Swagger-defined schema.
-
-⸻
-
-Recommended Setup in VS Code
-
-1. Make sure your Swagger/OpenAPI spec is available
-	•	If you’re using springdoc-openapi, your spec is usually available at:
-
-http://localhost:8080/v3/api-docs
-
-
-	•	You can also download it and save as openapi.yaml or openapi.json in your project.
-
-⸻
-
-2. Add Dependencies (in pom.xml)
-
-<!-- REST-assured -->
-<dependency>
-    <groupId>io.rest-assured</groupId>
-    <artifactId>rest-assured</artifactId>
-    <version>5.3.0</version>
-    <scope>test</scope>
-</dependency>
-
-<!-- OpenAPI Validation Filter -->
-<dependency>
-    <groupId>com.atlassian.oai</groupId>
-    <artifactId>rest-assured-openapi-validation</artifactId>
-    <version>2.20.0</version>
-    <scope>test</scope>
-</dependency>
-
-
-
-⸻
-
-3. Add OpenAPI spec to your resources
-
-Put your Swagger file (JSON or YAML) in src/test/resources/openapi.yaml
-
-⸻
-
-4. Write a validation test
-
-import com.atlassian.oai.validator.restassured.OpenApiValidationFilter;
-import org.junit.jupiter.api.Test;
-
-import static io.restassured.RestAssured.given;
-import static org.hamcrest.Matchers.equalTo;
-
-public class ApiContractTest {
-
-    private final OpenApiValidationFilter validationFilter =
-            new OpenApiValidationFilter("openapi.yaml"); // points to your file in resources
-
-    @Test
-    public void testUserEndpointContract() {
-        given()
-            .filter(validationFilter)
-            .when()
-            .get("/api/v1/users/1")
-            .then()
-            .statusCode(200);
-    }
-}
-
-This will fail the test if your actual response doesn’t match the schema in the Swagger spec — automatic response validation.
-
-⸻
-
-5. Run the test in VS Code
-
-You can use:
-	•	Test Explorer in VS Code (Java extensions)
-	•	Or just run with Maven:
-
-mvn test
-
-
-
-⸻
-
-Optional: Live Preview & Edit Swagger in VS Code
-
-Install extensions:
-	•	Swagger Viewer
-	•	YAML
-	•	OpenAPI (Swagger) Editor
-
-These help with syntax highlighting, autocompletion, and previewing your Swagger spec.
-
-⸻
-
-
-Here’s the latest (as of early 2025) version info for the libraries you’re using for API testing and validation:
-
-⸻
-
-1. REST-assured
-
-Latest stable version: 5.4.0
-
-<dependency>
-    <groupId>io.rest-assured</groupId>
-    <artifactId>rest-assured</artifactId>
-    <version>5.4.0</version>
-    <scope>test</scope>
-</dependency>
-
-
-
-⸻
-
-2. OpenAPI Validation Filter (by Atlassian)
-
-Latest stable version: 2.22.0
-
-<dependency>
-    <groupId>com.atlassian.oai</groupId>
-    <artifactId>rest-assured-openapi-validation</artifactId>
-    <version>2.22.0</version>
-    <scope>test</scope>
-</dependency>
-
-
-
-⸻
-
-3. (Optional) JSON Schema Validator
-
-If you’re validating raw JSON against schema:
-
-<dependency>
-    <groupId>com.github.everit-org.json-schema</groupId>
-    <artifactId>org.everit.json.schema</artifactId>
-    <version>1.14.3</version>
-    <scope>test</scope>
-</dependency>
-
-
-
-⸻
-
-Optional Companion:
-	•	springdoc-openapi (for generating OpenAPI spec from your code)
-
-<dependency>
-    <groupId>org.springdoc</groupId>
-    <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
-    <version>2.3.0</version>
-</dependency>
-
-
-
-⸻
-
-Tip: How to Always Stay Up-to-date
-
-You can check Maven Central:
-	•	search.maven.org
-	•	Or use the Maven Helper or Versions Maven Plugin in VS Code/IDE to see outdated dependencies.
-
-⸻
-
-Let me know if you’re using Gradle, and I’ll give you the latest for that format too.
-
-
-
-Steps to ensure LF line endings (Windows dev, Linux deploy):
-
-⸻
-
-1. Configure Git globally
-
-git config --global core.autocrlf true
-
-
-
-⸻
-
-2. Create .gitattributes in repo root
-
-Content:
-
-* text=auto
-
-
-
-⸻
-
-3. Commit and push .gitattributes to your main/dev branch
-
-git add .gitattributes
-git commit -m "Add .gitattributes to enforce LF line endings"
-git push
-
-
-
-⸻
-
-4. Re-clone your repo (clean local copy)
-
-git clone <your-fork-url>
-
-
-
-⸻
-
-5. (Optional) Enforce LF in VS Code
-	•	Bottom-right corner: click CRLF → select LF
-	•	Or in settings.json:
-
-"files.eol": "\n"
-
-Done. Your repo will now use and enforce LF line endings.
-
-
-
-Thanks for the clarification! Here’s the updated PlantUML code based on your instructions:
-
-What’s updated:
-	1.	Base package: Created as jp.co.neofirst.api.common.
-	2.	Sub-packages (controller, dto, entity, mapper, repository, service, service.impl) are nested under the base package.
-	3.	Within each major package (like controller, dto, etc.), the sub-groups like calendar, address, and financialInstitute are color-coded differently for easy distinction.
-
-⸻
-
-PlantUML Code:
-
 @startuml
 
 package "jp.co.neofirst.api.common" {
 
-    package "config" #FFDDDD {
+    class CommonSearchApplication
+
+    package "config" {
+        class CosmosDBConfig
         class LoggerConfig
         class WebConfig
-        class CosmosSecretProperties
-        class KeyVaultProperties
+        class ConfigWebConfig
+
+        package "properties" {
+            class CosmosSecretProperties
+            class CosmosProperties
+            class KeyVaultProperties
+        }
     }
 
     package "controller" {
-        package "address" #DDEEFF {
-            class AddressRestController
-        }
-        package "financialInstitute" #E6FFDD {
-            class FinancialInstitutionController
-        }
         package "calendar" #FFEEDD {
-            class CalendarController
+            class CalenderController
+        }
+        package "financialInstitution" #E6FFDD {
+            class FinancialInstitutionController
         }
     }
 
     package "dto" {
-        class ErrorDetailDTO
+        class ErrorContainerDTO
+        class ErrorResponseDTO
         class ResponseDTO
-        
+
         package "address" #DDEEFF {
             class AddressDTO
-            class AddressSearchDTO
+            class AddressDetailsDTO
             class AddressSearchConditionsDTO
         }
 
         package "calendar" #FFEEDD {
             class CalendarDTO
+            class CalendarSearchConditionsDTO
         }
 
-        package "financialInstitute" #E6FFDD {
+        package "financialInstitution" #E6FFDD {
             class FinancialInstitutionDTO
             class PhoneNumberDTO
+            class FinancialInstitutionSearchConditionsDTO
         }
     }
 
     package "entity" {
+        class CharacterSetType
+
         package "address" #DDEEFF {
             class AddressEntity
         }
 
-        package "financialInstitute" #E6FFDD {
-            class FinancialInstitutionEntity
-            class PhoneNumberType
+        package "calendar" #FFEEDD {
+            class CalendarEntity
         }
 
-        class CharacterSetType
+        package "financialInstitution" #E6FFDD {
+            class FinancialInstitutionEntity
+            class PhoneNumberEntity
+            class ContactType
+            class PhoneNumberType
+        }
     }
 
-    package "enums" #FFCCFF {
-        class PhoneNumberTypeEnum
-    }
-
-    package "exception" #FFCCCC {
+    package "exception" {
+        class CustomDataNotFoundException
         class CustomValidationException
     }
 
-    package "interceptor" #CCCCFF {
-        class HTTPInterceptor
+    package "interceptor" {
+        class HttpInterceptor
     }
 
-    package "logging" #CCFFCC {
+    package "logging" {
         class GlobalExceptionHandler
     }
 
@@ -312,7 +86,7 @@ package "jp.co.neofirst.api.common" {
             class AddressMapper
         }
 
-        package "financialInstitute" #E6FFDD {
+        package "financialInstitution" #E6FFDD {
             class FinancialInstitutionMapper
         }
     }
@@ -322,7 +96,7 @@ package "jp.co.neofirst.api.common" {
             class CalendarRepository
         }
 
-        package "financialInstitute" #E6FFDD {
+        package "financialInstitution" #E6FFDD {
             class FinancialInstitutionRepository
         }
     }
@@ -336,40 +110,20 @@ package "jp.co.neofirst.api.common" {
             class CalendarService
         }
 
-        package "financialInstitute" #E6FFDD {
+        package "financialInstitution" #E6FFDD {
             class FinancialInstitutionService
         }
     }
 
     package "service.impl" {
-        package "financialInstitute" #E6FFDD {
+        package "financialInstitution" #E6FFDD {
             class FinancialInstitutionServiceImpl
         }
     }
 
-    package "utils" #E0E0E0 {
+    package "utils" {
         class CommonUtil
     }
-
 }
 
 @enduml
-
-
-
-⸻
-
-You can now:
-	•	Copy this into a PlantUML live editor or tool.
-	•	Visually see sub-package color coding inside each major section.
-	•	Easily extend it with relationships when you’re ready.
-
-Let me know if you want a PNG/SVG export or relationship mapping next!
-
-
-
-
-
-
-
-Want help setting up a launch.json or test runner in VS Code for this?
