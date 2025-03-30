@@ -1,47 +1,84 @@
-Awesome—let’s take this all the way. Here’s a complete folder structure for a production-ready setup of Rest Assured with OpenAPI validation, supporting request and response validation (including error responses), CI/CD-friendly layout, and extensibility for future growth.
+Awesome — here’s a full Rest Assured + OpenAPI validation test suite setup for 3 APIs:
+	•	Calendar Search
+	•	Address Search
+	•	Financial Institution Search
+
+This includes:
+	•	Project structure
+	•	OpenAPI YAML spec
+	•	Maven pom.xml
+	•	Java test classes
+	•	A single BaseTest class
 
 ⸻
 
-Folder Structure:
+1. Folder Structure
 
 restassured-openapi-validation/
 ├── pom.xml
-├── README.md
-├── src
-│   ├── main
-│   │   └── java
-│   │       └── (optional: support classes, like config or utils)
-│   └── test
-│       ├── java
-│       │   └── com
-│       │       └── example
-│       │           ├── base
-│       │           │   └── BaseTest.java
-│       │           ├── users
-│       │           │   └── UserApiTest.java
-│       │           └── login
-│       │               └── LoginApiTest.java
-│       └── resources
-│           └── api-specs
+├── src/
+│   └── test/
+│       ├── java/
+│       │   └── com/example/
+│       │       ├── base/
+│       │       │   └── BaseTest.java
+│       │       ├── calendar/
+│       │       │   └── CalendarApiTest.java
+│       │       ├── address/
+│       │       │   └── AddressApiTest.java
+│       │       └── financial/
+│       │           └── FinancialInstitutionApiTest.java
+│       └── resources/
+│           └── api-specs/
 │               └── openapi.yaml
 
 
 
 ⸻
 
-What Goes Where
+2. pom.xml
 
-pom.xml
+<project xmlns="http://maven.apache.org/POM/4.0.0" ...>
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>restassured-openapi-validation</artifactId>
+  <version>1.0-SNAPSHOT</version>
+  <dependencies>
+    <dependency>
+      <groupId>io.rest-assured</groupId>
+      <artifactId>rest-assured</artifactId>
+      <version>5.3.0</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.rest-assured</groupId>
+      <artifactId>rest-assured-openapi</artifactId>
+      <version>5.3.0</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>5.10.0</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>3.1.2</version>
+      </plugin>
+    </plugins>
+  </build>
+</project>
 
-Includes dependencies for:
-	•	rest-assured
-	•	rest-assured-openapi
-	•	junit-jupiter (JUnit 5)
-	•	json-path (optional)
 
-BaseTest.java
 
-Sets base URI and configures the OpenApiValidationFilter.
+⸻
+
+3. BaseTest.java
 
 package com.example.base;
 
@@ -53,104 +90,165 @@ public class BaseTest {
     protected static OpenApiValidationFilter validationFilter;
 
     @BeforeAll
-    public static void setUp() {
+    public static void setup() {
+        RestAssured.baseURI = "http://localhost:8080"; // or from env
         validationFilter = new OpenApiValidationFilter("src/test/resources/api-specs/openapi.yaml");
-        RestAssured.baseURI = "https://your-api.com"; // replace with your target
     }
 }
-
-UserApiTest.java
-
-package com.example.users;
-
-import com.example.base.BaseTest;
-
-import static io.restassured.RestAssured.*;
-import static org.hamcrest.Matchers.*;
-import org.junit.jupiter.api.Test;
-
-public class UserApiTest extends BaseTest {
-
-    @Test
-    public void testGetUser200() {
-        given()
-            .filter(validationFilter)
-            .pathParam("id", 1)
-        .when()
-            .get("/user/{id}")
-        .then()
-            .statusCode(200);
-    }
-
-    @Test
-    public void testGetUser404() {
-        given()
-            .filter(validationFilter)
-            .pathParam("id", 9999)
-        .when()
-            .get("/user/{id}")
-        .then()
-            .statusCode(404);
-    }
-}
-
-LoginApiTest.java
-
-package com.example.login;
-
-import com.example.base.BaseTest;
-import org.junit.jupiter.api.Test;
-
-import static io.restassured.RestAssured.*;
-
-public class LoginApiTest extends BaseTest {
-
-    @Test
-    public void testLogin200() {
-        given()
-            .filter(validationFilter)
-            .contentType("application/json")
-            .body("{ \"username\": \"admin\", \"password\": \"password\" }")
-        .when()
-            .post("/login")
-        .then()
-            .statusCode(200);
-    }
-
-    @Test
-    public void testLogin400() {
-        given()
-            .filter(validationFilter)
-            .contentType("application/json")
-            .body("{ \"username\": \"admin\" }") // missing password
-        .when()
-            .post("/login")
-        .then()
-            .statusCode(400);
-    }
-}
-
-openapi.yaml
-
-Put your OpenAPI 3.0 spec here, under src/test/resources/api-specs/.
-
-⸻
-
-Additions for Production-Readiness
-	•	Environment switching:
-Use System.getProperty() or .env to switch base URI per environment (dev, stage, prod).
-	•	Dynamic spec fetching:
-Fetch spec from an API gateway or URL if maintained externally.
-	•	Mock server setup:
-Include WireMock for testing edge cases (e.g., 500 errors).
-	•	Reporting:
-Integrate with Allure or custom reporting to show request/response/validation results.
-	•	Run via Maven/CI:
-
-mvn test
 
 
 
 ⸻
 
-Let me know if you want this zipped into a ready-to-run repo, or want integration with Spring Boot, Postman, or Jenkins. Want to go deeper?
+4. API Test Classes
+
+CalendarApiTest.java
+
+package com.example.calendar;
+
+import com.example.base.BaseTest;
+import org.junit.jupiter.api.Test;
+import static io.restassured.RestAssured.*;
+
+public class CalendarApiTest extends BaseTest {
+
+    @Test
+    void calendarSearchShouldReturn200() {
+        given()
+            .filter(validationFilter)
+            .queryParam("date", "2025-03-30")
+        .when()
+            .get("/calendar/search")
+        .then()
+            .statusCode(200);
+    }
+}
+
+AddressApiTest.java
+
+package com.example.address;
+
+import com.example.base.BaseTest;
+import org.junit.jupiter.api.Test;
+import static io.restassured.RestAssured.*;
+
+public class AddressApiTest extends BaseTest {
+
+    @Test
+    void addressSearchShouldReturn200() {
+        given()
+            .filter(validationFilter)
+            .queryParam("postalCode", "90210")
+        .when()
+            .get("/address/search")
+        .then()
+            .statusCode(200);
+    }
+}
+
+FinancialInstitutionApiTest.java
+
+package com.example.financial;
+
+import com.example.base.BaseTest;
+import org.junit.jupiter.api.Test;
+import static io.restassured.RestAssured.*;
+
+public class FinancialInstitutionApiTest extends BaseTest {
+
+    @Test
+    void financialInstitutionSearchShouldReturn200() {
+        given()
+            .filter(validationFilter)
+            .queryParam("name", "Bank of Test")
+        .when()
+            .get("/financialinstitution/search")
+        .then()
+            .statusCode(200);
+    }
+}
+
+
+
+⸻
+
+5. openapi.yaml
+
+openapi: 3.0.1
+info:
+  title: Search APIs
+  version: 1.0.0
+paths:
+  /calendar/search:
+    get:
+      parameters:
+        - in: query
+          name: date
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Successful calendar search
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+  /address/search:
+    get:
+      parameters:
+        - in: query
+          name: postalCode
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Address list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    street:
+                      type: string
+                    city:
+                      type: string
+  /financialinstitution/search:
+    get:
+      parameters:
+        - in: query
+          name: name
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Matching financial institutions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+                    name:
+                      type: string
+
+
+
+⸻
+
+Run the tests:
+
+mvn clean test
+
+
+
+⸻
+
+Want me to zip this up as a downloadable starter project or extend it to include error responses (404, 400, etc.) and mock data generation? Let me know!
