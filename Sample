@@ -3,61 +3,66 @@ skinparam packageStyle rectangle
 skinparam linetype ortho
 top to bottom direction
 
-hide class circle
+' Application to interceptor
+application --> interceptor
 
-' Main flow
-[CommonSearchApplication] --> [interceptor]
-[interceptor] --> [controller.calendar]
-[interceptor] --> [controller.address]
-[interceptor] --> [controller.financialInstitution]
+' Interceptor to controllers
+interceptor --> controller.calendar
+interceptor --> controller.address
+interceptor --> controller.financialInstitution
 
-[controller.calendar] --> [service.calendar]
-[controller.address] --> [service.address]
-[controller.financialInstitution] --> [service.financialInstitution]
+' Controllers to services
+controller.calendar --> service.calendar
+controller.address --> service.address
+controller.financialInstitution --> service.financialInstitution
 
-[service.calendar] --> [repository.calendar]
-[service.address] --> [repository.address]
-[service.financialInstitution] --> [repository.financialInstitution]
+' Services to repositories
+service.calendar --> repository.calendar
+service.address --> repository.address
+service.financialInstitution --> repository.financialInstitution
 
-[repository.calendar] --> [entity.calendar]
-[repository.address] --> [entity.address]
-[repository.financialInstitution] --> [entity.financialInstitution]
+' Repositories to entities
+repository.calendar --> entity.calendar
+repository.address --> entity.address
+repository.financialInstitution --> entity.financialInstitution
 
-' Mapping: service uses mapper to convert entity to dto
-[service.calendar] --> [mapper.address]
-[service.address] --> [mapper.address]
-[service.financialInstitution] --> [mapper.financialInstitution]
+' Services to mappers
+service.calendar --> mapper.calendar
+service.address --> mapper.address
+service.financialInstitution --> mapper.financialInstitution
 
-[mapper.address] --> [dto.address]
-[mapper.financialInstitution] --> [dto.financialInstitution]
+' Mappers to DTOs
+mapper.calendar --> dto.calendar
+mapper.address --> dto.address
+mapper.financialInstitution --> dto.financialInstitution
 
-' Controller returns DTO
-[controller.calendar] --> [dto.calendar]
-[controller.address] --> [dto.address]
-[controller.financialInstitution] --> [dto.financialInstitution]
+' Controllers send DTOs
+controller.calendar --> dto.calendar
+controller.address --> dto.address
+controller.financialInstitution --> dto.financialInstitution
 
-' Exception handling (red dashed)
-[service.calendar] ..[#red,dashed]> [exception]
-[service.address] ..[#red,dashed]> [exception]
-[service.financialInstitution] ..[#red,dashed]> [exception]
+' Exception handling (red dashed lines)
+service.calendar ..[#red,dashed]> exception
+service.address ..[#red,dashed]> exception
+service.financialInstitution ..[#red,dashed]> exception
 
-[repository.calendar] ..[#red,dashed]> [exception]
-[repository.address] ..[#red,dashed]> [exception]
-[repository.financialInstitution] ..[#red,dashed]> [exception]
+repository.calendar ..[#red,dashed]> exception
+repository.address ..[#red,dashed]> exception
+repository.financialInstitution ..[#red,dashed]> exception
 
-[exception] --> [logging]
+exception --> logging
 
-' Utils usage
-[controller.calendar] ..> [utils]
-[controller.address] ..> [utils]
-[controller.financialInstitution] ..> [utils]
+' Utils used in controller, service, repository
+controller.calendar ..> utils
+controller.address ..> utils
+controller.financialInstitution ..> utils
 
-[service.calendar] ..> [utils]
-[service.address] ..> [utils]
-[service.financialInstitution] ..> [utils]
+service.calendar ..> utils
+service.address ..> utils
+service.financialInstitution ..> utils
 
-[repository.calendar] ..> [utils]
-[repository.address] ..> [utils]
-[repository.financialInstitution] ..> [utils]
+repository.calendar ..> utils
+repository.address ..> utils
+repository.financialInstitution ..> utils
 
 @enduml
