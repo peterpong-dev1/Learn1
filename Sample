@@ -224,7 +224,147 @@ Done. Your repo will now use and enforce LF line endings.
 
 
 
+Thanks for the clarification! Here’s the updated PlantUML code based on your instructions:
 
+What’s updated:
+	1.	Base package: Created as jp.co.neofirst.api.common.
+	2.	Sub-packages (controller, dto, entity, mapper, repository, service, service.impl) are nested under the base package.
+	3.	Within each major package (like controller, dto, etc.), the sub-groups like calendar, address, and financialInstitute are color-coded differently for easy distinction.
+
+⸻
+
+PlantUML Code:
+
+@startuml
+
+package "jp.co.neofirst.api.common" {
+
+    package "config" #FFDDDD {
+        class LoggerConfig
+        class WebConfig
+        class CosmosSecretProperties
+        class KeyVaultProperties
+    }
+
+    package "controller" {
+        package "address" #DDEEFF {
+            class AddressRestController
+        }
+        package "financialInstitute" #E6FFDD {
+            class FinancialInstitutionController
+        }
+        package "calendar" #FFEEDD {
+            class CalendarController
+        }
+    }
+
+    package "dto" {
+        class ErrorDetailDTO
+        class ResponseDTO
+        
+        package "address" #DDEEFF {
+            class AddressDTO
+            class AddressSearchDTO
+            class AddressSearchConditionsDTO
+        }
+
+        package "calendar" #FFEEDD {
+            class CalendarDTO
+        }
+
+        package "financialInstitute" #E6FFDD {
+            class FinancialInstitutionDTO
+            class PhoneNumberDTO
+        }
+    }
+
+    package "entity" {
+        package "address" #DDEEFF {
+            class AddressEntity
+        }
+
+        package "financialInstitute" #E6FFDD {
+            class FinancialInstitutionEntity
+            class PhoneNumberType
+        }
+
+        class CharacterSetType
+    }
+
+    package "enums" #FFCCFF {
+        class PhoneNumberTypeEnum
+    }
+
+    package "exception" #FFCCCC {
+        class CustomValidationException
+    }
+
+    package "interceptor" #CCCCFF {
+        class HTTPInterceptor
+    }
+
+    package "logging" #CCFFCC {
+        class GlobalExceptionHandler
+    }
+
+    package "mapper" {
+        package "address" #DDEEFF {
+            class AddressMapper
+        }
+
+        package "financialInstitute" #E6FFDD {
+            class FinancialInstitutionMapper
+        }
+    }
+
+    package "repository" {
+        package "calendar" #FFEEDD {
+            class CalendarRepository
+        }
+
+        package "financialInstitute" #E6FFDD {
+            class FinancialInstitutionRepository
+        }
+    }
+
+    package "service" {
+        package "address" #DDEEFF {
+            class AddressService
+        }
+
+        package "calendar" #FFEEDD {
+            class CalendarService
+        }
+
+        package "financialInstitute" #E6FFDD {
+            class FinancialInstitutionService
+        }
+    }
+
+    package "service.impl" {
+        package "financialInstitute" #E6FFDD {
+            class FinancialInstitutionServiceImpl
+        }
+    }
+
+    package "utils" #E0E0E0 {
+        class CommonUtil
+    }
+
+}
+
+@enduml
+
+
+
+⸻
+
+You can now:
+	•	Copy this into a PlantUML live editor or tool.
+	•	Visually see sub-package color coding inside each major section.
+	•	Easily extend it with relationships when you’re ready.
+
+Let me know if you want a PNG/SVG export or relationship mapping next!
 
 
 
