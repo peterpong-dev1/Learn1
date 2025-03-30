@@ -5,30 +5,20 @@ skinparam nodesep 80
 skinparam ranksep 60
 top to bottom direction
 
-' Define invisible spacers
-package spacer1 <<Invisible>>
-package spacer2 <<Invisible>>
-package spacer3 <<Invisible>>
-
 ' Main flow
 NeoCommonSearchApplication -down-> interceptor : Start flow
 interceptor -down-> controller : Extract request id
 controller -down-> service : Calls method
-service -down-> spacer1
-spacer1 -down-> repository : Calls method
+service -down-> repository : Calls method
 repository -down-> config : Uses DB connection
-repository -down-> entity : Returns
 
-' Mapper and DTO
-service -down-> spacer2
-spacer2 -down-> mapper : Uses
-mapper -down-> entity : Input
-mapper -down-> dto : Returns as DTO
-controller -down-> dto : Returns as response
+' Combined data package
+repository -down-> data : Returns entity
+service -down-> data : Uses mapper, gets DTO
+controller -down-> data : Sends DTO as response
 
 ' Exception handling (red dashed)
-service -down-> spacer3
-spacer3 .[#red,dashed,thickness=2].> exception : Throws to GlobalExceptionHandler
+service .[#red,dashed,thickness=2].> exception : Throws to GlobalExceptionHandler
 repository .[#red,dashed,thickness=2].> exception : Throws to GlobalExceptionHandler
 exception --> logging
 
