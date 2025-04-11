@@ -1,88 +1,92 @@
-Absolutely — here’s the updated consolidated explanation with the dynamic sampling concept and real-world application scenarios added in a clear and structured way.
+import java.io.*;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.*;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
+import java.util.*;
+import java.util.stream.Stream;
 
-⸻
+public class SyslogSearcher {
 
-1. What the Two Tables Do
+    // Change this format according to your log timestamp format
+    private static final SimpleDateFormat utcFormat = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss");
 
-POM_UID_scratch2
-	•	A temporary table used for the current session only.
-	•	Holds a list of object UIDs specific to the user/session (e.g., selected/search result items).
-	•	No persistent statistics — Oracle uses DYNAMIC_SAMPLING to estimate data size during each execution.
-	•	Contains just one column, and is fully scanned during the query.
+    public static void main(String[] args) {
+        if (args.length < 4) {
+            System.out.println("Usage: java SyslogSearcher <path> <startTime> <endTime> <searchString>");
+            System.out.println("Timestamp format: yyyy-MM-dd'T'HH:mm:ss (e.g. 2024-04-10T14:00:00)");
+            return;
+        }
 
-POM_M_LOCK
-	•	Stores lock information for Teamcenter objects to avoid concurrent updates.
-	•	Tracks which session/process holds a lock on which object.
-	•	Important columns:
-	•	REF_UID: ID of the locked object.
-	•	PROCESS: The session/process holding the lock.
-	•	ASPACE_UID: Identifies which revisioning “space” the lock applies to (e.g., private or public).
+        String rootPath = args[0];
+        String startTimeStr = args[1];
+        String endTimeStr = args[2];
+        String searchString = args[3];
 
-⸻
+        try {
+            Date startTime = utcFormat.parse(startTimeStr);
+            Date endTime = utcFormat.parse(endTimeStr);
+            processDirectory(Paths.get(rootPath), startTime, endTime, searchString);
+        } catch (ParseException e) {
+            System.err.println("Error parsing date. Please use correct format.");
+            e.printStackTrace();
+        } catch (IOException e) {
+            System.err.println("I/O Error occurred.");
+            e.printStackTrace();
+        }
+    }
 
-2. What the Query Is Doing
+    private static void processDirectory(Path path, Date startTime, Date endTime, String searchString) throws IOException {
+        if (!Files.exists(path)) {
+            System.out.println("Path does not exist.");
+            return;
+        }
 
-SELECT /*+ DYNAMIC_SAMPLING(tt 4) */ ref_uid, process
-FROM POM_M_LOCK, POM_UID_scratch2 tt
-WHERE ref_uid = tt.auid
-  AND aspace_uid = 'AAAAAAAAAAAAAA'
+        try (Stream<Path> paths = Files.walk(path)) {
+            paths.filter(Files::isRegularFile)
+                .filter(p -> p.toString().endsWith(".syslog"))
+                .forEach(p -> {
+                    try {
+                        processLogFile(p, startTime, endTime, searchString);
+                    } catch (IOException e) {
+                        System.err.println("Error processing file: " + p);
+                        e.printStackTrace();
+                    }
+                });
+        }
+    }
 
-Plain English:
+    private static void processLogFile(Path logFile, Date startTime, Date endTime, String searchString) throws IOException {
+        List<String> matchedLines = new ArrayList<>();
 
-“From my current session’s list of objects, tell me which ones are locked in the specified workspace (aspace_uid).”
+        try (BufferedReader reader = Files.newBufferedReader(logFile, StandardCharsets.UTF_8)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                Date logTime = extractTimestamp(line);
+                if (logTime != null &&
+                    !logTime.before(startTime) &&
+                    !logTime.after(endTime) &&
+                    line.contains(searchString)) {
 
-	•	It joins session objects (POM_UID_scratch2) with lock data (POM_M_LOCK).
-	•	It filters by a specific workspace context.
-	•	It returns only the locked items from the session’s working list.
+                    matchedLines.add(line);
+                }
+            }
+        }
 
-⸻
+        if (!matchedLines.isEmpty()) {
+            Path reportPath = logFile.getParent().resolve("report_" + logFile.getFileName());
+            Files.write(reportPath, matchedLines, StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+            System.out.println("Report created: " + reportPath);
+        }
+    }
 
-3. Dynamic Sampling – In Short
-	•	Used when no stats are available, like with temporary or volatile tables.
-	•	Oracle gathers sample data at query runtime to estimate row counts and costs.
-	•	DYNAMIC_SAMPLING(tt 4) means Oracle samples 1/64 of the data from tt to guide its query plan.
-	•	Helps avoid bad plans, but adds overhead to execution — especially for large data sets or high-concurrency environments.
-
-⸻
-
-4. Why the Query Is Slow (Based on Execution Plans)
-
-Execution Varies – Oracle used 3 different plans:
-	•	Hash Join with full scans
-	•	Nested Loops with index access
-	•	Different access paths on POM_M_LOCK
-
-Key Performance Issues:
-
-Cause	Impact
-Dynamic Sampling	Adds overhead every time the query runs.
-Temp Table Full Scan	Slows down with more session data.
-Unstable Execution Plans	Different plans per session = unpredictable performance.
-Inefficient Index Use	Index skip scans on POM_M_LOCK can be expensive.
-Hash Join Memory Load	Hash join uses more memory — can spill to disk if overloaded.
-High Concurrency	Many users running the same pattern cause CPU, memory, and I/O pressure.
-
-
-
-⸻
-
-5. What Application Operations Could Trigger This
-
-This type of query is likely triggered by user operations that involve session-level object lists, such as:
-	•	Searching for objects across revisions or configurations
-	•	Opening a large folder or structure (like BOM or assembly)
-	•	Mass-selecting objects for operations (like revise, release, check-in/check-out)
-	•	Performing bulk actions on objects shown in a Teamcenter workspace or result window
-	•	Site-to-site transfer operations (multisite SSTs)
-
-These operations load many object UIDs into the temporary table and then cross-check locks on them, leading to the query in question.
-
-⸻
-
-In Short:
-
-The query is slow because it joins a session-level temporary table (with no fixed stats) to a lock table using dynamic sampling and varying execution plans. It’s especially expensive when many objects are involved or multiple users trigger it at once. Operations like searching, bulk actions, or workspace loading in Teamcenter are common causes.
-
-⸻
-
-Let me know if you’d like next steps on how to tune or stabilize this — we can explore hints, indexing, rewriting, or temp tablespace checks.
+    // Adjust this method to match your log timestamp pattern at the beginning of the line
+    private static Date extractTimestamp(String line) {
+        try {
+            String ts = line.split(" ")[0];
+            return utcFormat.parse(ts);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+}
