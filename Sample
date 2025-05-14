@@ -1,117 +1,62 @@
-Perfect — thanks for the clarification! Below is the updated version using separate classes for each DTO, including an enum class for CurrencyType.
-
-⸻
-
-1. AccountResponseDTO.java
-
-import lombok.*;
-
 import java.util.List;
+import java.util.stream.Collectors;
 
-@Getter
-@Setter
-@NoArgsConstructor
-@AllArgsConstructor
-public class AccountResponseDTO {
-    private List<AccountDTO> account;
+public class AccountMapper {
+
+    public static AccountDTO toDTO(Account entity) {
+        if (entity == null) return null;
+
+        AccountDTO dto = new AccountDTO();
+        dto.setId(entity.getId());
+        dto.setPolicyId(entity.getPolicyId());
+        dto.setAccountUsage(entity.getAccountUsage());
+        dto.setCurrencyType(entity.getCurrencyType());
+        dto.setYenPayment(entity.getYenPayment());
+        dto.setAccountStartDate(entity.getAccountStartDate());
+        dto.setAccountIdentifier(entity.getAccountIdentifier());
+        dto.setAccountHolder(entity.getAccountHolder());
+        dto.setAuthorizationDate(entity.getAuthorizationDate());
+
+        dto.setBank(toBankDTO(entity.getBank()));
+        dto.setJapanpost(toJapanPostDTO(entity.getJapanpost()));
+        dto.setMrfAccount(toMRFAccountDTO(entity.getMrfAccount()));
+
+        return dto;
+    }
+
+    public static List<AccountDTO> toDTOList(List<Account> entities) {
+        return entities.stream()
+                .map(AccountMapper::toDTO)
+                .collect(Collectors.toList());
+    }
+
+    private static BankDTO toBankDTO(Bank entity) {
+        if (entity == null) return null;
+
+        BankDTO dto = new BankDTO();
+        dto.setFinancialInstitutionCode(entity.getFinancialInstitutionCode());
+        dto.setFinancialInstitutionBranchCode(entity.getFinancialInstitutionBranchCode());
+        dto.setAccountCategory(entity.getAccountCategory());
+        dto.setAccountNumber(entity.getAccountNumber());
+        return dto;
+    }
+
+    private static JapanPostDTO toJapanPostDTO(JapanPost entity) {
+        if (entity == null) return null;
+
+        JapanPostDTO dto = new JapanPostDTO();
+        dto.setPassbookSymbol(entity.getPassbookSymbol());
+        dto.setPassbookNumber(entity.getPassbookNumber());
+        return dto;
+    }
+
+    private static MRFAccountDTO toMRFAccountDTO(MRFAccount entity) {
+        if (entity == null) return null;
+
+        MRFAccountDTO dto = new MRFAccountDTO();
+        dto.setDealerCode(entity.getDealerCode());
+        dto.setAccountNumber(entity.getAccountNumber());
+        dto.setAccountHolder(entity.getAccountHolder());
+        return dto;
+    }
 }
-
-
-⸻
-
-2. AccountDTO.java
-
-import lombok.*;
-
-import java.util.Date;
-
-@Getter
-@Setter
-@NoArgsConstructor
-@AllArgsConstructor
-public class AccountDTO {
-    private String id;
-    private String policyId;
-    private String accountUsage;
-    private CurrencyType currencyType;
-    private Boolean yenPayment;
-    private Date accountStartDate;
-    private String accountIdentifier;
-    private BankDTO bank;
-    private JapanPostDTO japanpost;
-    private MRFAccountDTO mrfAccount;
-    private String accountHolder;
-    private Date authorizationDate;
-}
-
-
-⸻
-
-3. BankDTO.java
-
-import lombok.*;
-
-@Getter
-@Setter
-@NoArgsConstructor
-@AllArgsConstructor
-public class BankDTO {
-    private String financialInstitutionCode;
-    private String financialInstitutionBranchCode;
-    private String accountCategory;
-    private String accountNumber;
-}
-
-
-⸻
-
-4. JapanPostDTO.java
-
-import lombok.*;
-
-@Getter
-@Setter
-@NoArgsConstructor
-@AllArgsConstructor
-public class JapanPostDTO {
-    private String passbookSymbol;
-    private String passbookNumber;
-}
-
-
-⸻
-
-5. MRFAccountDTO.java
-
-import lombok.*;
-
-@Getter
-@Setter
-@NoArgsConstructor
-@AllArgsConstructor
-public class MRFAccountDTO {
-    private String dealerCode;
-    private String accountNumber;
-    private String accountHolder;
-}
-
-
-⸻
-
-6. CurrencyType.java (Enum)
-
-public enum CurrencyType {
-    JPY,
-    USD,
-    EUR,
-    AUD
-}
-
-
-⸻
-
-These are now clean, modular DTO classes suited for a Spring Boot GET API response.
-
-Would you like me to now generate:
-	•	The Entity classes for persistence, or
-	•	The Mapper interface/class to map between Entity and DTO?
