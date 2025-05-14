@@ -1,92 +1,117 @@
-import java.io.*;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.*;
-import java.text.ParseException;
-import java.text.SimpleDateFormat;
-import java.util.*;
-import java.util.stream.Stream;
+Perfect — thanks for the clarification! Below is the updated version using separate classes for each DTO, including an enum class for CurrencyType.
 
-public class SyslogSearcher {
+⸻
 
-    // Change this format according to your log timestamp format
-    private static final SimpleDateFormat utcFormat = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss");
+1. AccountResponseDTO.java
 
-    public static void main(String[] args) {
-        if (args.length < 4) {
-            System.out.println("Usage: java SyslogSearcher <path> <startTime> <endTime> <searchString>");
-            System.out.println("Timestamp format: yyyy-MM-dd'T'HH:mm:ss (e.g. 2024-04-10T14:00:00)");
-            return;
-        }
+import lombok.*;
 
-        String rootPath = args[0];
-        String startTimeStr = args[1];
-        String endTimeStr = args[2];
-        String searchString = args[3];
+import java.util.List;
 
-        try {
-            Date startTime = utcFormat.parse(startTimeStr);
-            Date endTime = utcFormat.parse(endTimeStr);
-            processDirectory(Paths.get(rootPath), startTime, endTime, searchString);
-        } catch (ParseException e) {
-            System.err.println("Error parsing date. Please use correct format.");
-            e.printStackTrace();
-        } catch (IOException e) {
-            System.err.println("I/O Error occurred.");
-            e.printStackTrace();
-        }
-    }
-
-    private static void processDirectory(Path path, Date startTime, Date endTime, String searchString) throws IOException {
-        if (!Files.exists(path)) {
-            System.out.println("Path does not exist.");
-            return;
-        }
-
-        try (Stream<Path> paths = Files.walk(path)) {
-            paths.filter(Files::isRegularFile)
-                .filter(p -> p.toString().endsWith(".syslog"))
-                .forEach(p -> {
-                    try {
-                        processLogFile(p, startTime, endTime, searchString);
-                    } catch (IOException e) {
-                        System.err.println("Error processing file: " + p);
-                        e.printStackTrace();
-                    }
-                });
-        }
-    }
-
-    private static void processLogFile(Path logFile, Date startTime, Date endTime, String searchString) throws IOException {
-        List<String> matchedLines = new ArrayList<>();
-
-        try (BufferedReader reader = Files.newBufferedReader(logFile, StandardCharsets.UTF_8)) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                Date logTime = extractTimestamp(line);
-                if (logTime != null &&
-                    !logTime.before(startTime) &&
-                    !logTime.after(endTime) &&
-                    line.contains(searchString)) {
-
-                    matchedLines.add(line);
-                }
-            }
-        }
-
-        if (!matchedLines.isEmpty()) {
-            Path reportPath = logFile.getParent().resolve("report_" + logFile.getFileName());
-            Files.write(reportPath, matchedLines, StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
-            System.out.println("Report created: " + reportPath);
-        }
-    }
-
-    // Adjust this method to match your log timestamp pattern at the beginning of the line
-    private static Date extractTimestamp(String line) {
-        try {
-            String ts = line.split(" ")[0];
-            return utcFormat.parse(ts);
-        } catch (Exception e) {
-            return null;
-        }
-    }
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+public class AccountResponseDTO {
+    private List<AccountDTO> account;
 }
+
+
+⸻
+
+2. AccountDTO.java
+
+import lombok.*;
+
+import java.util.Date;
+
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+public class AccountDTO {
+    private String id;
+    private String policyId;
+    private String accountUsage;
+    private CurrencyType currencyType;
+    private Boolean yenPayment;
+    private Date accountStartDate;
+    private String accountIdentifier;
+    private BankDTO bank;
+    private JapanPostDTO japanpost;
+    private MRFAccountDTO mrfAccount;
+    private String accountHolder;
+    private Date authorizationDate;
+}
+
+
+⸻
+
+3. BankDTO.java
+
+import lombok.*;
+
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+public class BankDTO {
+    private String financialInstitutionCode;
+    private String financialInstitutionBranchCode;
+    private String accountCategory;
+    private String accountNumber;
+}
+
+
+⸻
+
+4. JapanPostDTO.java
+
+import lombok.*;
+
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+public class JapanPostDTO {
+    private String passbookSymbol;
+    private String passbookNumber;
+}
+
+
+⸻
+
+5. MRFAccountDTO.java
+
+import lombok.*;
+
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+public class MRFAccountDTO {
+    private String dealerCode;
+    private String accountNumber;
+    private String accountHolder;
+}
+
+
+⸻
+
+6. CurrencyType.java (Enum)
+
+public enum CurrencyType {
+    JPY,
+    USD,
+    EUR,
+    AUD
+}
+
+
+⸻
+
+These are now clean, modular DTO classes suited for a Spring Boot GET API response.
+
+Would you like me to now generate:
+	•	The Entity classes for persistence, or
+	•	The Mapper interface/class to map between Entity and DTO?
