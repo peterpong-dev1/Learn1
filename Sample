@@ -1,62 +1,49 @@
-import java.util.List;
-import java.util.stream.Collectors;
+public class TransactionProgressMapper {
 
-public class AccountMapper {
-
-    public static AccountDTO toDTO(Account entity) {
+    public TransactionProgressDTO toDTO(TransactionProgressEntity entity) {
         if (entity == null) return null;
 
-        AccountDTO dto = new AccountDTO();
+        TransactionProgressDTO dto = new TransactionProgressDTO();
+
         dto.setId(entity.getId());
         dto.setPolicyId(entity.getPolicyId());
-        dto.setAccountUsage(entity.getAccountUsage());
-        dto.setCurrencyType(entity.getCurrencyType());
-        dto.setYenPayment(entity.getYenPayment());
-        dto.setAccountStartDate(entity.getAccountStartDate());
-        dto.setAccountIdentifier(entity.getAccountIdentifier());
-        dto.setAccountHolder(entity.getAccountHolder());
-        dto.setAuthorizationDate(entity.getAuthorizationDate());
+        dto.setPremiumHistoryNumber(entity.getPremiumHistoryNumber());
+        dto.setCombinedPremiumHistoryNumber(entity.getCombinedPremiumHistoryNumber());
+        dto.setCanceledPremiumHistoryNumber(entity.getCanceledPremiumHistoryNumber());
+        dto.setPremiumProcessingDateTime(entity.getPremiumProcessingDateTime());
+        dto.setDepositProcessingSettlementSequence(entity.getDepositProcessingSettlementSequence());
+        dto.setTotalPremiumDepositAmount(entity.getTotalPremiumDepositAmount());
+        dto.setDepositMonthsAndYears(entity.getDepositMonthsAndYears());
+        dto.setOperationCode(entity.getOperationCode());
+        dto.setAccountJournalCode(entity.getAccountJournalCode());
+        dto.setPremiumAmount(entity.getPremiumAmount());
+        dto.setUnearnedPremiumAmount(entity.getUnearnedPremiumAmount());
+        dto.setClaimProcessingSerialNumber(entity.getClaimProcessingSerialNumber());
+        dto.setDepositChannel(entity.getDepositChannel());
+        dto.setDepositType(entity.getDepositType());
+        dto.setDepositForMonth(entity.getDepositForMonth());
+        dto.setDepositMonths(entity.getDepositMonths());
+        dto.setDepositAcceptDate(entity.getDepositAcceptDate());
+        dto.setDepositProcessingDate(entity.getDepositProcessingDate());
+        dto.setAmountPaid(entity.getAmountPaid());
+        dto.setAmountReceived(entity.getAmountReceived());
+        dto.setTransferFee(entity.getTransferFee());
+        dto.setConsumptionTaxEquivalent(entity.getConsumptionTaxEquivalent());
+        dto.setNoPostProcessingRequired(entity.isNoPostProcessingRequired());
+        dto.setInputPerson(entity.getInputPerson());
+        dto.setOnlineBatchIdentifierType(entity.getOnlineBatchIdentifierType());
+        dto.setAdministratorAccessLevelType(entity.getAdministratorAccessLevelType());
+        dto.setDeductionCertificateYear(entity.getDeductionCertificateYear());
+        dto.setDeductionCertificateGeneralPremiumAmount(entity.getDeductionCertificateGeneralPremiumAmount());
+        dto.setDeductionCertificateIndividualPensionPremiumAmount(entity.getDeductionCertificateIndividualPensionPremiumAmount());
+        dto.setDeductionCertificateLongTermCareMedicinePremiumAmount(entity.getDeductionCertificateLongTermCareMedicinePremiumAmount());
+        dto.setDeductionCertificateOtherPremiumAmount(entity.getDeductionCertificateOtherPremiumAmount());
+        dto.setDeductionCertificatePremiumAvailability(entity.getDeductionCertificatePremiumAvailability());
+        dto.setAccountingCorrectionTemporaryReceiptB2(entity.getAccountingCorrectionTemporaryReceiptB2());
+        dto.setAccountingCorrectionOtherTemporaryReceipts(entity.getAccountingCorrectionOtherTemporaryReceipts());
+        dto.setAccountingCorrectionRefund(entity.getAccountingCorrectionRefund());
+        dto.setAccountingCorrectionFirstPremium(entity.getAccountingCorrectionFirstPremium());
 
-        dto.setBank(toBankDTO(entity.getBank()));
-        dto.setJapanpost(toJapanPostDTO(entity.getJapanpost()));
-        dto.setMrfAccount(toMRFAccountDTO(entity.getMrfAccount()));
-
-        return dto;
-    }
-
-    public static List<AccountDTO> toDTOList(List<Account> entities) {
-        return entities.stream()
-                .map(AccountMapper::toDTO)
-                .collect(Collectors.toList());
-    }
-
-    private static BankDTO toBankDTO(Bank entity) {
-        if (entity == null) return null;
-
-        BankDTO dto = new BankDTO();
-        dto.setFinancialInstitutionCode(entity.getFinancialInstitutionCode());
-        dto.setFinancialInstitutionBranchCode(entity.getFinancialInstitutionBranchCode());
-        dto.setAccountCategory(entity.getAccountCategory());
-        dto.setAccountNumber(entity.getAccountNumber());
-        return dto;
-    }
-
-    private static JapanPostDTO toJapanPostDTO(JapanPost entity) {
-        if (entity == null) return null;
-
-        JapanPostDTO dto = new JapanPostDTO();
-        dto.setPassbookSymbol(entity.getPassbookSymbol());
-        dto.setPassbookNumber(entity.getPassbookNumber());
-        return dto;
-    }
-
-    private static MRFAccountDTO toMRFAccountDTO(MRFAccount entity) {
-        if (entity == null) return null;
-
-        MRFAccountDTO dto = new MRFAccountDTO();
-        dto.setDealerCode(entity.getDealerCode());
-        dto.setAccountNumber(entity.getAccountNumber());
-        dto.setAccountHolder(entity.getAccountHolder());
         return dto;
     }
 }
