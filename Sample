@@ -1,49 +1,58 @@
-public class TransactionProgressMapper {
+package util;
 
-    public TransactionProgressDTO toDTO(TransactionProgressEntity entity) {
-        if (entity == null) return null;
+import java.io.File;
+import java.util.Properties;
 
-        TransactionProgressDTO dto = new TransactionProgressDTO();
+public class FolderBuilder {
 
-        dto.setId(entity.getId());
-        dto.setPolicyId(entity.getPolicyId());
-        dto.setPremiumHistoryNumber(entity.getPremiumHistoryNumber());
-        dto.setCombinedPremiumHistoryNumber(entity.getCombinedPremiumHistoryNumber());
-        dto.setCanceledPremiumHistoryNumber(entity.getCanceledPremiumHistoryNumber());
-        dto.setPremiumProcessingDateTime(entity.getPremiumProcessingDateTime());
-        dto.setDepositProcessingSettlementSequence(entity.getDepositProcessingSettlementSequence());
-        dto.setTotalPremiumDepositAmount(entity.getTotalPremiumDepositAmount());
-        dto.setDepositMonthsAndYears(entity.getDepositMonthsAndYears());
-        dto.setOperationCode(entity.getOperationCode());
-        dto.setAccountJournalCode(entity.getAccountJournalCode());
-        dto.setPremiumAmount(entity.getPremiumAmount());
-        dto.setUnearnedPremiumAmount(entity.getUnearnedPremiumAmount());
-        dto.setClaimProcessingSerialNumber(entity.getClaimProcessingSerialNumber());
-        dto.setDepositChannel(entity.getDepositChannel());
-        dto.setDepositType(entity.getDepositType());
-        dto.setDepositForMonth(entity.getDepositForMonth());
-        dto.setDepositMonths(entity.getDepositMonths());
-        dto.setDepositAcceptDate(entity.getDepositAcceptDate());
-        dto.setDepositProcessingDate(entity.getDepositProcessingDate());
-        dto.setAmountPaid(entity.getAmountPaid());
-        dto.setAmountReceived(entity.getAmountReceived());
-        dto.setTransferFee(entity.getTransferFee());
-        dto.setConsumptionTaxEquivalent(entity.getConsumptionTaxEquivalent());
-        dto.setNoPostProcessingRequired(entity.isNoPostProcessingRequired());
-        dto.setInputPerson(entity.getInputPerson());
-        dto.setOnlineBatchIdentifierType(entity.getOnlineBatchIdentifierType());
-        dto.setAdministratorAccessLevelType(entity.getAdministratorAccessLevelType());
-        dto.setDeductionCertificateYear(entity.getDeductionCertificateYear());
-        dto.setDeductionCertificateGeneralPremiumAmount(entity.getDeductionCertificateGeneralPremiumAmount());
-        dto.setDeductionCertificateIndividualPensionPremiumAmount(entity.getDeductionCertificateIndividualPensionPremiumAmount());
-        dto.setDeductionCertificateLongTermCareMedicinePremiumAmount(entity.getDeductionCertificateLongTermCareMedicinePremiumAmount());
-        dto.setDeductionCertificateOtherPremiumAmount(entity.getDeductionCertificateOtherPremiumAmount());
-        dto.setDeductionCertificatePremiumAvailability(entity.getDeductionCertificatePremiumAvailability());
-        dto.setAccountingCorrectionTemporaryReceiptB2(entity.getAccountingCorrectionTemporaryReceiptB2());
-        dto.setAccountingCorrectionOtherTemporaryReceipts(entity.getAccountingCorrectionOtherTemporaryReceipts());
-        dto.setAccountingCorrectionRefund(entity.getAccountingCorrectionRefund());
-        dto.setAccountingCorrectionFirstPremium(entity.getAccountingCorrectionFirstPremium());
+    public static File createFolderStructure(String basePath, Properties props) {
+        String lastFoldersProp = props.getProperty("lastFolders");
+        String packageProp = props.getProperty("randomPackage");
+        String baseFoldersProp = props.getProperty("baseFolders");
+        String projectName = props.getProperty("projectName");
 
-        return dto;
+        if (lastFoldersProp == null || packageProp == null || baseFoldersProp == null || projectName == null) {
+            System.err.println("Missing one or more required properties: projectName, baseFolders, randomPackage, lastFolders");
+            return null;
+        }
+
+        String[] baseFolders = baseFoldersProp.split(",");
+        String[] packageParts = packageProp.split("\\.");
+        String[] lastFolders = lastFoldersProp.split(",");
+
+        // Start with basePath
+        File folder = new File(basePath);
+
+        // Append base folders: e.g., src/main
+        for (String base : baseFolders) {
+            folder = new File(folder, base.trim());
+        }
+
+        // Append package folders: e.g., jp/co/neofirst/api/salesname
+        for (String part : packageParts) {
+            folder = new File(folder, part.trim());
+        }
+
+        boolean allCreated = true;
+        File finalTarget = null;
+
+        // Append last folders and project name
+        for (String last : lastFolders) {
+            File fullPath = new File(folder, last.trim() + File.separator + projectName);
+            if (!fullPath.mkdirs()) {
+                System.err.println("Failed to create: " + fullPath.getAbsolutePath());
+                allCreated = false;
+                break;
+            }
+            finalTarget = fullPath;
+        }
+
+        if (allCreated && finalTarget != null) {
+            System.out.println("✅ Folder structure created under: " + folder.getAbsolutePath());
+            return finalTarget;
+        } else {
+            System.err.println("❌ Failed to create full structure.");
+            return null;
+        }
     }
 }
