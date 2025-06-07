@@ -1,37 +1,43 @@
 package util;
 
 import java.io.File;
-import java.util.Properties;
+import java.util.*;
 
 public class FolderBuilder {
 
-    public static boolean createFolderStructures(String basePath, Properties props) {
+    /**
+     * Creates folder structures for both 'main' and 'test' based on config,
+     * and returns a map with keys like "src/templates", "test/stubs" pointing to their full paths.
+     */
+    public static Map<String, File> createFolderStructures(String basePath, Properties props) {
+        Map<String, File> result = new LinkedHashMap<>();
+
         try {
-            String projectName = getRequiredProp(props, "projectName");
-            String packageProp = getRequiredProp(props, "randomPackage");
-            String mainBaseProp = getRequiredProp(props, "mainBaseFolders");
-            String testBaseProp = getRequiredProp(props, "testBaseFolders");
-            String mainLast = getRequiredProp(props, "mainLastFolders");
-            String testLast = getRequiredProp(props, "testLastFolders");
+            String projectName     = getRequiredProp(props, "projectName");
+            String packageProp     = getRequiredProp(props, "randomPackage");
+            String mainBaseProp    = getRequiredProp(props, "mainBaseFolders");
+            String testBaseProp    = getRequiredProp(props, "testBaseFolders");
+            String mainLast        = getRequiredProp(props, "mainLastFolders");
+            String testLast        = getRequiredProp(props, "testLastFolders");
 
-            String[] packageParts = packageProp.split("\\.");
-            String[] mainBaseFolders = mainBaseProp.split(",");
-            String[] testBaseFolders = testBaseProp.split(",");
-            String[] mainLastFolders = mainLast.split(",");
-            String[] testLastFolders = testLast.split(",");
+            String[] packageParts      = packageProp.split("\\.");
+            String[] mainBaseFolders   = mainBaseProp.split(",");
+            String[] testBaseFolders   = testBaseProp.split(",");
+            String[] mainLastFolders   = mainLast.split(",");
+            String[] testLastFolders   = testLast.split(",");
 
-            boolean mainSuccess = buildPath(basePath, mainBaseFolders, packageParts, mainLastFolders, projectName);
-            boolean testSuccess = buildPath(basePath, testBaseFolders, packageParts, testLastFolders, projectName);
+            // Build main and test folders
+            result.putAll(buildPath(basePath, mainBaseFolders, packageParts, mainLastFolders, projectName));
+            result.putAll(buildPath(basePath, testBaseFolders, packageParts, testLastFolders, projectName));
 
-            return mainSuccess && testSuccess;
         } catch (IllegalArgumentException e) {
-            System.err.println("❌ Configuration Error: " + e.getMessage());
-            return false;
+            System.err.println("❌ Configuration error: " + e.getMessage());
         } catch (Exception e) {
-            System.err.println("❌ Unexpected Error: " + e.getMessage());
+            System.err.println("❌ Unexpected error: " + e.getMessage());
             e.printStackTrace();
-            return false;
         }
+
+        return result;
     }
 
     private static String getRequiredProp(Properties props, String key) {
@@ -42,31 +48,51 @@ public class FolderBuilder {
         return val.trim();
     }
 
-    private static boolean buildPath(String basePath, String[] baseFolders, String[] packageParts, String[] lastFolders, String projectName) {
-        File base = new File(basePath);
+    private static Map<String, File> buildPath(
+        String basePath,
+        String[] baseFolders,
+        String[] packageParts,
+        String[] lastFolders,
+        String projectName
+    ) {
+        Map<String, File> createdPaths = new LinkedHashMap<>();
 
+        // e.g., src/main → key = "src/templates", etc.
+        String baseKey = String.join("/", Arrays.stream(baseFolders).map(String::trim).toArray(String[]::new));
+
+        // Start from basePath/projectName
+        File base = new File(basePath, projectName);
+
+        // Append base folders like src/main or src/test
         for (String folder : baseFolders) {
             base = new File(base, folder.trim());
         }
 
+        // Append package structure
         for (String part : packageParts) {
             base = new File(base, part.trim());
         }
 
-        boolean success = true;
-
+        // For each last folder, add projectName and create full path
         for (String last : lastFolders) {
-            File full = new File(base, last.trim() + File.separator + projectName);
-            if (full.exists()) {
-                System.out.println("ℹ️ Already exists: " + full.getAbsolutePath());
-            } else if (full.mkdirs()) {
-                System.out.println("✅ Created: " + full.getAbsolutePath());
+            String cleanLast = last.trim();
+            File full = new File(base, cleanLast + File.separator + projectName);
+            String key = baseKey + "/" + cleanLast;
+
+            if (!full.exists()) {
+                if (full.mkdirs()) {
+                    System.out.println("✅ Created: " + full.getAbsolutePath());
+                } else {
+                    System.err.println("❌ Failed to create: " + full.getAbsolutePath());
+                    continue;
+                }
             } else {
-                System.err.println("❌ Failed to create: " + full.getAbsolutePath());
-                success = false;
+                System.out.println("ℹ️ Already exists: " + full.getAbsolutePath());
             }
+
+            createdPaths.put(key, full);
         }
 
-        return success;
+        return createdPaths;
     }
 }
