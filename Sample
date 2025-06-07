@@ -1,3 +1,11 @@
+projectName=OrderProcessor
+randomPackage=jp.co.neofirst.api.products
+mainBaseFolders=src,main
+testBaseFolders=src,test
+mainLastFolders=templates,generated
+testLastFolders=testcases,stubs
+
+
 package util;
 
 import java.io.File;
@@ -5,54 +13,57 @@ import java.util.Properties;
 
 public class FolderBuilder {
 
-    public static File createFolderStructure(String basePath, Properties props) {
-        String lastFoldersProp = props.getProperty("lastFolders");
+    public static void createFolderStructures(String basePath, Properties props) {
         String packageProp = props.getProperty("randomPackage");
-        String baseFoldersProp = props.getProperty("baseFolders");
         String projectName = props.getProperty("projectName");
 
-        if (lastFoldersProp == null || packageProp == null || baseFoldersProp == null || projectName == null) {
-            System.err.println("Missing one or more required properties: projectName, baseFolders, randomPackage, lastFolders");
-            return null;
+        String mainBaseProp = props.getProperty("mainBaseFolders");
+        String testBaseProp = props.getProperty("testBaseFolders");
+        String mainLast = props.getProperty("mainLastFolders");
+        String testLast = props.getProperty("testLastFolders");
+
+        if (packageProp == null || projectName == null ||
+            mainBaseProp == null || testBaseProp == null ||
+            mainLast == null || testLast == null) {
+
+            System.err.println("❌ Missing one or more required properties.");
+            return;
         }
 
-        String[] baseFolders = baseFoldersProp.split(",");
         String[] packageParts = packageProp.split("\\.");
-        String[] lastFolders = lastFoldersProp.split(",");
+        String[] mainBaseFolders = mainBaseProp.split(",");
+        String[] testBaseFolders = testBaseProp.split(",");
+        String[] mainLastFolders = mainLast.split(",");
+        String[] testLastFolders = testLast.split(",");
 
-        // Start with basePath
-        File folder = new File(basePath);
+        // Build 'main' folder structure
+        buildPath(basePath, mainBaseFolders, packageParts, mainLastFolders, projectName);
 
-        // Append base folders: e.g., src/main
-        for (String base : baseFolders) {
-            folder = new File(folder, base.trim());
+        // Build 'test' folder structure
+        buildPath(basePath, testBaseFolders, packageParts, testLastFolders, projectName);
+    }
+
+    private static void buildPath(String basePath, String[] baseFolders, String[] packageParts, String[] lastFolders, String projectName) {
+        File base = new File(basePath);
+
+        // Append base folders (e.g., src, main or src, test)
+        for (String folder : baseFolders) {
+            base = new File(base, folder.trim());
         }
 
-        // Append package folders: e.g., jp/co/neofirst/api/salesname
+        // Append package folders
         for (String part : packageParts) {
-            folder = new File(folder, part.trim());
+            base = new File(base, part.trim());
         }
 
-        boolean allCreated = true;
-        File finalTarget = null;
-
-        // Append last folders and project name
+        // Create last folders + projectName
         for (String last : lastFolders) {
-            File fullPath = new File(folder, last.trim() + File.separator + projectName);
-            if (!fullPath.mkdirs()) {
-                System.err.println("Failed to create: " + fullPath.getAbsolutePath());
-                allCreated = false;
-                break;
+            File full = new File(base, last.trim() + File.separator + projectName);
+            if (full.mkdirs()) {
+                System.out.println("✅ Created: " + full.getAbsolutePath());
+            } else {
+                System.err.println("⚠️ Could not create: " + full.getAbsolutePath());
             }
-            finalTarget = fullPath;
-        }
-
-        if (allCreated && finalTarget != null) {
-            System.out.println("✅ Folder structure created under: " + folder.getAbsolutePath());
-            return finalTarget;
-        } else {
-            System.err.println("❌ Failed to create full structure.");
-            return null;
         }
     }
 }
