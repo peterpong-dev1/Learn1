@@ -5,10 +5,6 @@ import java.util.*;
 
 public class FolderBuilder {
 
-    /**
-     * Creates folder structures for both 'main' and 'test' based on config,
-     * and returns a map with keys like "src/templates", "test/stubs" pointing to their full paths.
-     */
     public static Map<String, File> createFolderStructures(String basePath, Properties props) {
         Map<String, File> result = new LinkedHashMap<>();
 
@@ -26,9 +22,9 @@ public class FolderBuilder {
             String[] mainLastFolders   = mainLast.split(",");
             String[] testLastFolders   = testLast.split(",");
 
-            // Build main and test folders
-            result.putAll(buildPath(basePath, mainBaseFolders, packageParts, mainLastFolders, projectName));
-            result.putAll(buildPath(basePath, testBaseFolders, packageParts, testLastFolders, projectName));
+            // ✅ These will now create "main/<last>" and "test/<last>" keys
+            result.putAll(buildPath("main", basePath, mainBaseFolders, packageParts, mainLastFolders, projectName));
+            result.putAll(buildPath("test", basePath, testBaseFolders, packageParts, testLastFolders, projectName));
 
         } catch (IllegalArgumentException e) {
             System.err.println("❌ Configuration error: " + e.getMessage());
@@ -49,6 +45,7 @@ public class FolderBuilder {
     }
 
     private static Map<String, File> buildPath(
+        String type,
         String basePath,
         String[] baseFolders,
         String[] packageParts,
@@ -56,9 +53,6 @@ public class FolderBuilder {
         String projectName
     ) {
         Map<String, File> createdPaths = new LinkedHashMap<>();
-
-        // e.g., src/main → key = "src/templates", etc.
-        String baseKey = String.join("/", Arrays.stream(baseFolders).map(String::trim).toArray(String[]::new));
 
         // Start from basePath/projectName
         File base = new File(basePath, projectName);
@@ -77,7 +71,8 @@ public class FolderBuilder {
         for (String last : lastFolders) {
             String cleanLast = last.trim();
             File full = new File(base, cleanLast + File.separator + projectName);
-            String key = baseKey + "/" + cleanLast;
+
+            String key = type + "/" + cleanLast; // ✅ e.g., "main/templates"
 
             if (!full.exists()) {
                 if (full.mkdirs()) {
