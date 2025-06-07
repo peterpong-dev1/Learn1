@@ -1,11 +1,3 @@
-projectName=OrderProcessor
-randomPackage=jp.co.neofirst.api.products
-mainBaseFolders=src,main
-testBaseFolders=src,test
-mainLastFolders=templates,generated
-testLastFolders=testcases,stubs
-
-
 package util;
 
 import java.io.File;
@@ -13,57 +5,68 @@ import java.util.Properties;
 
 public class FolderBuilder {
 
-    public static void createFolderStructures(String basePath, Properties props) {
-        String packageProp = props.getProperty("randomPackage");
-        String projectName = props.getProperty("projectName");
+    public static boolean createFolderStructures(String basePath, Properties props) {
+        try {
+            String projectName = getRequiredProp(props, "projectName");
+            String packageProp = getRequiredProp(props, "randomPackage");
+            String mainBaseProp = getRequiredProp(props, "mainBaseFolders");
+            String testBaseProp = getRequiredProp(props, "testBaseFolders");
+            String mainLast = getRequiredProp(props, "mainLastFolders");
+            String testLast = getRequiredProp(props, "testLastFolders");
 
-        String mainBaseProp = props.getProperty("mainBaseFolders");
-        String testBaseProp = props.getProperty("testBaseFolders");
-        String mainLast = props.getProperty("mainLastFolders");
-        String testLast = props.getProperty("testLastFolders");
+            String[] packageParts = packageProp.split("\\.");
+            String[] mainBaseFolders = mainBaseProp.split(",");
+            String[] testBaseFolders = testBaseProp.split(",");
+            String[] mainLastFolders = mainLast.split(",");
+            String[] testLastFolders = testLast.split(",");
 
-        if (packageProp == null || projectName == null ||
-            mainBaseProp == null || testBaseProp == null ||
-            mainLast == null || testLast == null) {
+            boolean mainSuccess = buildPath(basePath, mainBaseFolders, packageParts, mainLastFolders, projectName);
+            boolean testSuccess = buildPath(basePath, testBaseFolders, packageParts, testLastFolders, projectName);
 
-            System.err.println("❌ Missing one or more required properties.");
-            return;
+            return mainSuccess && testSuccess;
+        } catch (IllegalArgumentException e) {
+            System.err.println("❌ Configuration Error: " + e.getMessage());
+            return false;
+        } catch (Exception e) {
+            System.err.println("❌ Unexpected Error: " + e.getMessage());
+            e.printStackTrace();
+            return false;
         }
-
-        String[] packageParts = packageProp.split("\\.");
-        String[] mainBaseFolders = mainBaseProp.split(",");
-        String[] testBaseFolders = testBaseProp.split(",");
-        String[] mainLastFolders = mainLast.split(",");
-        String[] testLastFolders = testLast.split(",");
-
-        // Build 'main' folder structure
-        buildPath(basePath, mainBaseFolders, packageParts, mainLastFolders, projectName);
-
-        // Build 'test' folder structure
-        buildPath(basePath, testBaseFolders, packageParts, testLastFolders, projectName);
     }
 
-    private static void buildPath(String basePath, String[] baseFolders, String[] packageParts, String[] lastFolders, String projectName) {
+    private static String getRequiredProp(Properties props, String key) {
+        String val = props.getProperty(key);
+        if (val == null || val.trim().isEmpty()) {
+            throw new IllegalArgumentException("Missing required property: " + key);
+        }
+        return val.trim();
+    }
+
+    private static boolean buildPath(String basePath, String[] baseFolders, String[] packageParts, String[] lastFolders, String projectName) {
         File base = new File(basePath);
 
-        // Append base folders (e.g., src, main or src, test)
         for (String folder : baseFolders) {
             base = new File(base, folder.trim());
         }
 
-        // Append package folders
         for (String part : packageParts) {
             base = new File(base, part.trim());
         }
 
-        // Create last folders + projectName
+        boolean success = true;
+
         for (String last : lastFolders) {
             File full = new File(base, last.trim() + File.separator + projectName);
-            if (full.mkdirs()) {
+            if (full.exists()) {
+                System.out.println("ℹ️ Already exists: " + full.getAbsolutePath());
+            } else if (full.mkdirs()) {
                 System.out.println("✅ Created: " + full.getAbsolutePath());
             } else {
-                System.err.println("⚠️ Could not create: " + full.getAbsolutePath());
+                System.err.println("❌ Failed to create: " + full.getAbsolutePath());
+                success = false;
             }
         }
+
+        return success;
     }
 }
