@@ -1,93 +1,47 @@
 package util;
 
-import java.io.File;
-import java.util.*;
+import java.io.*;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.*;
+import java.util.Map;
 
-public class FolderBuilder {
+public class TemplateProcessor {
 
-    public static Map<String, File> createFolderStructures(String basePath, Properties props) {
-        Map<String, File> result = new LinkedHashMap<>();
-
-        try {
-            String projectName     = getRequiredProp(props, "projectName");
-            String packageProp     = getRequiredProp(props, "randomPackage");
-            String mainBaseProp    = getRequiredProp(props, "mainBaseFolders");
-            String testBaseProp    = getRequiredProp(props, "testBaseFolders");
-            String mainLast        = getRequiredProp(props, "mainLastFolders");
-            String testLast        = getRequiredProp(props, "testLastFolders");
-
-            String[] packageParts      = packageProp.split("\\.");
-            String[] mainBaseFolders   = mainBaseProp.split(",");
-            String[] testBaseFolders   = testBaseProp.split(",");
-            String[] mainLastFolders   = mainLast.split(",");
-            String[] testLastFolders   = testLast.split(",");
-
-            // ✅ These will now create "main/<last>" and "test/<last>" keys
-            result.putAll(buildPath("main", basePath, mainBaseFolders, packageParts, mainLastFolders, projectName));
-            result.putAll(buildPath("test", basePath, testBaseFolders, packageParts, testLastFolders, projectName));
-
-        } catch (IllegalArgumentException e) {
-            System.err.println("❌ Configuration error: " + e.getMessage());
-        } catch (Exception e) {
-            System.err.println("❌ Unexpected error: " + e.getMessage());
-            e.printStackTrace();
-        }
-
-        return result;
-    }
-
-    private static String getRequiredProp(Properties props, String key) {
-        String val = props.getProperty(key);
-        if (val == null || val.trim().isEmpty()) {
-            throw new IllegalArgumentException("Missing required property: " + key);
-        }
-        return val.trim();
-    }
-
-    private static Map<String, File> buildPath(
-        String type,
-        String basePath,
-        String[] baseFolders,
-        String[] packageParts,
-        String[] lastFolders,
-        String projectName
+    /**
+     * Reads a template file, replaces placeholders, and writes to output.
+     *
+     * @param templateFilePath The path to the template file (e.g., templates/ControllerTemplate.java)
+     * @param replacements     A map of placeholder -> value (e.g., {{className}} -> CustomerController)
+     * @param outputDir        The target folder where the file will be created
+     * @param outputFileName   The name of the final output file (e.g., CustomerController.java)
+     */
+    public static void processTemplate(
+        Path templateFilePath,
+        Map<String, String> replacements,
+        Path outputDir,
+        String outputFileName
     ) {
-        Map<String, File> createdPaths = new LinkedHashMap<>();
+        try {
+            // Read template content
+            String content = Files.readString(templateFilePath, StandardCharsets.UTF_8);
 
-        // Start from basePath/projectName
-        File base = new File(basePath, projectName);
-
-        // Append base folders like src/main or src/test
-        for (String folder : baseFolders) {
-            base = new File(base, folder.trim());
-        }
-
-        // Append package structure
-        for (String part : packageParts) {
-            base = new File(base, part.trim());
-        }
-
-        // For each last folder, add projectName and create full path
-        for (String last : lastFolders) {
-            String cleanLast = last.trim();
-            File full = new File(base, cleanLast + File.separator + projectName);
-
-            String key = type + "/" + cleanLast; // ✅ e.g., "main/templates"
-
-            if (!full.exists()) {
-                if (full.mkdirs()) {
-                    System.out.println("✅ Created: " + full.getAbsolutePath());
-                } else {
-                    System.err.println("❌ Failed to create: " + full.getAbsolutePath());
-                    continue;
-                }
-            } else {
-                System.out.println("ℹ️ Already exists: " + full.getAbsolutePath());
+            // Apply all replacements
+            for (Map.Entry<String, String> entry : replacements.entrySet()) {
+                content = content.replace(entry.getKey(), entry.getValue());
             }
 
-            createdPaths.put(key, full);
-        }
+            // Ensure output folder exists
+            Files.createDirectories(outputDir);
 
-        return createdPaths;
+            // Write final content to output file
+            Path outputFile = outputDir.resolve(outputFileName);
+            Files.writeString(outputFile, content, StandardCharsets.UTF_8);
+
+            System.out.println("✅ Generated: " + outputFile.toAbsolutePath());
+
+        } catch (IOException e) {
+            System.err.println("❌ Error processing template: " + templateFilePath);
+            e.printStackTrace();
+        }
     }
 }
