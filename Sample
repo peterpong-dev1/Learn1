@@ -1,47 +1,46 @@
-package util;
-
-import java.io.*;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
-import java.util.Map;
+import java.util.List;
 
-public class TemplateProcessor {
+public class FileWriterUtil {
 
     /**
-     * Reads a template file, replaces placeholders, and writes to output.
+     * Writes a list of strings to a file, each string on a new line.
      *
-     * @param templateFilePath The path to the template file (e.g., templates/ControllerTemplate.java)
-     * @param replacements     A map of placeholder -> value (e.g., {{className}} -> CustomerController)
-     * @param outputDir        The target folder where the file will be created
-     * @param outputFileName   The name of the final output file (e.g., CustomerController.java)
+     * @param outputPath The full path to the file to be created or overwritten.
+     * @param lines      List of strings to write.
      */
-    public static void processTemplate(
-        Path templateFilePath,
-        Map<String, String> replacements,
-        Path outputDir,
-        String outputFileName
-    ) {
+    public static void writeLinesToFile(Path outputPath, List<String> lines) {
         try {
-            // Read template content
-            String content = Files.readString(templateFilePath, StandardCharsets.UTF_8);
+            // Ensure parent directories exist
+            Files.createDirectories(outputPath.getParent());
 
-            // Apply all replacements
-            for (Map.Entry<String, String> entry : replacements.entrySet()) {
-                content = content.replace(entry.getKey(), entry.getValue());
-            }
+            // Write lines to file using UTF-8, overwriting if file exists
+            Files.write(outputPath, lines, StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
 
-            // Ensure output folder exists
-            Files.createDirectories(outputDir);
-
-            // Write final content to output file
-            Path outputFile = outputDir.resolve(outputFileName);
-            Files.writeString(outputFile, content, StandardCharsets.UTF_8);
-
-            System.out.println("✅ Generated: " + outputFile.toAbsolutePath());
-
+            System.out.println("✅ File written to: " + outputPath.toAbsolutePath());
         } catch (IOException e) {
-            System.err.println("❌ Error processing template: " + templateFilePath);
+            System.err.println("❌ Failed to write file: " + outputPath);
             e.printStackTrace();
         }
+    }
+}
+
+import java.nio.file.Path;
+import java.util.List;
+
+public class MyMain {
+    public static void main(String[] args) {
+        List<String> points = List.of(
+            "1. Load properties from config",
+            "2. Generate folder structure",
+            "3. Process templates with replacements",
+            "4. Write generated code files"
+        );
+
+        Path output = Path.of("output", "generation_steps.txt");
+
+        FileWriterUtil.writeLinesToFile(output, points);
     }
 }
