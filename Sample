@@ -1,46 +1,80 @@
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.*;
-import java.util.List;
+AgencyDTO agencyDTO = new AgencyDTO();
+agencyDTO.setId("AG001");
+agencyDTO.setAssociationRegistrationNumber("REG12345");
+agencyDTO.setAgencyNumber("AGENCY001");
+agencyDTO.setName("Neo Agency");
+agencyDTO.setNamePictoricKanjiFlag(true);
+agencyDTO.setNamePictoricKanjiCb(false);
+agencyDTO.setNameNonStandardKanjiFlag(true);
+agencyDTO.setAbbreviatedName("Neo");
+agencyDTO.setAbbreviatedNamePictoricKanjiFlag(false);
+agencyDTO.setAbbreviatedNamePictoricKanjiCb(false);
+agencyDTO.setAbbreviatedNameNonStandardKanjiFlag(false);
+agencyDTO.setNameKana("ネオ");
+agencyDTO.setAbbreviatedNameKana("ネオ略");
+agencyDTO.setAgencyHeadOfficeNumber("HO001");
+agencyDTO.setAgencyHeadOfficeType("Main");
+agencyDTO.setFinancialInstitutionCode("0001");
+agencyDTO.setAgencyAttribute("AttributeA");
+agencyDTO.setBankType("BankX");
+agencyDTO.setRegionalSpecialExceptionType("TypeX");
+agencyDTO.setAgencyOutsourceType("Outsourced");
+agencyDTO.setAgencyQualificationType("Qualified");
+agencyDTO.setPartyType("Individual");
+agencyDTO.setConsignmentCancelDate("2025-06-30");
+agencyDTO.setVariableAnnuitySalesConsignmentDate("2024-04-01");
+agencyDTO.setLastModifiedDate("2025-06-18");
 
-public class FileWriterUtil {
+NewBusinessArrangementDTO nba = new NewBusinessArrangementDTO();
+nba.setDepartmentName("Sales");
+AgencyPhoneNumberDTO phone = new AgencyPhoneNumberDTO();
+phone.setType("mobile");
+phone.setContactType("home");
+phone.setNumber1("08012345678");
+phone.setNumber2("08023456789");
+phone.setNumber3("08034567890");
+nba.setPhoneNumber(List.of(phone));
+agencyDTO.setNewBusinessArrangement(nba);
 
-    /**
-     * Writes a list of strings to a file, each string on a new line.
-     *
-     * @param outputPath The full path to the file to be created or overwritten.
-     * @param lines      List of strings to write.
-     */
-    public static void writeLinesToFile(Path outputPath, List<String> lines) {
-        try {
-            // Ensure parent directories exist
-            Files.createDirectories(outputPath.getParent());
+CooperativeSalesDTO coop = new CooperativeSalesDTO();
+coop.setAgencyNumber("COOP001");
+coop.setCurrentRepresentativeAgencySplitRatio("60");
+coop.setPreviousRepresentativeAgencySplitRatio("40");
+coop.setSplitRatioEffectiveDate("2025-01-01");
+agencyDTO.setCooperativeSales(List.of(coop));
 
-            // Write lines to file using UTF-8, overwriting if file exists
-            Files.write(outputPath, lines, StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+PayeeDTO payee = new PayeeDTO();
+payee.setFinancialInstitutionCode("0009");
+payee.setFinancialInstitutionBranchCode("710");
+payee.setAccountCategory("2");
+payee.setAccountNumber("1234567");
+payee.setAccountHolder("ネオ セイメイ");
 
-            System.out.println("✅ File written to: " + outputPath.toAbsolutePath());
-        } catch (IOException e) {
-            System.err.println("❌ Failed to write file: " + outputPath);
-            e.printStackTrace();
-        }
-    }
-}
+SendStatementsToDTO sendTo = new SendStatementsToDTO();
+sendTo.setAddressCode("ADDR001");
+sendTo.setPostalCode("1000001");
+sendTo.setAddressAfterTownArea("Chiyoda");
+sendTo.setAddressDetails("Tokyo HQ");
+sendTo.setAddressKanaAfterTownArea("ちよだ");
+sendTo.setAddressKanaDetails("とうきょうほんしゃ");
+sendTo.setDepartmentName("Admin");
+AgencyPhoneNumberDTO phone2 = new AgencyPhoneNumberDTO();
+phone2.setType("fax");
+phone2.setContactType("office");
+phone2.setNumber1("0312345678");
+phone2.setNumber2("0312345679");
+phone2.setNumber3("0312345680");
+sendTo.setPhoneNumber(List.of(phone2));
+sendTo.setPayee(List.of(payee));
 
-import java.nio.file.Path;
-import java.util.List;
-
-public class MyMain {
-    public static void main(String[] args) {
-        List<String> points = List.of(
-            "1. Load properties from config",
-            "2. Generate folder structure",
-            "3. Process templates with replacements",
-            "4. Write generated code files"
-        );
-
-        Path output = Path.of("output", "generation_steps.txt");
-
-        FileWriterUtil.writeLinesToFile(output, points);
-    }
-}
+CommissionsDTO commissions = new CommissionsDTO();
+commissions.setCurrencyRateExchange("1.1");
+commissions.setInboundPayment(true);
+commissions.setRenewalCommissionType("Annual");
+commissions.setCommissionStatementDispatchType("Email");
+commissions.setCommissionPaymentPeriod("Monthly");
+commissions.setCommissionPaymentMethodCode("METHOD01");
+commissions.setCommissionPaymentCurrencyType("JPY");
+commissions.setCommissionPaymentApplicableYearMonth("202506");
+commissions.setSendStatementsTo(sendTo);
+agencyDTO.setCommissions(commissions);
