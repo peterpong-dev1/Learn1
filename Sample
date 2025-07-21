@@ -1,55 +1,29 @@
-public PaginatedResult<AgencyOfficesResponseEntity> searchWithDynamicQueryAndPaginated(
-        String continuationToken,
-        int pageSize) {
+@startuml
+actor Client
+participant "Controller" as C
+participant "Service" as S
+participant "Repository" as R
+database "Cosmos DB" as DB
 
-    logger.info("(QUERY START) Searching to get ALL Agency Offices");
+== First Page Request ==
 
-    StringBuilder queryBuilder = new StringBuilder(BASE_QUERY); // e.g. SELECT * FROM c WHERE ...
-    List<SqlParameter> parameters = new ArrayList<>();
+Client -> C : GET /office?pageSize=10
+C -> S : getAllAgencyOffices(null, 10)
+S -> R : searchWithPagination(null, 10)
+R -> DB : queryItems(..., continuationToken=null)
+DB --> R : first 10 items + continuationToken
+R --> S : PaginatedResult(data, token)
+S -> C : Set headers (X-Continuation-Token)
+S --> C : data (List<DTO>)
 
-    PaginatedResult<AgencyOfficesResponseEntity> result;
+== Next Page Request ==
 
-    long queryStartTime = System.currentTimeMillis();
-    logger.info("Query to be executed: {}", queryBuilder);
-
-    try {
-        // Build SQL query spec
-        SqlQuerySpec querySpec = new SqlQuerySpec(queryBuilder.toString(), parameters);
-        logger.info("Executing query: {}", querySpec.getQueryText());
-
-        // Cosmos options
-        CosmosQueryRequestOptions options = new CosmosQueryRequestOptions();
-
-        // Execute paginated query
-        CosmosPagedIterable<AgencyOfficesResponseEntity> pagedIterable =
-                cosmosContainer.queryItems(querySpec, options, AgencyOfficesResponseEntity.class);
-
-        Iterator<FeedResponse<AgencyOfficesResponseEntity>> iterator =
-                pagedIterable.iterableByPage(continuationToken, pageSize).iterator();
-
-        if (!iterator.hasNext()) {
-            logger.info("No results for token '{}'", continuationToken);
-            return new PaginatedResult<>(Collections.emptyList(), null);
-        }
-
-        FeedResponse<AgencyOfficesResponseEntity> page = iterator.next();
-        List<AgencyOfficesResponseEntity> entities = page.getResults();
-        String nextToken = page.getContinuationToken();
-
-        logger.info("Query returned {} results, next token: {}", entities.size(), nextToken);
-        Utils.printListAsJson(entities, "Entity results in Repository");
-
-        result = new PaginatedResult<>(entities, nextToken);
-
-    } catch (Exception e) {
-        logger.error("Unexpected error during query execution: {}", e.getMessage(), e);
-        throw e;
-    }
-
-    logger.info("(QUERY END) Results: {}, Time: {}ms",
-            result.getItems().size(), System.currentTimeMillis() - queryStartTime);
-
-    logger.debug("Raw database response: {}", result.getItems());
-
-    return result;
-}
+Client -> C : GET /office?pageSize=10&continuationToken=abc123
+C -> S : getAllAgencyOffices("abc123", 10)
+S -> R : searchWithPagination("abc123", 10)
+R -> DB : queryItems(..., continuationToken=abc123)
+DB --> R : next 10 items + nextToken
+R --> S : PaginatedResult(data, nextToken)
+S -> C : Set new token in headers
+S --> C : data (List<DTO>)
+@enduml
