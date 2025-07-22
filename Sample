@@ -1,29 +1,57 @@
-@startuml
-actor Client
-participant "Controller" as C
-participant "Service" as S
-participant "Repository" as R
-database "Cosmos DB" as DB
+public PaginatedResultInternalDTO<AgencyOfficesResponseEntity> searchWithDynamicQueryAndPagination(
+        int page, int pageSize, String sortBy, String sortDir) {
 
-== First Page Request ==
+    logger.info("QUERY START - Offset Pagination | Page={}, PageSize={}, SortBy={}, SortDir={}", page, pageSize, sortBy, sortDir);
 
-Client -> C : GET /office?pageSize=10
-C -> S : getAllAgencyOffices(null, 10)
-S -> R : searchWithPagination(null, 10)
-R -> DB : queryItems(..., continuationToken=null)
-DB --> R : first 10 items + continuationToken
-R --> S : PaginatedResult(data, token)
-S -> C : Set headers (X-Continuation-Token)
-S --> C : data (List<DTO>)
+    long queryStartTime = System.currentTimeMillis();
+    List<SqlParameter> parameters = new ArrayList<>();
+    List<AgencyOfficesResponseEntity> results = new ArrayList<>();
+    double ruCharge = 0;
 
-== Next Page Request ==
+    // Validate and calculate offset
+    int offset = page * pageSize;
 
-Client -> C : GET /office?pageSize=10&continuationToken=abc123
-C -> S : getAllAgencyOffices("abc123", 10)
-S -> R : searchWithPagination("abc123", 10)
-R -> DB : queryItems(..., continuationToken=abc123)
-DB --> R : next 10 items + nextToken
-R --> S : PaginatedResult(data, nextToken)
-S -> C : Set new token in headers
-S --> C : data (List<DTO>)
-@enduml
+    // Build base query
+    StringBuilder queryBuilder = new StringBuilder("SELECT * FROM c WHERE 1=1 ");
+
+    // Sorting (validate field and direction outside this method if needed)
+    if (StringUtils.isNotBlank(sortBy) && StringUtils.isNotBlank(sortDir)) {
+        queryBuilder.append("ORDER BY c.").append(sortBy).append(" ").append(sortDir).append(" ");
+    }
+
+    // Add OFFSET and LIMIT
+    queryBuilder.append("OFFSET ").append(offset).append(" LIMIT ").append(pageSize);
+
+    SqlQuerySpec querySpec = new SqlQuerySpec(queryBuilder.toString(), parameters);
+
+    // Cosmos query options
+    CosmosQueryRequestOptions options = new CosmosQueryRequestOptions();
+
+    logger.debug("Executing Cosmos DB query: {}", querySpec.getQueryText());
+
+    try {
+        Iterator<FeedResponse<AgencyOfficesResponseEntity>> iterator = cosmosContainer
+                .queryItems(querySpec, options, AgencyOfficesResponseEntity.class)
+                .iterableByPage(pageSize)  // ✅ Required to ensure correct page size
+                .iterator();
+
+        if (iterator.hasNext()) {
+            FeedResponse<AgencyOfficesResponseEntity> response = iterator.next();
+            results = response.getResults();
+            ruCharge = response.getRequestCharge();
+        } else {
+            logger.warn("No results found for offset {} (page {})", offset, page);
+        }
+
+        long totalTime = System.currentTimeMillis() - queryStartTime;
+        logger.info("QUERY END - Items: {}, RU: {}, Time: {} ms", results.size(), ruCharge, totalTime);
+
+        Utils.printListAsJson(results, "Entity results in Repository");
+
+    } catch (Exception e) {
+        logger.error("Unexpected error during offset pagination: {}", e.getMessage(), e);
+        throw e;
+    }
+
+    return new PaginatedResultInternalDTO<>(results);
+}
