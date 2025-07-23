@@ -1,57 +1,59 @@
-public PaginatedResultInternalDTO<AgencyOfficesResponseEntity> searchWithDynamicQueryAndPagination(
-        int page, int pageSize, String sortBy, String sortDir) {
+public PaginatedResultInternalDTO<AgencyOfficesResponseEntity> simulateTokenPagination(
+        int targetPage, int pageSize, String sortBy, String sortDir) {
 
-    logger.info("QUERY START - Offset Pagination | Page={}, PageSize={}, SortBy={}, SortDir={}", page, pageSize, sortBy, sortDir);
+    long totalStartTime = System.currentTimeMillis();
+    double totalRU = 0.0;
 
-    long queryStartTime = System.currentTimeMillis();
-    List<SqlParameter> parameters = new ArrayList<>();
-    List<AgencyOfficesResponseEntity> results = new ArrayList<>();
-    double ruCharge = 0;
+    String continuationToken = null;
+    PaginatedResultInternalDTO<AgencyOfficesResponseEntity> finalPage = null;
 
-    // Validate and calculate offset
-    int offset = page * pageSize;
+    for (int currentPage = 1; currentPage <= targetPage; currentPage++) {
+        SqlQuerySpec querySpec = buildQuerySpec(sortBy, sortDir); // your dynamic query logic
+        CosmosQueryRequestOptions options = new CosmosQueryRequestOptions();
 
-    // Build base query
-    StringBuilder queryBuilder = new StringBuilder("SELECT * FROM c WHERE 1=1 ");
+        long pageStartTime = System.currentTimeMillis(); // ⏱ Start time for this page
 
-    // Sorting (validate field and direction outside this method if needed)
-    if (StringUtils.isNotBlank(sortBy) && StringUtils.isNotBlank(sortDir)) {
-        queryBuilder.append("ORDER BY c.").append(sortBy).append(" ").append(sortDir).append(" ");
-    }
-
-    // Add OFFSET and LIMIT
-    queryBuilder.append("OFFSET ").append(offset).append(" LIMIT ").append(pageSize);
-
-    SqlQuerySpec querySpec = new SqlQuerySpec(queryBuilder.toString(), parameters);
-
-    // Cosmos query options
-    CosmosQueryRequestOptions options = new CosmosQueryRequestOptions();
-
-    logger.debug("Executing Cosmos DB query: {}", querySpec.getQueryText());
-
-    try {
         Iterator<FeedResponse<AgencyOfficesResponseEntity>> iterator = cosmosContainer
                 .queryItems(querySpec, options, AgencyOfficesResponseEntity.class)
-                .iterableByPage(pageSize)  // ✅ Required to ensure correct page size
+                .iterableByPage(continuationToken, pageSize)
                 .iterator();
 
-        if (iterator.hasNext()) {
-            FeedResponse<AgencyOfficesResponseEntity> response = iterator.next();
-            results = response.getResults();
-            ruCharge = response.getRequestCharge();
-        } else {
-            logger.warn("No results found for offset {} (page {})", offset, page);
+        if (!iterator.hasNext()) {
+            logger.warn("No more data available at page {}", currentPage);
+            break;
         }
 
-        long totalTime = System.currentTimeMillis() - queryStartTime;
-        logger.info("QUERY END - Items: {}, RU: {}, Time: {} ms", results.size(), ruCharge, totalTime);
+        FeedResponse<AgencyOfficesResponseEntity> page = iterator.next();
+        continuationToken = page.getContinuationToken();
+        double pageRU = page.getRequestCharge();
+        totalRU += pageRU;
 
-        Utils.printListAsJson(results, "Entity results in Repository");
+        long pageTime = System.currentTimeMillis() - pageStartTime;
 
-    } catch (Exception e) {
-        logger.error("Unexpected error during offset pagination: {}", e.getMessage(), e);
-        throw e;
+        logger.info("---- Page {} ----", currentPage);
+        logger.info("Items fetched: {}", page.getResults().size());
+        logger.info("Page RU: {}", pageRU);
+        logger.info("Page Time (ms): {}", pageTime);
+
+        if (currentPage == targetPage) {
+            finalPage = new PaginatedResultInternalDTO<>(
+                    page.getResults(),
+                    continuationToken
+            );
+        }
+
+        if (continuationToken == null) {
+            logger.warn("Reached end of data before reaching page {}", targetPage);
+            break;
+        }
     }
 
-    return new PaginatedResultInternalDTO<>(results);
+    long totalTime = System.currentTimeMillis() - totalStartTime;
+
+    logger.info("==== TOKEN PAGINATION SIMULATION COMPLETE ====");
+    logger.info("Target Page Reached: {}", targetPage);
+    logger.info("Total Time (ms): {}", totalTime);
+    logger.info("Total RU Consumed: {}", totalRU);
+
+    return finalPage != null ? finalPage : new PaginatedResultInternalDTO<>(Collections.emptyList(), null);
 }
