@@ -1,33 +1,63 @@
-public void simulateTokenPaginationPerformance(int targetPage, int pageSize, String sortBy, String sortDir) {
-    String continuationToken = null;
-    double totalRU = 0;
-    long totalStartTime = System.currentTimeMillis();
+public PaginatedResultInternalDTO<AgencyOfficesResponseEntity> searchWithDynamicQueryAndPagination(
+        String continuationToken, int pageSize, int targetPage, String sortBy, String sortDir) {
+
+    logger.info("(QUERY START) Token-based pagination simulation to reach page {}", targetPage);
+
+    StringBuilder queryBuilder = new StringBuilder(BASE_QUERY);
+    queryBuilder.append(SORT_CLAUSE)
+                .append(sortBy)
+                .append(" ")
+                .append(sortDir.toUpperCase());
+
+    List<SqlParameter> parameters = new ArrayList<>();
+    SqlQuerySpec querySpec = new SqlQuerySpec(queryBuilder.toString(), parameters);
 
     CosmosQueryRequestOptions options = new CosmosQueryRequestOptions();
+    PaginatedResultInternalDTO<AgencyOfficesResponseEntity> finalResult = null;
+
+    double totalRU = 0.0;
+    long totalStartTime = System.currentTimeMillis();
 
     for (int currentPage = 1; currentPage <= targetPage; currentPage++) {
         long pageStart = System.currentTimeMillis();
 
-        PaginatedResultInternalDTO<AgencyOfficesResponseEntity> page =
-                searchWithDynamicQueryAndPagination(continuationToken, pageSize, sortBy, sortDir, options);
+        CosmosPagedIterable<AgencyOfficesResponseEntity> pagedIterable = cosmosContainer
+                .queryItems(querySpec, options, AgencyOfficesResponseEntity.class);
 
-        continuationToken = page.getContinuationToken();
+        Iterator<FeedResponse<AgencyOfficesResponseEntity>> iterator = pagedIterable
+                .iterableByPage(continuationToken, pageSize)
+                .iterator();
 
-        // Optional: short-circuit if data ends before reaching target
-        if (page.getItems().isEmpty() || continuationToken == null) {
-            logger.warn("Reached end of data before page {}", currentPage);
+        if (!iterator.hasNext()) {
+            logger.warn("No results at page {}. Ending early.", currentPage);
             break;
         }
 
-        logger.info("Page {} => Results: {}, Time: {}ms", currentPage, page.getItems().size(),
-                (System.currentTimeMillis() - pageStart));
+        FeedResponse<AgencyOfficesResponseEntity> page = iterator.next();
+        continuationToken = page.getContinuationToken();
+        double ru = page.getRequestCharge();
+        totalRU += ru;
 
-        // Approx RU tracking (assuming you log or return RU per page — otherwise, you can estimate)
-        // Add a `getRuCharge()` to your DTO if needed for exact accumulation.
+        long pageTime = System.currentTimeMillis() - pageStart;
+
+        logger.info("Page {} fetched - Time: {} ms, RU: {}", currentPage, pageTime, ru);
+
+        if (currentPage == targetPage) {
+            finalResult = new PaginatedResultInternalDTO<>(page.getResults(), continuationToken);
+        }
+
+        if (continuationToken == null) {
+            logger.warn("No continuation token returned after page {}. Reached end of data.", currentPage);
+            break;
+        }
     }
 
-    logger.info("==== TOKEN PAGINATION PERFORMANCE ====");
-    logger.info("Pages Fetched: {}", targetPage);
-    logger.info("Total Time (ms): {}", System.currentTimeMillis() - totalStartTime);
-    logger.info("Total RU Consumed: {}", totalRU); // fill if exact tracking needed
+    long totalTime = System.currentTimeMillis() - totalStartTime;
+
+    logger.info("=== Token Pagination Simulation Complete ===");
+    logger.info("Target Page: {}", targetPage);
+    logger.info("Total Time (ms): {}", totalTime);
+    logger.info("Total RU Consumed: {}", totalRU);
+
+    return finalResult != null ? finalResult : new PaginatedResultInternalDTO<>(Collections.emptyList(), null);
 }
