@@ -1,35 +1,54 @@
-public List<YourEntity> getOffsetPage(CosmosContainer cosmosContainer, int offset, int limit) {
-    String query = String.format(
-        "SELECT * FROM c ORDER BY c.associationRegistrationNumber ASC OFFSET %d LIMIT %d", offset, limit
+@Test
+void testGetAgencyOffices_OffsetPagination_Success() throws Exception {
+    List<AgencyOfficesResponseDTO> mockOffices = List.of(
+        new AgencyOfficesResponseDTO("id1", "支店1", "担当者", "2025-07-14")
     );
 
-    SqlQuerySpec querySpec = new SqlQuerySpec(query);
-    CosmosQueryRequestOptions options = new CosmosQueryRequestOptions();
+    when(service.getAllAgencyOfficesService(eq(3), eq(6), eq("associationRegistrationNumber"), eq("ASC")))
+        .thenReturn(new PaginatedResultInternalDTO<>(mockOffices, null));
 
-    Iterator<FeedResponse<YourEntity>> iterator = cosmosContainer
-            .queryItems(querySpec, options, YourEntity.class)
-            .iterableByPage()
-            .iterator();
+    mockMvc.perform(get("/v1/agency/office")
+            .param("page", "3")
+            .param("limit", "6")
+            .param("sortBy", "associationRegistrationNumber")
+            .param("sortDir", "ASC")
+            .contentType(MediaType.APPLICATION_JSON))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$[0].id").value("id1"))
+        .andExpect(jsonPath("$[0].name").value("支店1"));
 
-    FeedResponse<YourEntity> response = null;
+    verify(service).getAllAgencyOfficesService(3, 6, "associationRegistrationNumber", "ASC");
+}
 
-    // Loop to skip empty pages (cross-partition scenario)
-    while (iterator.hasNext()) {
-        response = iterator.next();
-        if (!response.getResults().isEmpty()) {
-            break;
-        }
-    }
+@Test
+void testGetAgencyOffices_OffsetPagination_DefaultParams() throws Exception {
+    when(service.getAllAgencyOfficesService(eq(0), eq(10), any(), any()))
+        .thenReturn(new PaginatedResultInternalDTO<>(List.of(), null));
 
-    if (response != null && !response.getResults().isEmpty()) {
-        List<YourEntity> results = response.getResults();
-        double ru = response.getRequestCharge();
-        System.out.println("✅ Offset = " + offset + ", Limit = " + limit);
-        System.out.println("🔹 RU Charge: " + ru);
-        System.out.println("🔹 Records Fetched: " + results.size());
-        return results;
-    } else {
-        System.out.println("⚠️ No results returned at this offset (even after fallback)");
-        return Collections.emptyList();
-    }
+    mockMvc.perform(get("/v1/agency/office"))
+        .andExpect(status().isOk());
+
+    verify(service).getAllAgencyOfficesService(0, 10, null, null); // update if your defaults differ
+}
+
+@Test
+void testGetAgencyOffices_OffsetPagination_InvalidParams() throws Exception {
+    mockMvc.perform(get("/v1/agency/office")
+            .param("page", "-2")
+            .param("limit", "-10"))
+        .andExpect(status().isBadRequest());
+
+    verifyNoInteractions(service); // Ensure service not called
+}
+
+@Test
+void testGetAgencyOffices_OffsetPagination_EmptyResult() throws Exception {
+    when(service.getAllAgencyOfficesService(anyInt(), anyInt(), any(), any()))
+        .thenReturn(new PaginatedResultInternalDTO<>(List.of(), null));
+
+    mockMvc.perform(get("/v1/agency/office")
+            .param("page", "50")
+            .param("limit", "6"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.length()").value(0));
 }
