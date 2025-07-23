@@ -1,63 +1,35 @@
-public PaginatedResultInternalDTO<AgencyOfficesResponseEntity> searchWithDynamicQueryAndPagination(
-        String continuationToken, int pageSize, int targetPage, String sortBy, String sortDir) {
+public List<YourEntity> getOffsetPage(CosmosContainer cosmosContainer, int offset, int limit) {
+    String query = String.format(
+        "SELECT * FROM c ORDER BY c.associationRegistrationNumber ASC OFFSET %d LIMIT %d", offset, limit
+    );
 
-    logger.info("(QUERY START) Token-based pagination simulation to reach page {}", targetPage);
-
-    StringBuilder queryBuilder = new StringBuilder(BASE_QUERY);
-    queryBuilder.append(SORT_CLAUSE)
-                .append(sortBy)
-                .append(" ")
-                .append(sortDir.toUpperCase());
-
-    List<SqlParameter> parameters = new ArrayList<>();
-    SqlQuerySpec querySpec = new SqlQuerySpec(queryBuilder.toString(), parameters);
-
+    SqlQuerySpec querySpec = new SqlQuerySpec(query);
     CosmosQueryRequestOptions options = new CosmosQueryRequestOptions();
-    PaginatedResultInternalDTO<AgencyOfficesResponseEntity> finalResult = null;
 
-    double totalRU = 0.0;
-    long totalStartTime = System.currentTimeMillis();
+    Iterator<FeedResponse<YourEntity>> iterator = cosmosContainer
+            .queryItems(querySpec, options, YourEntity.class)
+            .iterableByPage()
+            .iterator();
 
-    for (int currentPage = 1; currentPage <= targetPage; currentPage++) {
-        long pageStart = System.currentTimeMillis();
+    FeedResponse<YourEntity> response = null;
 
-        CosmosPagedIterable<AgencyOfficesResponseEntity> pagedIterable = cosmosContainer
-                .queryItems(querySpec, options, AgencyOfficesResponseEntity.class);
-
-        Iterator<FeedResponse<AgencyOfficesResponseEntity>> iterator = pagedIterable
-                .iterableByPage(continuationToken, pageSize)
-                .iterator();
-
-        if (!iterator.hasNext()) {
-            logger.warn("No results at page {}. Ending early.", currentPage);
-            break;
-        }
-
-        FeedResponse<AgencyOfficesResponseEntity> page = iterator.next();
-        continuationToken = page.getContinuationToken();
-        double ru = page.getRequestCharge();
-        totalRU += ru;
-
-        long pageTime = System.currentTimeMillis() - pageStart;
-
-        logger.info("Page {} fetched - Time: {} ms, RU: {}", currentPage, pageTime, ru);
-
-        if (currentPage == targetPage) {
-            finalResult = new PaginatedResultInternalDTO<>(page.getResults(), continuationToken);
-        }
-
-        if (continuationToken == null) {
-            logger.warn("No continuation token returned after page {}. Reached end of data.", currentPage);
+    // Loop to skip empty pages (cross-partition scenario)
+    while (iterator.hasNext()) {
+        response = iterator.next();
+        if (!response.getResults().isEmpty()) {
             break;
         }
     }
 
-    long totalTime = System.currentTimeMillis() - totalStartTime;
-
-    logger.info("=== Token Pagination Simulation Complete ===");
-    logger.info("Target Page: {}", targetPage);
-    logger.info("Total Time (ms): {}", totalTime);
-    logger.info("Total RU Consumed: {}", totalRU);
-
-    return finalResult != null ? finalResult : new PaginatedResultInternalDTO<>(Collections.emptyList(), null);
+    if (response != null && !response.getResults().isEmpty()) {
+        List<YourEntity> results = response.getResults();
+        double ru = response.getRequestCharge();
+        System.out.println("✅ Offset = " + offset + ", Limit = " + limit);
+        System.out.println("🔹 RU Charge: " + ru);
+        System.out.println("🔹 Records Fetched: " + results.size());
+        return results;
+    } else {
+        System.out.println("⚠️ No results returned at this offset (even after fallback)");
+        return Collections.emptyList();
+    }
 }
