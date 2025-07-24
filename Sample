@@ -1,35 +1,66 @@
 @Test
-void test_SearchWithValidInputFields_Success() {
-    // Input parameters
-    int page = 1;
-    int limit = 20;
-    String sortBy = "associationRegistrationNumber";
-    String sortDir = "ASC";
+void test_NullPaginationValues_UsesDefaults() {
+    when(customProperties.getDefaultPage()).thenReturn(1);
+    when(customProperties.getDefaultLimit()).thenReturn(20);
+    when(customProperties.getDefaultSortBy()).thenReturn("associationRegistrationNumber");
+    when(customProperties.getDefaultSortDir()).thenReturn("ASC");
 
-    // Calculated value as per service logic (internal page is zero-based)
-    int expectedPage = page - 1;
-
-    // Mock repository response
-    when(repository.searchWithDynamicQueryAndPagination(
-            eq(expectedPage), eq(limit), eq(sortBy), eq(sortDir)))
+    when(repository.searchWithDynamicQueryAndPagination(eq(1), eq(20), eq("associationRegistrationNumber"), eq("ASC")))
         .thenReturn(new PaginatedResultInternalDTO<>(List.of(mockEntity), null));
-
-    // Mock mapper response
     when(mapper.toDTO(mockEntity)).thenReturn(mockDto);
 
-    // Call the actual service method
     PaginatedResultInternalDTO<AgencyOfficesResponseDTO> result =
-        serviceImpl.getAllAgencyOfficesService(page, limit, sortBy, sortDir);
+        serviceImpl.getAllAgencyOfficesService(null, null, null, null);
 
-    // Assertions
     assertNotNull(result);
-    assertNotNull(result.getItems());
     assertEquals(1, result.getItems().size());
-    assertEquals("5d11d871-1d5a-4db9-48c2-f9ba29c8475f", result.getItems().get(0).getId());
-    assertEquals("04DJXYZ100007", result.getItems().get(0).getAssociationRegistrationNumber());
 
-    // Verify repository and mapper interactions
-    verify(repository, times(1))
-        .searchWithDynamicQueryAndPagination(eq(expectedPage), eq(limit), eq(sortBy), eq(sortDir));
-    verify(mapper, times(1)).toDTO(mockEntity);
+    verify(customProperties).getDefaultPage();
+    verify(customProperties).getDefaultLimit();
+    verify(repository).searchWithDynamicQueryAndPagination(eq(1), eq(20), eq("associationRegistrationNumber"), eq("ASC"));
 }
+
+@Test
+void test_InvalidPage_ThrowsValidationException() {
+    Exception ex = assertThrows(CustomValidationException.class, () ->
+        serviceImpl.getAllAgencyOfficesService(-1, 10, "sortBy", "ASC"));
+
+    assertTrue(ex.getMessage().contains("page must be > 0"));
+}
+
+@Test
+void test_InvalidLimit_ThrowsValidationException() {
+    Exception ex = assertThrows(CustomValidationException.class, () ->
+        serviceImpl.getAllAgencyOfficesService(1, -5, "sortBy", "ASC"));
+
+    assertTrue(ex.getMessage().contains("pageLimit must be >= 1"));
+}
+
+@Test
+void test_InvalidSortDir_UsesDefault() {
+    String badSortDir = "RANDOM";
+    when(customProperties.getDefaultSortDir()).thenReturn("ASC");
+
+    when(repository.searchWithDynamicQueryAndPagination(anyInt(), anyInt(), anyString(), eq("ASC")))
+        .thenReturn(new PaginatedResultInternalDTO<>(List.of(mockEntity), null));
+    when(mapper.toDTO(mockEntity)).thenReturn(mockDto);
+
+    PaginatedResultInternalDTO<AgencyOfficesResponseDTO> result =
+        serviceImpl.getAllAgencyOfficesService(1, 10, "sortBy", badSortDir);
+
+    assertNotNull(result);
+    verify(repository).searchWithDynamicQueryAndPagination(anyInt(), anyInt(), anyString(), eq("ASC"));
+}
+
+@Test
+void test_RepoReturnsNull_ReturnsEmptyList() {
+    when(repository.searchWithDynamicQueryAndPagination(anyInt(), anyInt(), anyString(), anyString()))
+        .thenReturn(null);
+
+    PaginatedResultInternalDTO<AgencyOfficesResponseDTO> result =
+        serviceImpl.getAllAgencyOfficesService(1, 10, "sortBy", "ASC");
+
+    assertNotNull(result);
+    assertTrue(result.getItems().isEmpty());
+}
+
