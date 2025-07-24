@@ -1,12 +1,80 @@
-@Override
-public int countTotalItems() {
-    String countQuery = "SELECT VALUE COUNT(1) FROM c";
-    SqlQuerySpec querySpec = new SqlQuerySpec(countQuery);
-    CosmosQueryRequestOptions options = new CosmosQueryRequestOptions();
+Here are the PowerPoint-compatible tables for your API contract. You can copy-paste these into PowerPoint or export them to Word/Excel as needed.
 
-    return cosmosContainer
-            .queryItems(querySpec, options, Integer.class)
-            .stream()
-            .findFirst()
-            .orElse(0);
+⸻
+
+📘 API Summary
+
+Property	Value
+Method	GET
+Path	/v1/agency/office
+Summary	Returns all agency office details
+Description	Fetches paginated list of agency offices with optional sorting and counting.
+
+
+⸻
+
+📥 Request Headers
+
+Header Name	Type	Required	Description
+X-Request-ID	string	✅ Yes	Unique request identifier (for tracking)
+
+
+⸻
+
+🔍 Query Parameters
+
+Parameter	Type	Required	Description	Constraints / Default
+page	integer	❌ No	Page number (1-based index)	Minimum: 1, Default: from config
+limit	integer	❌ No	Number of items per page	Minimum: 1, Default: from config
+sortBy	string	❌ No	Field name to sort the results	Default: associationRegistrationNumber
+sortDir	string	❌ No	Sort direction	Allowed: ASC, DESC, Default: ASC
+includeCount	boolean	❌ No	Whether total count should be returned	true → enables X-Total-Count
+
+
+⸻
+
+📤 Response Headers (200 OK)
+
+Header Name	Type	Description
+X-Page	integer	Current page number returned
+X-Limit	integer	Number of records per page used in the request
+X-Returned-Count	integer	Number of records returned in the current response
+X-Total-Count	integer	Total number of records (only returned if includeCount=true)
+
+
+⸻
+
+✅ Response Body (Success)
+
+Field	Type	Description
+Array<AgencyOffice>	JSON Array	List of agency office details as DTOs
+
+Example:
+
+[
+  {
+    "id": "5d11d871-1d5a-4db9-48c2-f9ba29c8475f",
+    "associationRegistrationNumber": "04DJXYZ100007",
+    "city": "東京都品川区小崎２丁目１１−１",
+    ...
+  }
+]
+
+
+⸻
+
+❌ Response (400 Bad Request)
+
+Field	Type	Description
+error	string	Validation or parameter error message
+
+Example:
+
+{
+  "error": "Invalid parameter value: limit must be >= 1"
 }
+
+
+⸻
+
+Let me know if you’d like me to export this to a .pptx or .docx format or add specific fields like DTO attributes or sample values.
