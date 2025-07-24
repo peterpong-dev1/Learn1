@@ -1,4 +1,12 @@
-Select-String -Path "input.txt" -Pattern "your-search-string" |
-    ForEach-Object { $_.Line } |
-    Sort-Object |
-    Set-Content -Path "output.txt"
+@Override
+public int countTotalItems() {
+    String countQuery = "SELECT VALUE COUNT(1) FROM c";
+    SqlQuerySpec querySpec = new SqlQuerySpec(countQuery);
+    CosmosQueryRequestOptions options = new CosmosQueryRequestOptions();
+
+    return cosmosContainer
+            .queryItems(querySpec, options, Integer.class)
+            .stream()
+            .findFirst()
+            .orElse(0);
+}
