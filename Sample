@@ -1,80 +1,80 @@
-Excellent — I’ve processed Photo 2 of Doc 1 and will now provide the bilingual translation in the same structured format.
+Great — I’ve processed Photo 3 of Doc 1. Below is the bilingual translation with all sections matched.
 
 ⸻
 
-📄 Document 1, Slide 2 — Translation
+📄 Document 1, Slide 3 — Translation
 
 ⸻
 
 🔹 Japanese Title:
 
-処理サイクル（新契約①）
+処理サイクル（新契約②）
 
 ⸻
 
 🔸 English:
 
-Processing Cycle (New Contracts ①)
+Processing Cycle (New Contracts ②)
 
 ⸻
 
 🔹 Japanese Subtitle:
 
 ＜サイクル＞
-新契約成立の通知サイクルは成立日の翌日とする。なお、ネオnetの「新契約進捗状況照会」への反映日は翌日。
+新契約の不備・決定の通知サイクルはネオnetの「新契約進捗状況照会」への反映に合わせて営業日の通知とする。
+ただし、一部の不備においては即時ネオnetに反映することもあるが、プッシュ通知は翌営業日発信とする。
 
 ⸻
 
 🔸 English:
 
 
-The notification cycle for new contract establishment is set for the day after the contract is finalized.
-Note: Updates to the “New Contract Progress Status Inquiry” screen in ネオnet also reflect the next day.
+The notification cycle for incomplete applications or decisions follows business days and aligns with the update timing of the “New Contract Progress Status Inquiry” in ネオnet.
+However, in some cases, incomplete entries may reflect immediately in ネオnet, but push notifications will still be sent on the next business day.
 
 ⸻
 
-🕓 Process Timeline Diagram Summary (Explained)
+🕓 Process Timeline Diagram Summary
 
-N Day (Contract Finalization Day)
+N Day (Business Day)
   ↓
-22:00–0:00  ➜ Online system downtime
+Application gets flagged as incomplete or decided
   ↓
-Around 7:00 AM (N+1) ➜ Data extraction
+22:00–0:00 ➜ Online downtime
+  ↓
+Around 7:00 AM (N+1) ➜ Data extracted
   ↓
 8:00 AM (N+1) ➜ Push Notification sent
   ↓
-Users check notification and view status in ネオnet
+User checks NetOne for status
 
 
 ⸻
 
-📌 Numbered Steps (from the bottom of the slide)
+📌 Numbered Steps (bottom text translation)
 
 🔹 Japanese:
 
-① 成立確定待ちになったその日の夜間に成立（休日オンラインがある週は金土に成立確定待ちとなった申込は全て土の夜間に成立）
-② その日に成立した申込を抽出し、プッシュ通知対象が確定
+① 不備入力・決定が揃ったことをもって翌営業日に通知対象となる
+② 通知対象申込を抽出
 ③ 募集人宛にプッシュ通知を発信
 ④ ネオnetの「新契約進捗状況照会」の進捗状況に反映
-⑤ プッシュ通知を受け取り、ネオnetの「新契約進捗状況照会」を参照（この時点で進捗状況が成立になっている）
+（ただし、査定決定不能などの理由で一部は反映されない場合もあり得る）
+⑤ プッシュ通知を受け取り、ネオnetの「新契約進捗状況照会」を参照
 
 ⸻
 
 🔸 English:
 
-① Applications marked as “Pending Confirmation” are finalized overnight.
-(For weeks with holidays, applications marked on Friday/Saturday are all finalized Saturday night.)
-
-② Applications finalized that day are extracted, and push notification targets are determined.
-
-③ Push notifications are sent to the relevant agents (recruiters).
-
-④ The progress status in ネオnet’s “New Contract Progress Inquiry” screen is updated.
-
-⑤ Recipients check the push notification and confirm the finalized status via ネオnet’s progress screen.
+① When both incomplete entry and decision are completed, the case becomes eligible for notification the next business day.
+② Extract applications that qualify for notification.
+③ Send push notifications to the respective agents.
+④ Update the progress status in ネオnet’s “New Contract Progress Inquiry” screen.
+　(Some cases, such as “unable to evaluate,” may not be reflected immediately.)
+⑤ Recipients check the push notification and refer to the relevant screen in ネオnet.
 
 ⸻
 
-✅ Document 1, Slide 2 — Fully Translated & Tracked
+✅ Document 1, Slide 3 — Fully Translated & Tracked
 
-Ready for Photo 3 of Doc 1 when you are!
+Feel free to continue with Photo 4 of Doc 1 when you’re ready!
