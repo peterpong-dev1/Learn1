@@ -1,127 +1,108 @@
-Here are the PowerPoint-compatible tables for your API contract. You can copy-paste these into PowerPoint or export them to Word/Excel as needed.
+Absolutely — that’s a great idea for easier tracking and validation.
+
+From now on, I’ll give you each section in this format:
 
 ⸻
 
-📘 API Summary
-
-Property	Value
-Method	GET
-Path	/v1/agency/office
-Summary	Returns all agency office details
-Description	Fetches paginated list of agency offices with optional sorting and counting.
-
+📄 Document 1, Slide 1 — Translation
 
 ⸻
 
-📥 Request Headers
+🔹 Japanese:
 
-Header Name	Type	Required	Description
-X-Request-ID	string	✅ Yes	Unique request identifier (for tracking)
-
-
-⸻
-
-🔍 Query Parameters
-
-Parameter	Type	Required	Description	Constraints / Default
-page	integer	❌ No	Page number (1-based index)	Minimum: 1, Default: from config
-limit	integer	❌ No	Number of items per page	Minimum: 1, Default: from config
-sortBy	string	❌ No	Field name to sort the results	Default: associationRegistrationNumber
-sortDir	string	❌ No	Sort direction	Allowed: ASC, DESC, Default: ASC
-includeCount	boolean	❌ No	Whether total count should be returned	true → enables X-Total-Count
-
+プッシュ通知
+＜対象業務＞
+① 新契約
+　成立／不成立／不備通知／決定通知
 
 ⸻
 
-📤 Response Headers (200 OK)
+🔸 English:
 
-Header Name	Type	Description
-X-Page	integer	Current page number returned
-X-Limit	integer	Number of records per page used in the request
-X-Returned-Count	integer	Number of records returned in the current response
-X-Total-Count	integer	Total number of records (only returned if includeCount=true)
+Push Notification
 
+① New Contracts
+　Notifications for: Contract established / Not established / Incomplete / Finalized
 
 ⸻
 
-✅ Response Body (Success)
+🔹 Japanese:
 
-Field	Type	Description
-Array<AgencyOffice>	JSON Array	List of agency office details as DTOs
-
-Example:
-
-[
-  {
-    "id": "5d11d871-1d5a-4db9-48c2-f9ba29c8475f",
-    "associationRegistrationNumber": "04DJXYZ100007",
-    "city": "東京都品川区小崎２丁目１１−１",
-    ...
-  }
-]
-
+② 保全・支払
+ネオnetの「保全・支払関連進捗状況照会」の対象となる異動
+“L:\¥516¥新システム¥01_記録文書\０２_プロジェクト資料\2025年度¥202509_プルデンシャル生命対応¥０２＞要件定義￥０５＞プッシュ通知[HT追記]ネオnet保全・支払関連進捗状況照会_業務一覧_20250307.xlsx”
 
 ⸻
 
-❌ Response (400 Bad Request)
+🔸 English:
 
-Field	Type	Description
-error	string	Validation or parameter error message
-
-Example:
-
-{
-  "error": "Invalid parameter value: limit must be >= 1"
-}
-
+② Maintenance & Payment
+Events related to “Maintenance/Payment Progress Inquiry” in ネオnet that require attention
+Reference materials are located in the shared file path:
+L:\¥516¥NewSystem¥01\Documents\02_ProjectMaterials\FY2025\202509_PrudentialSupport\02_Requirements\05_PushNotifications[HT Notes]NeoNet_Maintenance_Payment_Progress_Status_20250307.xlsx
 
 ⸻
 
-@Test
-void test_getOffices_withIncludeCountTrue() throws Exception {
-    List<AgencyOfficesResponseDTO> items = List.of(dto);
-    PaginatedResultInternalDTO<AgencyOfficesResponseDTO> response =
-        new PaginatedResultInternalDTO<>(items, null);
-    response.setTotalCount(24182L);
+🔹 Japanese:
 
-    when(service.getAllAgencyOfficesService(1, 10, null, null, true)).thenReturn(response);
+③ 未入金
+ネオnetの「未入金・失効照会」に対象とする。プッシュ通知後にネオnetで詳細確認をしにくることを想定し、「未入金・失効照会」の確認が可能になるタイミングに合わせる。
 
-    mockMvc.perform(get("/v1/agency/office")
-            .param("page", "1")
-            .param("limit", "10")
-            .param("includeCount", "true"))
-        .andExpect(status().isOk())
-        .andExpect(jsonPath("$.length()").value(1))
-        .andExpect(header().string("X-Page", "1"))
-        .andExpect(header().string("X-Limit", "10"))
-        .andExpect(header().string("X-Returned-Count", "1"))
-        .andExpect(header().string("X-Total-Count", "24182"));
-}
+⸻
 
-@Test
-void test_getOffices_withIncludeCountFalse() throws Exception {
-    List<AgencyOfficesResponseDTO> items = List.of(dto);
-    PaginatedResultInternalDTO<AgencyOfficesResponseDTO> response =
-        new PaginatedResultInternalDTO<>(items, null);
+🔸 English:
 
-    when(service.getAllAgencyOfficesService(2, 20, null, null, false)).thenReturn(response);
+③ Unpaid Premiums
+Targets the “Unpaid/Expired Policy Inquiry” section of ネオnet.
+The system assumes that after receiving a push notification, users will log in to check details. So, the timing of the push notification must align with when confirmation becomes possible.
 
-    mockMvc.perform(get("/v1/agency/office")
-            .param("page", "2")
-            .param("limit", "20")
-            .param("includeCount", "false"))
-        .andExpect(status().isOk())
-        .andExpect(jsonPath("$.length()").value(1))
-        .andExpect(header().string("X-Page", "2"))
-        .andExpect(header().string("X-Limit", "20"))
-        .andExpect(header().string("X-Returned-Count", "1"))
-        .andExpect(header().doesNotExist("X-Total-Count"));
-}
+⸻
+
+🔹 Japanese:
+
+＜処理サイクルの前提事項＞
+	•	プッシュ通知を受け取れネオnetで詳細を確認するフローを想定。メール本文への個人情報記載は不可のため対象はネオnet参照要
+	•	したがってプッシュ通知の要因となる業務状態がネオnetに反映された以降に発信するものとする
+
+⸻
+
+🔸 English:
 
 
+	•	Assumes that users will receive the push notification and check details in ネオnet.
+	•	No personal information is included in the email body, so users must check ネオnet for full details.
+	•	Therefore, push notifications should only be sent after business data is reflected in ネオnet.
+
+⸻
+
+🔹 Japanese:
+
+＜送信先＞
+募集人（共同募集の場合は共同募集人にも）にメール送信
+※ メールアドレスはネオnetの募集人情報変更でプルデンシャル生命のデータ連携する仕組みを構築するため登録される
+
+⸻
+
+🔸 English:
 
 
+The email is sent to sales agents (including co-agents if jointly registered).
+Note: Email addresses are registered via the agent info change system in ネオnet and synced with Prudential’s system.
+
+⸻
+
+🔹 Japanese:
+
+＜送信時間＞
+送信時間は一律、（仮）8:00（ネオnetのサービス開始が8:00ためその前後）とする。
+
+⸻
+
+🔸 English:
 
 
+Delivery is scheduled uniformly at (tentative) 8:00 AM, aligned with ネオnet service start time.
 
-Let me know if you’d like me to export this to a .pptx or .docx format or add specific fields like DTO attributes or sample values.
+⸻
+
+✅ This is now fully structured in bilingual format. Let’s continue this way — go ahead with Photo 2 of Doc 1 whenever ready!
