@@ -1,52 +1,51 @@
-Great — I’ve processed Photo 3 of Doc 1. Below is the bilingual translation with all sections matched.
+Thanks! Here’s the full bilingual breakdown of Photo 4 of Doc 1.
 
 ⸻
 
-📄 Document 1, Slide 3 — Translation
+📄 Document 1, Slide 4 — Translation
 
 ⸻
 
 🔹 Japanese Title:
 
-処理サイクル（新契約②）
+処理サイクル（新契約③）
 
 ⸻
 
 🔸 English:
 
-Processing Cycle (New Contracts ②)
+Processing Cycle (New Contracts ③)
 
 ⸻
 
 🔹 Japanese Subtitle:
 
 ＜サイクル＞
-新契約の不備・決定の通知サイクルはネオnetの「新契約進捗状況照会」への反映に合わせて営業日の通知とする。
-ただし、一部の不備においては即時ネオnetに反映することもあるが、プッシュ通知は翌営業日発信とする。
+新契約の不成立の通知サイクルは不成立入力の翌日の通知となる。ただし、ネオnetの「新契約進捗状況照会」は即時反映される。
 
 ⸻
 
 🔸 English:
 
 
-The notification cycle for incomplete applications or decisions follows business days and aligns with the update timing of the “New Contract Progress Status Inquiry” in ネオnet.
-However, in some cases, incomplete entries may reflect immediately in ネオnet, but push notifications will still be sent on the next business day.
+The notification cycle for contract non-establishment is the day after the “non-establishment” is entered.
+However, the “New Contract Progress Status Inquiry” screen in ネオnet is updated immediately upon entry.
 
 ⸻
 
 🕓 Process Timeline Diagram Summary
 
-N Day (Business Day)
+N Day (Non-establishment input day)
   ↓
-Application gets flagged as incomplete or decided
+Real-time update to NetOne screen
   ↓
-22:00–0:00 ➜ Online downtime
+22:00–0:00 ➜ Online system downtime
   ↓
-Around 7:00 AM (N+1) ➜ Data extracted
+Around 7:00 AM (N+1) ➜ Data extraction
   ↓
 8:00 AM (N+1) ➜ Push Notification sent
   ↓
-User checks NetOne for status
+Agent checks in ネオnet
 
 
 ⸻
@@ -55,26 +54,23 @@ User checks NetOne for status
 
 🔹 Japanese:
 
-① 不備入力・決定が揃ったことをもって翌営業日に通知対象となる
-② 通知対象申込を抽出
+① 不成立入力後に即時でネオnetの「新契約進捗状況照会」に反映
+② 当日に不成立入力した申込を通知対象として夜間に抽出（休日オンライン稼働がある週は金土入力分をまとめて抽出）
 ③ 募集人宛にプッシュ通知を発信
-④ ネオnetの「新契約進捗状況照会」の進捗状況に反映
-（ただし、査定決定不能などの理由で一部は反映されない場合もあり得る）
-⑤ プッシュ通知を受け取り、ネオnetの「新契約進捗状況照会」を参照
+④ プッシュ通知を受け取り、ネオnetの「新契約進捗状況照会」を参照
 
 ⸻
 
 🔸 English:
 
-① When both incomplete entry and decision are completed, the case becomes eligible for notification the next business day.
-② Extract applications that qualify for notification.
-③ Send push notifications to the respective agents.
-④ Update the progress status in ネオnet’s “New Contract Progress Inquiry” screen.
-　(Some cases, such as “unable to evaluate,” may not be reflected immediately.)
-⑤ Recipients check the push notification and refer to the relevant screen in ネオnet.
+① Once non-establishment is entered, it is immediately reflected in ネオnet’s “New Contract Progress Status Inquiry.”
+② Applications marked as non-established that day are extracted overnight as notification targets.
+(In weeks where online services are active over the weekend, entries from Friday and Saturday are grouped together for extraction.)
+③ Push notification is sent to the corresponding sales agent.
+④ Agent receives the push notification and checks the status in ネオnet.
 
 ⸻
 
-✅ Document 1, Slide 3 — Fully Translated & Tracked
+✅ Document 1, Slide 4 — Fully Translated & Tracked
 
-Feel free to continue with Photo 4 of Doc 1 when you’re ready!
+You’re doing great — ready for Photo 5 of Doc 1 whenever you are!
