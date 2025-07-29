@@ -1,81 +1,97 @@
-Thanks! All 4 images are now processed — covering Slides 6–9 of Doc 1 under the section ② 保全・支払 (Maintenance & Payment).
+Excellent — I’ve processed the next 4 slides from your photos.
 
-Here is your clear English summary with table formatted for copy-paste, while preserving slide mapping.
-
-⸻
-
-📄 Document 1 — Slides 6 to 9 Summary
-
-Section: ② 保全・支払 (Maintenance & Payment)
+Here’s the complete summary for:
 
 ⸻
 
-✅ Slide 6 – Title Only
+📄 Document 1 — Slides 10 to 13
 
-Japanese: ② 保全・支払
-English: ② Maintenance & Payment
-(Acts as a section divider slide)
+Sections:
 
-⸻
-
-✅ Slide 7 – Notification Processing Logic & Event Timing
-
-🧾 Key Rules:
-	•	Push notifications are sent the day after the event is processed.
-	•	Actual processing date depends on system type (in-house vs. direct input) and online hours.
-	•	Even if Direct procedures are accepted 24/7, processing occurs during online service hours only.
+③ 未入金 (Unpaid Premiums),
+個別要件 (Individual Conditions),
+プッシュ通知の課題 (Open Issues in Push Notification)
 
 ⸻
 
-🕹️ Processing Logic Based on Access Hours
+✅ Slide 10 – Section Divider
 
-System Type	Time Zone	Processing Possible?	Notification Timing
-Internal	22:00–24:00 (N-1)	No	Not applicable
-Internal	00:00–7:00 (N)	No	Not applicable
-Internal	7:00–22:00 (N)	Yes	N+1
-Direct	22:00–24:00 (N-1)	Next Business Day	N+1
-Direct	00:00–7:00 (N)	Next Business Day	N+2
-Direct	7:00–22:00 (N)	Same Day	N+1
-
-Note: “Direct” = Direct processing like 保全ダイレクト (customer-facing web process).
+Japanese: ③ 未入金
+English: ③ Unpaid Premiums
+(This is a section title divider slide)
 
 ⸻
 
-✅ Slide 8 – Event Flow for Notification Timing
+✅ Slide 11 – Processing Flow for Unpaid Premiums
 
-🔄 Flow Overview:
-	•	Notification is triggered day after the claim or procedure is completed.
-	•	However, the event is immediately reflected in ネオnet’s maintenance/payment progress screen.
-
-🧭 Timeline (Summary):
-
-Event Occurs → Reflected in ネオnet → Extracted overnight → Push Notification @ 8:00 AM
-
-🔢 Numbered Steps:
-	1.	Claim acceptance or procedure completion triggers the event.
-	2.	Events are grouped and processed based on configured handling logic.
-	3.	Notification candidates are extracted during the night.
-	4.	Push notification sent at 8:00 AM next day.
-	5.	Agent receives notification and checks status in ネオnet.
+🧾 Core Logic:
+	•	Notifications for unpaid or expired policies are processed monthly, aligned with the “Unpaid/Expired Inquiry” screen in ネオnet.
+	•	After extraction, the same notification content remains visible in ネオnet until the next month.
 
 ⸻
 
-✅ Slide 9 – Processing Table (Formatted for Copy-Paste)
+🧭 Timeline Overview:
 
-| Input Source       | Weekend Online | Input Time (NB)     | Processing Day | Extraction (Night of NB) | Notification |
-|--------------------|----------------|----------------------|----------------|---------------------------|--------------|
-| Contract Management| No             | Mon–Fri 7:00–22:00   | Mon–Fri        | Mon–Fri                   | Tue–Sat      |
-|                    | Yes            | Mon–Sun 7:00–22:00   | Mon–Sat        | Mon–Sat                   | Tue–Sun      |
-| Maintenance (Direct)| N/A           | Mon–Thu 7:00–22:00   | Tue–Fri        | Tue–Fri                   | Wed–Sat      |
-|                    |                | Mon–Thu 22:00–7:00(*)| Tue–Fri        | Tue–Fri                   | Wed–Sat      |
-|                    |                | Fri 7:00–22:00       | Fri            | Fri                       | Sat          |
-|                    |                | Fri 22:00–24:00(*)   | Mon            | Mon                       | Tue          |
-|                    |                | Sat–Sun 00:00–24:00(*)| Mon            | Mon                       | Tue          |
+Night:    Extract unpaid/expired targets
+Morning:  Display on ネオnet
+8:00 AM:  Push notification sent
+↓
+Agent checks status in ネオnet
 
-* Note: Inputs between 22:00–7:00 or weekends are processed on the next business day (weekend inputs deferred).
+📌 Notes:
+	•	Processing occurs around the 10th of each month
+	•	Only one push notification per billing cycle
+	•	Same data visible all month
 
 ⸻
 
-✅ That completes Doc 1, Slides 6–9 under the “Maintenance & Payment” section.
+✅ Slide 12 – Individual Rules/Conditions Table
 
-Let me know if you want the next batch processed or want a full summary of Doc 1 so far.
+Business Type	Event	Condition
+New Contracts	Established	Normal: N+1 for notificationSome events may shift to N+1 if time crosses cutoff
+	Incomplete/Decision	- If reflected same day: N+1 notice- Next day reflect: N+2 notice- 2-day delay reflect: N+3 notice
+Maintenance	—	—
+Targeted Agents	—	Restrictions may apply to agents outside POJ.Initially, only POJ will receive; expansion needs secure logic and phased rollout.
+Email Body	—	Email content requires templating & careful data control (e.g. masking or safe registration)
+
+
+⸻
+
+✅ Slide 13 – Future Issues and To-Do Items
+
+📌 Key Issues Identified:
+	•	Email Templates:
+	•	POJ agents requested standardized templates.
+	•	Variations based on recipient (policyholder vs agent).
+	•	ネオnet Access:
+	•	Currently only accessible via shared company gateway — no direct external use.
+	•	Should this stay limited to POJ, or open up?
+	•	Limiting Future Access:
+	•	Decision pending on whether to limit agent access at release or allow broader usage later.
+
+⸻
+
+🛠 Operational Task Examples
+
+New Contracts
+	•	Identify matching events (by 6/6)
+	•	Event extraction → send to ICT
+	•	Compose and confirm email
+	•	System restrictions checked on Medai side
+	•	Send timing tracked by ICT
+
+Maintenance & Payment
+	•	Match events by 6/6
+	•	Send extraction list to ICT
+	•	Confirm and send email
+	•	Decide whether to send per policy or grouped by agent
+	•	Send cycle tracked by ICT
+
+⸻
+
+✅ These were slides 10 to 13 of Document 1 — fully translated and tagged.
+
+Let me know when you want:
+	•	A summary of the full Doc 1
+	•	To start with Doc 2
+	•	Or begin working on the solution design phase
