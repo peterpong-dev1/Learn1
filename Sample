@@ -1,85 +1,81 @@
-Perfect — you’ve now uploaded Photo 5 of Doc 1, which includes a table summarizing the processing cycle timing for new contracts under different conditions (e.g., with or without weekend online availability).
+Thanks! All 4 images are now processed — covering Slides 6–9 of Doc 1 under the section ② 保全・支払 (Maintenance & Payment).
 
-Here is the complete bilingual translation:
-
-⸻
-
-📄 Document 1, Slide 5 — Translation
+Here is your clear English summary with table formatted for copy-paste, while preserving slide mapping.
 
 ⸻
 
-🔹 Japanese Title:
+📄 Document 1 — Slides 6 to 9 Summary
 
-処理サイクル（新契約）
-
-⸻
-
-🔸 English:
-
-Processing Cycle (New Contracts)
+Section: ② 保全・支払 (Maintenance & Payment)
 
 ⸻
 
-🧾 Header Notes (top of the slide)
+✅ Slide 6 – Title Only
 
-🔹 Japanese:
-
-＜前提事項＞
-✓ プッシュ通知を受信したときには既にネオnetの新契約進捗状況照会に反映されている状態とする（プッシュ通知を見てネオnetで詳細確認するフローを想定）
-✓ ネオnetへの反映は進捗の状態により即時反映、翌日反映、営業日単位反映に統一する
+Japanese: ② 保全・支払
+English: ② Maintenance & Payment
+(Acts as a section divider slide)
 
 ⸻
 
-🔸 English:
+✅ Slide 7 – Notification Processing Logic & Event Timing
 
-
-✓ When a push notification is received, the contract status should already be reflected in ネオnet’s “New Contract Progress Inquiry” screen. (Assumes users will view the notification and then check details on ネオnet.)
-✓ The timing of updates in ネオnet will vary by progress status — some are immediate, some next-day, and some based on business days.
-
-⸻
-
-📊 Table Summary
-
-This table shows different combinations of:
-	•	Whether weekend online processing is available
-	•	What day the input occurred (NB = contract input day)
-	•	When it’s extracted for processing
-	•	When it’s reflected in ネオnet
-	•	When the push notification is sent
+🧾 Key Rules:
+	•	Push notifications are sent the day after the event is processed.
+	•	Actual processing date depends on system type (in-house vs. direct input) and online hours.
+	•	Even if Direct procedures are accepted 24/7, processing occurs during online service hours only.
 
 ⸻
 
+🕹️ Processing Logic Based on Access Hours
 
-Contract Type / Condition	Weekend Online	Input Day (NB)	Extracted (Night of NB)	Reflected in ネオnet	Notification Sent
-Contract Established Notification	No	Mon–Thu (Night)	Mon–Thu finalized apps	Tue–Fri	Tue–Fri
-		Fri	Fri finalized apps	Mon	Mon
-	Yes	Fri (Night)	Mon–Thu finalized apps	Mon	Mon
-		Sat (Night)	Fri/Sat finalized apps	Mon	Mon
-Incomplete / Decision (Case 1)	No	Mon–Thu	Mon–Thu entries	Tue–Fri	Tue–Fri
-		Fri	Fri entries	Mon	Mon
-Incomplete / Decision (Case 2)	Yes	Mon–Thu	Mon–Thu entries	Tue–Fri	Tue–Fri
-		Fri	Fri entries	Mon	Mon
-Not Established (Immediate Reflect)	No	Mon–Thu	Mon–Thu entries	Tue–Fri	Tue–Fri
-		Fri	Fri entries	Mon	Mon
-	Yes	Mon–Thu	Mon–Thu entries	Tue–Fri	Tue–Fri
-		Fri	Fri entries	Mon	Mon
-		Sat	Sat entries	Mon	Mon
+System Type	Time Zone	Processing Possible?	Notification Timing
+Internal	22:00–24:00 (N-1)	No	Not applicable
+Internal	00:00–7:00 (N)	No	Not applicable
+Internal	7:00–22:00 (N)	Yes	N+1
+Direct	22:00–24:00 (N-1)	Next Business Day	N+1
+Direct	00:00–7:00 (N)	Next Business Day	N+2
+Direct	7:00–22:00 (N)	Same Day	N+1
 
+Note: “Direct” = Direct processing like 保全ダイレクト (customer-facing web process).
 
 ⸻
 
-📝 Footer Notes (in Japanese):
+✅ Slide 8 – Event Flow for Notification Timing
 
-※ 休日オンラインの週は金曜日夜間での成立処理はなく、土曜の夜間は金土に成立確定待ちとなった申込が成立の対象になる。
+🔄 Flow Overview:
+	•	Notification is triggered day after the claim or procedure is completed.
+	•	However, the event is immediately reflected in ネオnet’s maintenance/payment progress screen.
+
+🧭 Timeline (Summary):
+
+Event Occurs → Reflected in ネオnet → Extracted overnight → Push Notification @ 8:00 AM
+
+🔢 Numbered Steps:
+	1.	Claim acceptance or procedure completion triggers the event.
+	2.	Events are grouped and processed based on configured handling logic.
+	3.	Notification candidates are extracted during the night.
+	4.	Push notification sent at 8:00 AM next day.
+	5.	Agent receives notification and checks status in ネオnet.
 
 ⸻
 
-🔸 English:
+✅ Slide 9 – Processing Table (Formatted for Copy-Paste)
 
-※ In weeks with weekend online availability, no finalization occurs Friday night. Instead, all applications that were pending finalization as of Friday/Saturday night will be finalized on Saturday night.
+| Input Source       | Weekend Online | Input Time (NB)     | Processing Day | Extraction (Night of NB) | Notification |
+|--------------------|----------------|----------------------|----------------|---------------------------|--------------|
+| Contract Management| No             | Mon–Fri 7:00–22:00   | Mon–Fri        | Mon–Fri                   | Tue–Sat      |
+|                    | Yes            | Mon–Sun 7:00–22:00   | Mon–Sat        | Mon–Sat                   | Tue–Sun      |
+| Maintenance (Direct)| N/A           | Mon–Thu 7:00–22:00   | Tue–Fri        | Tue–Fri                   | Wed–Sat      |
+|                    |                | Mon–Thu 22:00–7:00(*)| Tue–Fri        | Tue–Fri                   | Wed–Sat      |
+|                    |                | Fri 7:00–22:00       | Fri            | Fri                       | Sat          |
+|                    |                | Fri 22:00–24:00(*)   | Mon            | Mon                       | Tue          |
+|                    |                | Sat–Sun 00:00–24:00(*)| Mon            | Mon                       | Tue          |
+
+* Note: Inputs between 22:00–7:00 or weekends are processed on the next business day (weekend inputs deferred).
 
 ⸻
 
-✅ Document 1, Slide 5 — Fully Translated & Tracked
+✅ That completes Doc 1, Slides 6–9 under the “Maintenance & Payment” section.
 
-This one’s a key summary slide — ready when you are for Photo 6 of Doc 1!
+Let me know if you want the next batch processed or want a full summary of Doc 1 so far.
