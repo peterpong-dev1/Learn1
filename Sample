@@ -1,23 +1,61 @@
-{
-  "IsEncrypted": false,
-  "Values": {
-    "AzureWebJobsStorage": "<your-blob-storage-connection-string>",
-    
-    // Blob containers
-    "BlobConfigContainer": "config",            // For tracked fields JSON
-    "BlobDataContainer": "tracked-data",        // For old value versions
+package com.neo.util;
 
-    // Cosmos containers (logical names per function)
-    "CustomerContainer": "CustomerContainer",
-    "PolicyContainer": "PolicyContainer",
+import com.azure.storage.blob.*;
+import com.azure.storage.blob.models.BlobDownloadContentResponse;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
-    // Tracked fields files
-    "TrackedFields_CustomerContainer": "customer-tracked-fields.json",
-    "TrackedFields_PolicyContainer": "policy-tracked-fields.json"
-  }
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+
+public class TrackedFieldsUtil {
+
+    private static final ObjectMapper mapper = new ObjectMapper();
+
+    /**
+     * Reads tracked fields JSON from Blob Storage for a given container name.
+     *
+     * @param logicalContainerName The key like "CustomerContainer" or "PolicyContainer"
+     * @return List of tracked fields (or empty list if error/missing)
+     */
+    public static List<String> getTrackedFields(String logicalContainerName) {
+        try {
+            // Load env vars
+            String blobConnection = System.getenv("BlobConnection");
+            String blobConfigContainer = System.getenv("BlobConfigContainer");
+
+            if (blobConnection == null || blobConfigContainer == null) {
+                throw new RuntimeException("Missing required environment variables.");
+            }
+
+            // Get the name of the blob file to load
+            String trackedFileKey = "TrackedFields_" + logicalContainerName;
+            String trackedBlobFile = System.getenv(trackedFileKey);
+
+            if (trackedBlobFile == null) {
+                throw new RuntimeException("Missing blob file config for key: " + trackedFileKey);
+            }
+
+            // Build Blob Client
+            BlobContainerClient containerClient = new BlobContainerClientBuilder()
+                    .connectionString(blobConnection)
+                    .containerName(blobConfigContainer)
+                    .buildClient();
+
+            BlobClient blobClient = containerClient.getBlobClient(trackedBlobFile);
+            if (!blobClient.exists()) {
+                throw new RuntimeException("Tracked blob file not found: " + trackedBlobFile);
+            }
+
+            // Read and parse JSON
+            BlobDownloadContentResponse contentResponse = blobClient.downloadContent();
+            String json = contentResponse.getContent().toString();
+
+            return mapper.readValue(json, new TypeReference<List<String>>() {});
+        } catch (Exception e) {
+            System.err.println("Error loading tracked fields for container [" + logicalContainerName + "]: " + e.getMessage());
+            return Collections.emptyList();
+        }
+    }
 }
-
-String containerName = System.getenv("CustomerContainer"); // or "PolicyContainer"
-String trackedFieldsFile = System.getenv("TrackedFields_" + containerName);
-String blobConfigContainer = System.getenv("BlobConfigContainer");
-String blobDataContainer = System.getenv("BlobDataContainer");
