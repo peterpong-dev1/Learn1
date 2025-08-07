@@ -16,3 +16,8 @@
     "TrackedFields_PolicyContainer": "policy-tracked-fields.json"
   }
 }
+
+String containerName = System.getenv("CustomerContainer"); // or "PolicyContainer"
+String trackedFieldsFile = System.getenv("TrackedFields_" + containerName);
+String blobConfigContainer = System.getenv("BlobConfigContainer");
+String blobDataContainer = System.getenv("BlobDataContainer");
