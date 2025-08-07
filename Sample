@@ -1,60 +1,45 @@
-package com.neo.util;
-
 import com.azure.storage.blob.*;
-import com.azure.storage.blob.models.BlobDownloadContentResponse;
+import com.azure.storage.blob.models.*;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.List;
-import java.util.Map;
 
 public class TrackedFieldsUtil {
 
     private static final ObjectMapper mapper = new ObjectMapper();
 
-    /**
-     * Reads tracked fields JSON from Blob Storage for a given container name.
-     *
-     * @param logicalContainerName The key like "CustomerContainer" or "PolicyContainer"
-     * @return List of tracked fields (or empty list if error/missing)
-     */
-    public static List<String> getTrackedFields(String logicalContainerName) {
+    public static List<String> getTrackedFields(
+            String connectionString,
+            String containerName,
+            String blobName
+    ) {
         try {
-            // Load env vars
-            String blobConnection = System.getenv("BlobConnection");
-            String blobConfigContainer = System.getenv("BlobConfigContainer");
-
-            if (blobConnection == null || blobConfigContainer == null) {
-                throw new RuntimeException("Missing required environment variables.");
-            }
-
-            // Get the name of the blob file to load
-            String trackedFileKey = "TrackedFields_" + logicalContainerName;
-            String trackedBlobFile = System.getenv(trackedFileKey);
-
-            if (trackedBlobFile == null) {
-                throw new RuntimeException("Missing blob file config for key: " + trackedFileKey);
-            }
-
-            // Build Blob Client
-            BlobContainerClient containerClient = new BlobContainerClientBuilder()
-                    .connectionString(blobConnection)
-                    .containerName(blobConfigContainer)
+            BlobServiceClient serviceClient = new BlobServiceClientBuilder()
+                    .connectionString(connectionString)
                     .buildClient();
 
-            BlobClient blobClient = containerClient.getBlobClient(trackedBlobFile);
+            BlobContainerClient containerClient = serviceClient.getBlobContainerClient(containerName);
+            BlobClient blobClient = containerClient.getBlobClient(blobName);
+
             if (!blobClient.exists()) {
-                throw new RuntimeException("Tracked blob file not found: " + trackedBlobFile);
+                System.err.println("Blob not found: " + blobName);
+                return Collections.emptyList();
             }
 
-            // Read and parse JSON
-            BlobDownloadContentResponse contentResponse = blobClient.downloadContent();
-            String json = contentResponse.getContent().toString();
+            // Download blob content as string
+            ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+            blobClient.download(outputStream);
+            String json = outputStream.toString(StandardCharsets.UTF_8);
 
+            // Parse JSON into a list of fields
             return mapper.readValue(json, new TypeReference<List<String>>() {});
         } catch (Exception e) {
-            System.err.println("Error loading tracked fields for container [" + logicalContainerName + "]: " + e.getMessage());
+            System.err.println("Error reading blob: " + e.getMessage());
             return Collections.emptyList();
         }
     }
