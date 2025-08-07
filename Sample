@@ -1,177 +1,54 @@
-package com.neo.function;
+<dependencies>
+    <!-- Azure Functions Java Library -->
+    <dependency>
+        <groupId>com.microsoft.azure.functions</groupId>
+        <artifactId>azure-functions-java-library</artifactId>
+        <version>1.4.2</version>
+    </dependency>
 
-import com.azure.messaging.servicebus.*;
-import com.fasterxml.jackson.databind.*;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.microsoft.azure.functions.annotation.*;
-import com.microsoft.azure.functions.*;
-import com.neo.util.BlobStorageUtil;
-import com.neo.util.FieldComparator;
+    <!-- Azure Service Bus Client -->
+    <dependency>
+        <groupId>com.azure</groupId>
+        <artifactId>azure-messaging-servicebus</artifactId>
+        <version>7.14.2</version>
+    </dependency>
 
-import java.io.*;
-import java.util.*;
+    <!-- Jackson for JSON Parsing -->
+    <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-databind</artifactId>
+        <version>2.15.2</version>
+    </dependency>
 
-public class CosmosChangeFeedHandlerV3 {
-    private static final ObjectMapper mapper = new ObjectMapper();
+    <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-core</artifactId>
+        <version>2.15.2</version>
+    </dependency>
 
-    @FunctionName("processCosmosChanges")
-    public void run(
-        @CosmosDBTrigger(
-            name = "items",
-            databaseName = "YourDatabase",
-            containerName = "CustomerContainer",
-            leaseContainerName = "leases",
-            connection = "CosmosDBConnection",
-            createLeaseContainerIfNotExists = true
-        ) List<ObjectNode> items,
-        final ExecutionContext context
-    ) {
-        if (items == null || items.isEmpty()) return;
+    <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-annotations</artifactId>
+        <version>2.15.2</version>
+    </dependency>
 
-        String trackedFieldFile = "tracked-fields.json";
-        String blobConn = System.getenv("BlobStorageConnection");
-        String blobContainer = System.getenv("BlobContainerName");
+    <!-- Azure Storage Blob SDK -->
+    <dependency>
+        <groupId>com.azure</groupId>
+        <artifactId>azure-storage-blob</artifactId>
+        <version>12.25.0</version>
+    </dependency>
 
-        BlobStorageUtil blobUtil = new BlobStorageUtil(blobConn, blobContainer);
-        Map<String, List<String>> trackedFieldsMap = loadTrackedFields(trackedFieldFile);
+    <!-- Logging (Optional but useful) -->
+    <dependency>
+        <groupId>org.slf4j</groupId>
+        <artifactId>slf4j-api</artifactId>
+        <version>2.0.9</version>
+    </dependency>
+</dependencies>
 
-        for (ObjectNode newDoc : items) {
-            try {
-                String container = "CustomerContainer"; // You can use env/config for dynamic container name
-                String id = newDoc.get("id").asText();
-                List<String> trackedFields = trackedFieldsMap.getOrDefault(container, Collections.emptyList());
-
-                String oldJson = blobUtil.getTrackedJson(id);
-                ObjectNode oldDoc = oldJson != null ? (ObjectNode) mapper.readTree(oldJson) : mapper.createObjectNode();
-
-                Map<String, Object> changes = FieldComparator.compareFields(oldDoc, newDoc, trackedFields);
-
-                if (!changes.isEmpty()) {
-                    // Save both old and latest
-                    blobUtil.saveVersionedJson(id, newDoc.toString());
-                    blobUtil.saveLatestJsonWithLease(id, newDoc.toString());
-
-                    // Send message to Service Bus
-                    sendChangeMessage(id, container, changes);
-                }
-
-            } catch (Exception e) {
-                context.getLogger().warning("Error processing document: " + e.getMessage());
-            }
-        }
-    }
-
-    private Map<String, List<String>> loadTrackedFields(String filename) {
-        try (InputStream is = getClass().getClassLoader().getResourceAsStream(filename)) {
-            ObjectMapper mapper = new ObjectMapper();
-            return mapper.readValue(is, new TypeReference<Map<String, List<String>>>() {});
-        } catch (IOException e) {
-            return Collections.emptyMap();
-        }
-    }
-
-    private void sendChangeMessage(String id, String container, Map<String, Object> changes) {
-        String connStr = System.getenv("ServiceBusConnection");
-        String topic = System.getenv("ServiceBusTopic");
-
-        try (ServiceBusClientBuilder builder = new ServiceBusClientBuilder()) {
-            ServiceBusSenderClient sender = builder
-                .connectionString(connStr)
-                .sender()
-                .topicName(topic)
-                .buildClient();
-
-            Map<String, Object> payload = new HashMap<>();
-            payload.put("docId", id);
-            payload.put("container", container);
-            payload.put("changes", changes);
-
-            ObjectMapper mapper = new ObjectMapper();
-            String message = mapper.writeValueAsString(payload);
-
-            sender.sendMessage(new ServiceBusMessage(message));
-        }
-    }
-}
-
-package com.neo.util;
-
-import com.fasterxml.jackson.databind.*;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-import java.util.*;
-
-public class FieldComparator {
-    public static Map<String, Object> compareFields(
-        ObjectNode oldDoc, ObjectNode newDoc, List<String> trackedFields) {
-
-        Map<String, Object> changes = new HashMap<>();
-
-        for (String field : trackedFields) {
-            JsonNode oldVal = oldDoc.get(field);
-            JsonNode newVal = newDoc.get(field);
-
-            if (newVal != null && (oldVal == null || !oldVal.equals(newVal))) {
-                changes.put(field, newVal);
-            }
-        }
-        return changes;
-    }
-}
-
-
-package com.neo.util;
-
-import com.azure.storage.blob.*;
-import com.azure.storage.blob.models.*;
-import java.io.*;
-import java.util.*;
-
-public class BlobStorageUtil {
-    private final BlobContainerClient containerClient;
-
-    public BlobStorageUtil(String connectionString, String containerName) {
-        BlobServiceClient blobServiceClient = new BlobServiceClientBuilder()
-            .connectionString(connectionString)
-            .buildClient();
-        this.containerClient = blobServiceClient.getBlobContainerClient(containerName);
-    }
-
-    public String getTrackedJson(String id) throws IOException {
-        BlobClient blobClient = containerClient.getBlobClient(id + "/latest.json");
-
-        if (!blobClient.exists()) return null;
-
-        try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-            blobClient.download(out);
-            return out.toString();
-        }
-    }
-
-    public void saveVersionedJson(String id, String jsonContent) {
-        String versionedPath = id + "/v" + System.currentTimeMillis() + ".json";
-        containerClient.getBlobClient(versionedPath).upload(
-            new ByteArrayInputStream(jsonContent.getBytes()), jsonContent.length(), true);
-    }
-
-    public void saveLatestJsonWithLease(String id, String jsonContent) {
-        String path = id + "/latest.json";
-        BlobClient blobClient = containerClient.getBlobClient(path);
-
-        String leaseId = null;
-        BlobLeaseClient leaseClient = new BlobLeaseClientBuilder().blobClient(blobClient).buildClient();
-
-        try {
-            leaseId = leaseClient.acquireLease(15);
-            BlobRequestConditions conditions = new BlobRequestConditions().setLeaseId(leaseId);
-            blobClient.upload(new ByteArrayInputStream(jsonContent.getBytes()), jsonContent.length(), true);
-        } finally {
-            if (leaseId != null) leaseClient.releaseLease();
-        }
-    }
-}
-{
-  "CustomerContainer": ["email", "phoneNumber", "status"],
-  "AgentContainer": ["agentCode", "status"]
-}
-
+<properties>
+    <java.version>17</java.version> <!-- or 21, based on your setup -->
+    <functionAppName>neo-cosmos-changefeed-handler</functionAppName>
+</properties>
 
