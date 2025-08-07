@@ -1,46 +1,74 @@
 import com.azure.storage.blob.BlobClient;
 import com.azure.storage.blob.BlobContainerClient;
-import com.azure.storage.blob.BlobServiceClientBuilder;
-import com.azure.storage.blob.models.BlobStorageException;
-import com.fasterxml.jackson.core.type.TypeReference;
+import com.azure.core.util.BinaryData;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
-import java.io.ByteArrayOutputStream;
-import java.nio.charset.StandardCharsets;
-import java.util.Collections;
-import java.util.List;
+public List<Map<String, String>> handleTrackedChange(
+        ObjectNode newDoc,
+        BlobContainerClient blobContainerClient,
+        List<String> trackedFields,
+        String containerName,
+        java.util.logging.Logger logger) {
 
-public class TrackedFieldsUtil {
-    private static final ObjectMapper mapper = new ObjectMapper();
+    List<Map<String, String>> changes = new ArrayList<>();
+    String docId = newDoc.get("id").asText();
+    String oldBlobName = containerName + "/" + docId + ".json";
+    String latestBlobName = containerName + "/" + docId + "-latest.json";
 
-    public static List<String> getTrackedFields(String logicalContainerName) {
-        try {
-            String connectionString = System.getenv("BlobConnection");
-            String configContainerName = System.getenv("BlobConfigContainer");
-            String blobName = System.getenv("TrackedFields_" + logicalContainerName);
+    ObjectMapper mapper = new ObjectMapper();
 
-            BlobClient blobClient = new BlobServiceClientBuilder()
-                .connectionString(connectionString)
-                .buildClient()
-                .getBlobContainerClient(configContainerName)
-                .getBlobClient(blobName);
-
-            if (!blobClient.exists()) {
-                System.err.println("Blob not found: " + blobName);
-                return Collections.emptyList();
-            }
-
-            ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-            blobClient.downloadStream(outputStream);
-            String json = outputStream.toString(StandardCharsets.UTF_8);
-
-            return mapper.readValue(json, new TypeReference<List<String>>() {});
-        } catch (BlobStorageException e) {
-            System.err.println("Azure Blob error: " + e.getMessage());
-        } catch (Exception e) {
-            System.err.println("Error reading tracked fields: " + e.getMessage());
+    try {
+        // Load oldDoc from {id}.json
+        BlobClient oldBlobClient = blobContainerClient.getBlobClient(oldBlobName);
+        if (!oldBlobClient.exists()) {
+            logger.warning("Missing base file (id.json): " + oldBlobName);
+            return changes;
         }
 
-        return Collections.emptyList();
+        BinaryData oldData = oldBlobClient.downloadContent();
+        ObjectNode oldDoc = (ObjectNode) mapper.readTree(oldData.toString());
+
+        // Prepare new tracked values
+        ObjectNode newTracked = mapper.createObjectNode();
+        for (String field : trackedFields) {
+            if (newDoc.has(field)) {
+                newTracked.set(field, newDoc.get(field));
+            }
+        }
+
+        // Compare
+        for (String field : trackedFields) {
+            JsonNode oldVal = oldDoc.get(field);
+            JsonNode newVal = newTracked.get(field);
+            if ((oldVal == null && newVal != null) || (oldVal != null && !oldVal.equals(newVal))) {
+                Map<String, String> change = new HashMap<>();
+                change.put("field", field);
+                change.put("oldValue", oldVal == null ? null : oldVal.toString());
+                change.put("newValue", newVal == null ? null : newVal.toString());
+                changes.add(change);
+            }
+        }
+
+        BlobClient latestClient = blobContainerClient.getBlobClient(latestBlobName);
+        if (changes.isEmpty()) {
+            // No changes: still create latest.json from oldDoc
+            latestClient.upload(BinaryData.fromString(oldDoc.toString()), true);
+            logger.info("No tracked changes for " + docId + "; latest.json updated from oldDoc.");
+        } else {
+            // Version and update latest.json
+            String timestamp = java.time.Instant.now().toString();
+            String versionBlob = containerName + "/" + docId + "-" + timestamp + ".json";
+            blobContainerClient.getBlobClient(versionBlob)
+                    .upload(BinaryData.fromString(newTracked.toString()), true);
+
+            latestClient.upload(BinaryData.fromString(newTracked.toString()), true);
+            logger.info("Tracked changes for " + docId + "; version created and latest.json updated.");
+        }
+
+    } catch (Exception e) {
+        logger.severe("Error in handleTrackedChange for id " + docId + ": " + e.getMessage());
     }
+
+    return changes;
 }
