@@ -1,32 +1,18 @@
-<dependencies>
-  <!-- Azure Service Bus -->
-  <dependency>
-    <groupId>com.azure</groupId>
-    <artifactId>azure-messaging-servicebus</artifactId>
-    <version>7.17.5</version>
-  </dependency>
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "<your-blob-storage-connection-string>",
+    
+    // Blob containers
+    "BlobConfigContainer": "config",            // For tracked fields JSON
+    "BlobDataContainer": "tracked-data",        // For old value versions
 
-  <!-- Azure Blob Storage -->
-  <dependency>
-    <groupId>com.azure</groupId>
-    <artifactId>azure-storage-blob</artifactId>
-    <version>12.31.0</version>
-  </dependency>
+    // Cosmos containers (logical names per function)
+    "CustomerContainer": "CustomerContainer",
+    "PolicyContainer": "PolicyContainer",
 
-  <!-- Jackson for JSON parsing -->
-  <dependency>
-    <groupId>com.fasterxml.jackson.core</groupId>
-    <artifactId>jackson-databind</artifactId>
-    <version>2.19.2</version>
-  </dependency>
-  <dependency>
-    <groupId>com.fasterxml.jackson.core</groupId>
-    <artifactId>jackson-core</artifactId>
-    <version>2.19.2</version>
-  </dependency>
-  <dependency>
-    <groupId>com.fasterxml.jackson.core</groupId>
-    <artifactId>jackson-annotations</artifactId>
-    <version>2.19.2</version>
-  </dependency>
-</dependencies>
+    // Tracked fields files
+    "TrackedFields_CustomerContainer": "customer-tracked-fields.json",
+    "TrackedFields_PolicyContainer": "policy-tracked-fields.json"
+  }
+}
