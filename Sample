@@ -72,3 +72,20 @@ public List<Map<String, String>> handleTrackedChange(
 
     return changes;
 }
+
+public void uploadBlobFromStream(BlobContainerClient blobContainerClient) {
+    BlockBlobClient blockBlobClient = blobContainerClient.getBlobClient("sampleBlob.txt").getBlockBlobClient();
+    String sampleData = "Sample data for blob";
+    try (ByteArrayInputStream dataStream = new ByteArrayInputStream(sampleData.getBytes())) {
+        blockBlobClient.upload(dataStream, sampleData.length());
+    } catch (IOException ex) {
+        ex.printStackTrace();
+    }
+}
+
+public void uploadDataToBlob(BlobContainerClient blobContainerClient) {
+    // Create a BlobClient object from BlobContainerClient
+    BlobClient blobClient = blobContainerClient.getBlobClient("sampleBlob.txt");
+    String sampleData = "Sample data for blob";
+    blobClient.upload(BinaryData.fromString(sampleData));
+}
