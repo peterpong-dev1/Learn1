@@ -1,201 +1,75 @@
-Thank you for your patience. Based on everything we’ve discussed (TA-1 through Q5), here is the TA-1 Full Code — a clean, reusable, thread-safe Java implementation that:
-	•	Reads tracked fields from a JSON in blob.
-	•	Compares incoming document (from change feed) against latest.
-	•	Uses ETag for concurrency safety.
-	•	Stores versioned blobs when a tracked field changes.
-	•	Maintains a latest.json per document using index tags.
+Great! For maintainability and performance, it’s best to create the BlobServiceClient only once and share it across your code. The ideal way is to place it in a singleton-style utility class.
 
 ⸻
 
-✅ TrackedChangeHandler.java (Reusable Class)
+✅ Recommended: Separate Utility Class
 
-package com.neo.handler;
+Here’s a clean and reusable Java utility class to create and reuse BlobServiceClient and BlobContainerClient.
+
+⸻
+
+🔧 BlobClientProvider.java
+
+package com.yourcompany.utils;
 
 import com.azure.storage.blob.*;
-import com.azure.storage.blob.models.*;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.azure.storage.blob.specialized.BlobLeaseClient;
+import com.azure.storage.blob.specialized.BlobLeaseClientBuilder;
+import com.azure.core.util.Configuration;
 
-import java.io.ByteArrayInputStream;
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
-import java.time.OffsetDateTime;
-import java.util.*;
+public class BlobClientProvider {
 
-public class TrackedChangeHandler {
+    private static BlobServiceClient blobServiceClient = null;
 
-    private final BlobContainerClient containerClient;
-    private final Map<String, List<String>> trackedFieldsPerContainer;
-    private final ObjectMapper mapper = new ObjectMapper();
-    private final int maxRetries;
+    // Initialize only once
+    private static BlobServiceClient getBlobServiceClient() {
+        if (blobServiceClient == null) {
+            synchronized (BlobClientProvider.class) {
+                if (blobServiceClient == null) {
+                    String connectionString = Configuration.getGlobalConfiguration()
+                        .get("AzureWebJobsStorage");
 
-    public TrackedChangeHandler(String connectionString, String containerName, Map<String, List<String>> trackedFieldsPerContainer, int maxRetries) {
-        BlobServiceClient blobServiceClient = new BlobServiceClientBuilder()
-                .connectionString(connectionString)
-                .buildClient();
-        this.containerClient = blobServiceClient.getBlobContainerClient(containerName);
-        this.trackedFieldsPerContainer = trackedFieldsPerContainer;
-        this.maxRetries = maxRetries;
-    }
-
-    public void handle(String cosmosContainerName, ObjectNode newDoc) {
-        try {
-            String docId = newDoc.get("id").asText();
-            List<String> trackedFields = trackedFieldsPerContainer.getOrDefault(cosmosContainerName, Collections.emptyList());
-
-            String blobPrefix = cosmosContainerName + "/" + docId;
-            String latestBlobName = blobPrefix + "/latest.json";
-            BlobClient latestBlob = containerClient.getBlobClient(latestBlobName);
-
-            boolean isFirstTime = !latestBlob.exists();
-            JsonNode oldTrackedData = null;
-            String oldEtag = null;
-
-            if (!isFirstTime) {
-                BlobDownloadResult download = latestBlob.downloadContent();
-                oldTrackedData = mapper.readTree(download.getContent().toBytes());
-                oldEtag = download.getDeserializedHeaders().getETag();
-            }
-
-            ObjectNode newTrackedData = mapper.createObjectNode();
-            for (String field : trackedFields) {
-                JsonNode val = newDoc.get(field);
-                if (val != null) newTrackedData.set(field, val);
-            }
-
-            boolean hasChanged = isFirstTime || !newTrackedData.equals(oldTrackedData);
-
-            if (hasChanged) {
-                // Version the blob
-                String versionName = blobPrefix + "/" + OffsetDateTime.now() + ".json";
-                BlobClient versionBlob = containerClient.getBlobClient(versionName);
-                versionBlob.upload(BinaryData.fromObject(newTrackedData));
-
-                // Update latest.json using ETag
-                updateLatestBlob(latestBlob, newTrackedData, oldEtag);
-            }
-
-        } catch (Exception ex) {
-            System.err.println("Error processing document: " + ex.getMessage());
-            ex.printStackTrace();
-        }
-    }
-
-    private void updateLatestBlob(BlobClient blobClient, ObjectNode content, String oldEtag) throws Exception {
-        byte[] data = content.toString().getBytes(StandardCharsets.UTF_8);
-        InputStream stream = new ByteArrayInputStream(data);
-        BlobRequestConditions conditions = (oldEtag != null) ? new BlobRequestConditions().setIfMatch(oldEtag) : new BlobRequestConditions();
-
-        for (int attempt = 1; attempt <= maxRetries; attempt++) {
-            try {
-                blobClient.uploadWithResponse(
-                        new BlobParallelUploadOptions(stream, data.length).setRequestConditions(conditions).setOverwrite(true),
-                        null, null);
-                // Add "latest" tag
-                Map<String, String> tags = new HashMap<>();
-                tags.put("latest", "true");
-                blobClient.setTags(tags);
-                return;
-            } catch (BlobStorageException ex) {
-                if (ex.getStatusCode() == 412 && attempt < maxRetries) {
-                    Thread.sleep(200); // small backoff
-                    continue;
+                    blobServiceClient = new BlobServiceClientBuilder()
+                        .connectionString(connectionString)
+                        .buildClient();
                 }
-                throw ex;
             }
         }
+        return blobServiceClient;
+    }
+
+    // Get container client
+    public static BlobContainerClient getContainerClient(String containerName) {
+        return getBlobServiceClient().getBlobContainerClient(containerName);
+    }
+
+    // Get blob client
+    public static BlobClient getBlobClient(String containerName, String blobName) {
+        return getContainerClient(containerName).getBlobClient(blobName);
+    }
+
+    // Optional: Get lease client
+    public static BlobLeaseClient getBlobLeaseClient(BlobClient blobClient) {
+        return new BlobLeaseClientBuilder()
+            .blobClient(blobClient)
+            .buildClient();
     }
 }
 
 
 ⸻
 
-✅ EnvironmentUtil.java (Central Config Reader)
+✅ Usage Example (in any class)
 
-package com.neo.util;
-
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-
-public class EnvironmentUtil {
-    public static String getSetting(String key) {
-        return System.getenv().getOrDefault(key, System.getProperty(key));
-    }
-
-    public static Map<String, List<String>> getTrackedFieldConfig() {
-        // Ideally this would read from a blob or config file
-        // For now using hardcoded fallback
-        Map<String, List<String>> config = new HashMap<>();
-        config.put("container1", Arrays.asList("status", "type"));
-        config.put("container2", Arrays.asList("priority", "owner"));
-        return config;
-    }
-}
+BlobClient blobClient = BlobClientProvider.getBlobClient("my-container", "some-id-latest.json");
+BlobLeaseClient leaseClient = BlobClientProvider.getBlobLeaseClient(blobClient);
 
 
 ⸻
 
-✅ In Your Azure Function Class
+This is:
+	•	🔁 Thread-safe
+	•	♻️ Reusable
+	•	🧼 Clean separation of concerns
 
-@FunctionName("ProcessChangeFeed")
-public void run(
-    @CosmosDBTrigger(
-        name = "items",
-        databaseName = "%COSMOS_DB_NAME%",
-        containerName = "%COSMOS_CONTAINER_NAME%",
-        leaseContainerName = "%LEASE_CONTAINER%",
-        connection = "COSMOS_CONNECTION",
-        createLeaseContainerIfNotExists = true
-    ) List<ObjectNode> items,
-    final ExecutionContext context) {
-
-    String blobConnection = EnvironmentUtil.getSetting("BLOB_CONNECTION");
-    String blobContainer = EnvironmentUtil.getSetting("BLOB_CONTAINER_NAME");
-    Map<String, List<String>> trackedConfig = EnvironmentUtil.getTrackedFieldConfig();
-
-    TrackedChangeHandler handler = new TrackedChangeHandler(blobConnection, blobContainer, trackedConfig, 3);
-
-    for (ObjectNode doc : items) {
-        handler.handle(System.getenv("COSMOS_CONTAINER_NAME"), doc);
-    }
-}
-
-
-⸻
-
-🔧 local.settings.json Sample
-
-{
-  "IsEncrypted": false,
-  "Values": {
-    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
-    "FUNCTIONS_WORKER_RUNTIME": "java",
-    "COSMOS_CONNECTION": "<cosmos-conn-string>",
-    "COSMOS_DB_NAME": "MyDatabase",
-    "COSMOS_CONTAINER_NAME": "container1",
-    "LEASE_CONTAINER": "leases",
-    "BLOB_CONNECTION": "<your-blob-conn-string>",
-    "BLOB_CONTAINER_NAME": "tracked-data"
-  }
-}
-
-
-⸻
-
-✅ Notes
-
-Concern	Status
-Latest SDK	✅ Uses downloadContent()
-Thread-safe	✅ ETag + Retry built-in
-Reusable	✅ TrackedChangeHandler class
-Environment-friendly	✅ Centralized config handling
-Flexible tracked fields	✅ Configurable per container
-Index-based tagging	✅ Blob setTags() used
-
-
-⸻
-
-Let me know if you’d like to integrate message preparation and Service Bus send in the same reusable class or in a different helper class.
+Let me know if you also want the lease acquisition + release wrapped in a helper method!
