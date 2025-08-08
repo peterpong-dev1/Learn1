@@ -1,75 +1,40 @@
-Great! For maintainability and performance, it’s best to create the BlobServiceClient only once and share it across your code. The ideal way is to place it in a singleton-style utility class.
-
-⸻
-
-✅ Recommended: Separate Utility Class
-
-Here’s a clean and reusable Java utility class to create and reuse BlobServiceClient and BlobContainerClient.
-
-⸻
-
-🔧 BlobClientProvider.java
-
-package com.yourcompany.utils;
+package com.neo.utils;
 
 import com.azure.storage.blob.*;
 import com.azure.storage.blob.specialized.BlobLeaseClient;
 import com.azure.storage.blob.specialized.BlobLeaseClientBuilder;
-import com.azure.core.util.Configuration;
+import com.azure.storage.blob.specialized.BlockBlobClient;
 
 public class BlobClientProvider {
 
-    private static BlobServiceClient blobServiceClient = null;
+    private static final String CONNECTION_STRING = System.getenv("BlobConnection");
 
-    // Initialize only once
-    private static BlobServiceClient getBlobServiceClient() {
-        if (blobServiceClient == null) {
-            synchronized (BlobClientProvider.class) {
-                if (blobServiceClient == null) {
-                    String connectionString = Configuration.getGlobalConfiguration()
-                        .get("AzureWebJobsStorage");
-
-                    blobServiceClient = new BlobServiceClientBuilder()
-                        .connectionString(connectionString)
-                        .buildClient();
-                }
-            }
-        }
-        return blobServiceClient;
-    }
-
-    // Get container client
-    public static BlobContainerClient getContainerClient(String containerName) {
-        return getBlobServiceClient().getBlobContainerClient(containerName);
-    }
-
-    // Get blob client
-    public static BlobClient getBlobClient(String containerName, String blobName) {
-        return getContainerClient(containerName).getBlobClient(blobName);
-    }
-
-    // Optional: Get lease client
-    public static BlobLeaseClient getBlobLeaseClient(BlobClient blobClient) {
-        return new BlobLeaseClientBuilder()
-            .blobClient(blobClient)
+    private static final BlobServiceClient blobServiceClient = new BlobServiceClientBuilder()
+            .connectionString(CONNECTION_STRING)
             .buildClient();
+
+    /**
+     * Returns a BlobContainerClient for the given container name.
+     */
+    public static BlobContainerClient getContainerClient(String containerName) {
+        return blobServiceClient.getBlobContainerClient(containerName);
+    }
+
+    /**
+     * Returns a BlockBlobClient for the given container and blob name.
+     */
+    public static BlockBlobClient getBlockBlobClient(String containerName, String blobName) {
+        BlobContainerClient containerClient = getContainerClient(containerName);
+        return containerClient.getBlobClient(blobName).getBlockBlobClient();
+    }
+
+    /**
+     * Returns a LeaseClient for the given container and blob name.
+     */
+    public static BlobLeaseClient getBlobLeaseClient(String containerName, String blobName) {
+        BlockBlobClient blockBlobClient = getBlockBlobClient(containerName, blobName);
+        return new BlobLeaseClientBuilder()
+                .blobClient(blockBlobClient)
+                .buildClient();
     }
 }
-
-
-⸻
-
-✅ Usage Example (in any class)
-
-BlobClient blobClient = BlobClientProvider.getBlobClient("my-container", "some-id-latest.json");
-BlobLeaseClient leaseClient = BlobClientProvider.getBlobLeaseClient(blobClient);
-
-
-⸻
-
-This is:
-	•	🔁 Thread-safe
-	•	♻️ Reusable
-	•	🧼 Clean separation of concerns
-
-Let me know if you also want the lease acquisition + release wrapped in a helper method!
