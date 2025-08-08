@@ -1,91 +1,341 @@
-import com.azure.storage.blob.BlobClient;
-import com.azure.storage.blob.BlobContainerClient;
+Alright, here’s a clean, self‑contained Java implementation of TA‑1 for handleTrackedChange that matches Q1–Q5:
+	•	Tags only (no latest.json)
+	•	ETag concurrency with configurable retry/backoff
+	•	First-time logic (uses baseline {docId}.json if no latest exists; tags it latest=true when appropriate)
+	•	Latest swap: upload new version → ETag-demote old latest → promote new latest
+	•	Latest lookup by tags (docId, container, latest=true)
+	•	Timestamped version filenames (safe and sortable)
+	•	Returns field changes (field, oldValue, newValue) for your Service Bus message
+
+You can drop this class in your project and call handleTrackedChange(...) from your Cosmos DB trigger.
+
+package com.neo.ta1;
+
+import com.azure.core.http.rest.Response;
 import com.azure.core.util.BinaryData;
+import com.azure.core.util.Context;
+import com.azure.core.util.logging.ClientLogger;
+import com.azure.storage.blob.*;
+import com.azure.storage.blob.models.*;
+import com.azure.storage.common.implementation.StorageImplUtils;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
-public List<Map<String, String>> handleTrackedChange(
-        ObjectNode newDoc,
-        BlobContainerClient blobContainerClient,
-        List<String> trackedFields,
-        String containerName,
-        java.util.logging.Logger logger) {
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
+import java.util.*;
 
-    List<Map<String, String>> changes = new ArrayList<>();
-    String docId = newDoc.get("id").asText();
-    String oldBlobName = containerName + "/" + docId + ".json";
-    String latestBlobName = containerName + "/" + docId + "-latest.json";
+/**
+ * TA-1 change handler:
+ * - Finds current latest by Blob Index tags (docId/container/latest=true)
+ * - Compares tracked fields against new Cosmos document
+ * - If changed: upload new version; demote old latest with ETag; promote new
+ * - If first-time: falls back to baseline {docId}.json; tags it when needed
+ * - Returns list of {field, oldValue, newValue} for downstream messaging
+ */
+public final class TA1ChangeHandler {
 
-    ObjectMapper mapper = new ObjectMapper();
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final DateTimeFormatter TS_FMT =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH-mm-ss.SSSX").withZone(ZoneOffset.UTC);
 
-    try {
-        // Load oldDoc from {id}.json
-        BlobClient oldBlobClient = blobContainerClient.getBlobClient(oldBlobName);
-        if (!oldBlobClient.exists()) {
-            logger.warning("Missing base file (id.json): " + oldBlobName);
+    // Configurable retry/backoff (could be env-driven)
+    private static final int MAX_RETRIES = getEnvInt("TA1_MAX_RETRIES", 4);
+    private static final long BACKOFF_MS = getEnvLong("TA1_BACKOFF_MS", 200L);
+
+    private TA1ChangeHandler() {}
+
+    public static final class FieldChange {
+        public final String field;
+        public final String oldValue;
+        public final String newValue;
+        public FieldChange(String field, String oldValue, String newValue) {
+            this.field = field; this.oldValue = oldValue; this.newValue = newValue;
+        }
+        @Override public String toString() { return field + ":" + oldValue + "→" + newValue; }
+    }
+
+    /**
+     * @param serviceClient  BlobServiceClient (built from your storage connection)
+     * @param dataContainer  BlobContainerClient for the "tracked-data" container
+     * @param logicalContainerName the Cosmos container name (e.g., "CustomerContainer")
+     * @param docId          the Cosmos document id
+     * @param newDoc         the full Cosmos document as ObjectNode
+     * @param trackedFields  fields to track/compare
+     * @param logger         your function logger
+     * @return list of detected field changes (empty if no tracked change)
+     */
+    public static List<FieldChange> handleTrackedChange(
+            BlobServiceClient serviceClient,
+            BlobContainerClient dataContainer,
+            String logicalContainerName,
+            String docId,
+            ObjectNode newDoc,
+            List<String> trackedFields,
+            java.util.logging.Logger logger) {
+
+        // 1) Build the "tracked snapshot" of the new doc (only tracked fields)
+        ObjectNode newTracked = extractTracked(newDoc, trackedFields);
+
+        // 2) Find current latest by tags
+        TaggedBlob latest = findCurrentLatestByTags(serviceClient, logicalContainerName, docId);
+
+        ObjectNode oldTracked = null;
+        BlobClient oldLatestClient = null;
+
+        try {
+            if (latest != null) {
+                // Read the latest blob content as JSON (non-deprecated path)
+                oldLatestClient = getBlobClient(serviceClient, latest.containerName, latest.blobName);
+                oldTracked = readJsonObject(oldLatestClient);
+            } else {
+                // First-time case: try baseline {container}/{docId}.json
+                String baselineName = path(logicalContainerName, docId) + ".json";
+                BlobClient baseline = dataContainer.getBlobClient(baselineName);
+
+                if (baseline.exists()) {
+                    oldTracked = readJsonObject(baseline);
+                    // If no tracked change, simply tag the baseline as latest=true (no version write)
+                    List<FieldChange> diffs = diff(oldTracked, newTracked, trackedFields);
+                    if (diffs.isEmpty()) {
+                        applyLatestTag(baseline, logicalContainerName, docId, TS_FMT.format(Instant.now()), logger);
+                        logger.info("No tracked changes; tagged baseline as latest for docId=" + docId);
+                        return Collections.emptyList();
+                    }
+                    // else we will proceed to create a new version and promote it
+                } else {
+                    // Truly no baseline and no latest → treat as create: write first version (newTracked)
+                    return writeFirstVersionAndPromote(dataContainer, logicalContainerName, docId, newTracked, logger);
+                }
+            }
+
+            // 3) Compare tracked fields
+            List<FieldChange> changes = diff(oldTracked, newTracked, trackedFields);
+            if (changes.isEmpty()) {
+                logger.info("No tracked changes for docId=" + docId);
+                return Collections.emptyList();
+            }
+
+            // 4) Upload new version (candidate) with tags latest=candidate
+            String versionName = path(logicalContainerName, docId) + "/" + TS_FMT.format(Instant.now()) + ".json";
+            BlobClient candidate = dataContainer.getBlobClient(versionName);
+            candidate.upload(BinaryData.fromString(newTracked.toString()), true);
+            Map<String, String> candidateTags = baseTags(logicalContainerName, docId);
+            candidateTags.put("version", TS_FMT.format(Instant.now()));
+            candidateTags.put("latest", "candidate");
+            candidate.setTags(candidateTags);
+
+            // 5) Demote old latest with ETag guard, then promote candidate
+            boolean swapped = swapLatestWithETag(serviceClient, oldLatestClient, candidate, logicalContainerName, docId, logger);
+            if (!swapped) {
+                // someone else won the race; clean up candidate to avoid double-latest and return empty (or re-run upstream)
+                try { candidate.delete(); } catch (Exception ignore) {}
+                logger.warning("ETag race; another writer updated latest for docId=" + docId + ". Retry will occur upstream.");
+                return Collections.emptyList();
+            }
+
+            logger.info("Tracked changes detected and promoted for docId=" + docId + ": " + changes);
             return changes;
+
+        } catch (Exception e) {
+            logger.severe("TA-1 error for docId=" + docId + ": " + e.getMessage());
+            return Collections.emptyList();
         }
-
-        BinaryData oldData = oldBlobClient.downloadContent();
-        ObjectNode oldDoc = (ObjectNode) mapper.readTree(oldData.toString());
-
-        // Prepare new tracked values
-        ObjectNode newTracked = mapper.createObjectNode();
-        for (String field : trackedFields) {
-            if (newDoc.has(field)) {
-                newTracked.set(field, newDoc.get(field));
-            }
-        }
-
-        // Compare
-        for (String field : trackedFields) {
-            JsonNode oldVal = oldDoc.get(field);
-            JsonNode newVal = newTracked.get(field);
-            if ((oldVal == null && newVal != null) || (oldVal != null && !oldVal.equals(newVal))) {
-                Map<String, String> change = new HashMap<>();
-                change.put("field", field);
-                change.put("oldValue", oldVal == null ? null : oldVal.toString());
-                change.put("newValue", newVal == null ? null : newVal.toString());
-                changes.add(change);
-            }
-        }
-
-        BlobClient latestClient = blobContainerClient.getBlobClient(latestBlobName);
-        if (changes.isEmpty()) {
-            // No changes: still create latest.json from oldDoc
-            latestClient.upload(BinaryData.fromString(oldDoc.toString()), true);
-            logger.info("No tracked changes for " + docId + "; latest.json updated from oldDoc.");
-        } else {
-            // Version and update latest.json
-            String timestamp = java.time.Instant.now().toString();
-            String versionBlob = containerName + "/" + docId + "-" + timestamp + ".json";
-            blobContainerClient.getBlobClient(versionBlob)
-                    .upload(BinaryData.fromString(newTracked.toString()), true);
-
-            latestClient.upload(BinaryData.fromString(newTracked.toString()), true);
-            logger.info("Tracked changes for " + docId + "; version created and latest.json updated.");
-        }
-
-    } catch (Exception e) {
-        logger.severe("Error in handleTrackedChange for id " + docId + ": " + e.getMessage());
     }
 
-    return changes;
-}
+    // ---------- helpers ----------
 
-public void uploadBlobFromStream(BlobContainerClient blobContainerClient) {
-    BlockBlobClient blockBlobClient = blobContainerClient.getBlobClient("sampleBlob.txt").getBlockBlobClient();
-    String sampleData = "Sample data for blob";
-    try (ByteArrayInputStream dataStream = new ByteArrayInputStream(sampleData.getBytes())) {
-        blockBlobClient.upload(dataStream, sampleData.length());
-    } catch (IOException ex) {
-        ex.printStackTrace();
+    private static ObjectNode extractTracked(ObjectNode full, List<String> fields) {
+        ObjectNode out = MAPPER.createObjectNode();
+        for (String f : fields) {
+            if (full.has(f)) out.set(f, full.get(f));
+        }
+        return out;
     }
+
+    private static List<FieldChange> diff(ObjectNode oldObj, ObjectNode newObj, List<String> fields) {
+        List<FieldChange> changes = new ArrayList<>();
+        for (String f : fields) {
+            JsonNode o = oldObj == null ? null : oldObj.get(f);
+            JsonNode n = newObj.get(f);
+            boolean changed = (o == null && n != null) || (o != null && !o.equals(n));
+            if (changed) {
+                changes.add(new FieldChange(f, o == null ? null : asScalar(o), n == null ? null : asScalar(n)));
+            }
+        }
+        return changes;
+    }
+
+    private static String asScalar(JsonNode n) {
+        if (n == null || n.isNull()) return null;
+        if (n.isValueNode()) return n.asText();
+        // for objects/arrays, store compact JSON
+        return n.toString();
+    }
+
+    private static String path(String container, String docId) {
+        // If you need to sanitize docId, do it here (e.g., URL-encode or hash)
+        return container + "/" + docId;
+    }
+
+    private static ObjectNode readJsonObject(BlobClient client) throws Exception {
+        // Use downloadContent() or downloadStream(); both are non-deprecated. Stream works everywhere.
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        client.downloadStream(out);
+        String json = out.toString(StandardCharsets.UTF_8);
+        return (ObjectNode) MAPPER.readTree(json);
+    }
+
+    private static List<FieldChange> writeFirstVersionAndPromote(
+            BlobContainerClient dataContainer,
+            String container, String docId,
+            ObjectNode newTracked,
+            java.util.logging.Logger logger) {
+        try {
+            String versionName = path(container, docId) + "/" + TS_FMT.format(Instant.now()) + ".json";
+            BlobClient candidate = dataContainer.getBlobClient(versionName);
+            candidate.upload(BinaryData.fromString(newTracked.toString()), true);
+
+            Map<String, String> tags = baseTags(container, docId);
+            tags.put("version", TS_FMT.format(Instant.now()));
+            tags.put("latest", "true");
+            candidate.setTags(tags);
+
+            logger.info("First version created & promoted as latest for docId=" + docId);
+            // Return a synthetic "all tracked fields changed" list if you want, but usually empty is fine.
+            return Collections.emptyList();
+        } catch (Exception e) {
+            logger.severe("Failed first-version promote for docId=" + docId + ": " + e.getMessage());
+            return Collections.emptyList();
+        }
+    }
+
+    private static Map<String, String> baseTags(String container, String docId) {
+        Map<String, String> tags = new HashMap<>();
+        tags.put("docId", docId);
+        tags.put("container", container);
+        return tags;
+    }
+
+    // Find the blob currently tagged as latest
+    private static TaggedBlob findCurrentLatestByTags(BlobServiceClient serviceClient, String container, String docId) {
+        String query = "@docId = '" + escapeTagValue(docId) + "' AND @container = '" + escapeTagValue(container) + "' AND @latest = 'true'";
+        PagedIterable<TaggedBlobItem> found = serviceClient.findBlobsByTags(query);
+        TaggedBlobItem item = found.stream().findFirst().orElse(null);
+        if (item == null) return null;
+        return new TaggedBlob(item.getBlobName(), item.getContainerName());
+    }
+
+    private static String escapeTagValue(String v) {
+        // basic escape for single quotes in tag queries
+        return v.replace("'", "''");
+    }
+
+    private static BlobClient getBlobClient(BlobServiceClient svc, String containerName, String blobName) {
+        return svc.getBlobContainerClient(containerName).getBlobClient(blobName);
+    }
+
+    private static boolean swapLatestWithETag(
+            BlobServiceClient serviceClient,
+            BlobClient oldLatest,           // may be null (first-time baseline case)
+            BlobClient candidate,
+            String container,
+            String docId,
+            java.util.logging.Logger logger) {
+
+        int attempts = 0;
+        while (attempts++ <= MAX_RETRIES) {
+            try {
+                if (oldLatest != null) {
+                    BlobProperties props = oldLatest.getProperties();
+                    String etag = props.getETag();
+                    // Demote old latest with ETag guard
+                    Map<String, String> tags = oldLatest.getTags();
+                    tags.put("latest", "false");
+                    RequestConditions cond = new RequestConditions().setIfMatch(etag);
+                    oldLatest.setTagsWithResponse(tags, cond, Duration.ofSeconds(5), Context.NONE);
+                }
+
+                // Promote candidate to latest=true
+                Map<String, String> candTags = candidate.getTags();
+                candTags.put("latest", "true");
+                // Remove transient "candidate" if present
+                if ("candidate".equalsIgnoreCase(candTags.get("latest"))) {
+                    candTags.put("latest", "true");
+                }
+                candidate.setTags(candTags);
+                return true;
+
+            } catch (BlobStorageException bse) {
+                // 412: precondition failed (ETag mismatch) → race, retry
+                if (bse.getStatusCode() == 412) {
+                    logger.warning("ETag mismatch while demoting old latest for docId=" + docId + " (attempt " + attempts + ")");
+                    sleepSilently(BACKOFF_MS * attempts);
+                    // Re-resolve oldLatest in case it changed
+                    TaggedBlob current = findCurrentLatestByTags(serviceClient, container, docId);
+                    oldLatest = (current == null) ? null : getBlobClient(serviceClient, current.containerName, current.blobName);
+                    continue;
+                }
+                logger.severe("BlobStorageException during swapLatest: " + bse.getMessage());
+                return false;
+            } catch (Exception ex) {
+                logger.severe("swapLatest failed: " + ex.getMessage());
+                return false;
+            }
+        }
+        return false;
+    }
+
+    private static void applyLatestTag(BlobClient blob, String container, String docId, String version, java.util.logging.Logger logger) {
+        Map<String, String> tags = baseTags(container, docId);
+        tags.put("version", version);
+        tags.put("latest", "true");
+        blob.setTags(tags);
+    }
+
+    private static void sleepSilently(long ms) {
+        try { Thread.sleep(ms); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
+    }
+
+    private static int getEnvInt(String key, int def) {
+        try { return Integer.parseInt(Optional.ofNullable(System.getenv(key)).orElse(String.valueOf(def))); }
+        catch (Exception e) { return def; }
+    }
+    private static long getEnvLong(String key, long def) {
+        try { return Long.parseLong(Optional.ofNullable(System.getenv(key)).orElse(String.valueOf(def))); }
+        catch (Exception e) { return def; }
+    }
+
+    private record TaggedBlob(String blobName, String containerName) {}
 }
 
-public void uploadDataToBlob(BlobContainerClient blobContainerClient) {
-    // Create a BlobClient object from BlobContainerClient
-    BlobClient blobClient = blobContainerClient.getBlobClient("sampleBlob.txt");
-    String sampleData = "Sample data for blob";
-    blobClient.upload(BinaryData.fromString(sampleData));
-}
+How you call it from your Function
+
+List<TA1ChangeHandler.FieldChange> changes =
+    TA1ChangeHandler.handleTrackedChange(
+        blobServiceClient,
+        trackedDataContainerClient,     // "tracked-data"
+        "CustomerContainer",            // logical Cosmos container
+        docId,
+        newDoc,
+        trackedFields,
+        context.getLogger());
+
+Notes
+	•	Uses downloadStream and upload(BinaryData, overwrite=true) (non‑deprecated).
+	•	Uses findBlobsByTags to locate the current latest.
+	•	ETag guard on demote step, with configurable retries/backoff via env:
+	•	TA1_MAX_RETRIES (default 4)
+	•	TA1_BACKOFF_MS (default 200)
+	•	First‑time logic:
+	•	If no latest is found but {docId}.json baseline exists:
+	•	If no tracked differences: tag the baseline as latest=true.
+	•	If differences: write a new timestamped version and promote it.
+	•	If baseline doesn’t exist: write first version and promote it.
+
+If you want, I can also provide a small wrapper that builds BlobServiceClient from BlobConnection and the correct BlobContainerClient from BlobDataContainer env values.
