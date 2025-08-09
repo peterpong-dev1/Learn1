@@ -1,129 +1,137 @@
-Got it—let’s wire this up step‑by‑step.
+got it — you want a small method inside your existing TrackedChangeHandler that your trigger calls via detectChanges(...), and that method should just fetch the “old JSON” to compare, handling both cases:
+	•	Later changes → find the latest by index tag
+	•	First time → read baseline file named id.json under the docId folder
 
-Step 1 — Method definition + how to call it from the trigger
+Here’s a tight CS‑1 drop‑in for your class.
 
-1) Define a tiny result type for the changes
+⸻
 
-package com.neo.notification.model;
+In TrackedChangeHandler add this:
 
-public class ChangeDelta {
-    private final String field;
-    private final String oldValue;
-    private final String newValue;
-
-    public ChangeDelta(String field, String oldValue, String newValue) {
-        this.field = field;
-        this.oldValue = oldValue;
-        this.newValue = newValue;
+/**
+ * Minimal holder for the previously-stored snapshot you will compare against.
+ * Keeps the source so your caller can branch (NONE / BASELINE / LATEST).
+ */
+public static final class OldSnapshot {
+    public enum Source { LATEST, BASELINE, NONE }
+    private final Source source;
+    private final com.fasterxml.jackson.databind.node.ObjectNode json;  // null if NONE
+    public OldSnapshot(Source source, com.fasterxml.jackson.databind.node.ObjectNode json) {
+        this.source = source; this.json = json;
     }
-    public String getField()    { return field; }
-    public String getOldValue() { return oldValue; }
-    public String getNewValue() { return newValue; }
-
-    @Override public String toString() {
-        return field + ": [" + oldValue + " -> " + newValue + "]";
-    }
+    public Source source() { return source; }
+    public com.fasterxml.jackson.databind.node.ObjectNode json() { return json; }
 }
 
-2) Declare the handler method (implementation comes next step)
+/**
+ * Resolve and load the "old" JSON snapshot for a doc, handling:
+ * 1) LATEST (by Blob Index tags: docId + container + latest=true)
+ * 2) BASELINE (first-time file: <container>/<docId>/<docId>.json, no tags)
+ * 3) NONE    (no prior snapshot exists)
+ *
+ * Thread-safety: stateless (method-local variables only).
+ *
+ * @param serviceClient   shared BlobServiceClient (singleton)
+ * @param dataContainer   blob container where snapshots live (e.g., "tracked-data")
+ * @param logicalContainer logical Cosmos container name used in your blob paths/tags (e.g., "Customer")
+ * @param docId           document id from newDoc.get("id")
+ * @param log             Azure Functions logger
+ * @return OldSnapshot with source + JSON (json==null when source==NONE)
+ */
+public static OldSnapshot getOldSnapshot(
+        com.azure.storage.blob.BlobServiceClient serviceClient,
+        com.azure.storage.blob.BlobContainerClient dataContainer,
+        String logicalContainer,
+        String docId,
+        java.util.logging.Logger log) {
 
-package com.neo.notification.core;
+    // ----- 1) Try current LATEST via Blob Index tags -----
+    // Query: @docId = '<docId>' AND @container = '<logicalContainer>' AND @latest = 'true'
+    String d = docId.replace("'", "''");
+    String c = logicalContainer.replace("'", "''");
+    String query = "@docId = '" + d + "' AND @container = '" + c + "' AND @latest = 'true'";
 
-import com.azure.storage.blob.BlobContainerClient;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.neo.notification.model.ChangeDelta;
+    com.azure.core.http.rest.PagedIterable<com.azure.storage.blob.models.TaggedBlobItem> hits =
+            serviceClient.findBlobsByTags(query);
+    com.azure.storage.blob.models.TaggedBlobItem hit =
+            hits.stream().findFirst().orElse(null);
 
-import java.util.List;
-import java.util.logging.Logger;
-
-public class TrackedChangeHandler {
-
-    /**
-     * Compares the incoming Cosmos document with the stored snapshot in Blob (tracked fields only)
-     * and returns the list of changed fields with old/new values.
-     */
-    public static List<ChangeDelta> detectChanges(
-            String cosmosContainerName,      // logical Cosmos container (e.g., "CustomerContainer")
-            ObjectNode newDoc,               // full document from change feed
-            BlobContainerClient dataContainer, // blob container where snapshots live
-            List<String> trackedFields,      // fields to compare
-            Logger log                       // Azure Functions logger
-    ) {
-        // TODO: next step – implement reading old snapshot, compare, and return deltas
-        return java.util.Collections.emptyList();
+    if (hit != null) {
+        var client = serviceClient
+                .getBlobContainerClient(hit.getContainerName())
+                .getBlobClient(hit.getBlobName());
+        var json = readJsonObject(client, log);
+        return new OldSnapshot(OldSnapshot.Source.LATEST, json);
     }
+
+    // ----- 2) Fallback to first-time BASELINE file (no tags) -----
+    // You said baseline naming is "<container>/<docId>/<docId>.json"
+    String baselinePath = logicalContainer + "/" + safePath(docId) + "/" + docId + ".json";
+    var baseline = dataContainer.getBlobClient(baselinePath);
+    if (baseline.exists()) {
+        var json = readJsonObject(baseline, log);
+        return new OldSnapshot(OldSnapshot.Source.BASELINE, json);
+    }
+
+    // ----- 3) Nothing there yet → NONE -----
+    log.info(() -> "No prior snapshot found for container=" + logicalContainer + ", docId=" + docId);
+    return new OldSnapshot(OldSnapshot.Source.NONE, null);
 }
 
-3) Call it from your Cosmos DB trigger function
+/* ---------- helpers (private) ---------- */
 
-package com.neo.notification.function;
-
-import com.azure.storage.blob.BlobContainerClient;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.microsoft.azure.functions.annotation.*;
-import com.microsoft.azure.functions.*;
-import com.neo.notification.blob.BlobClientProvider;
-import com.neo.notification.core.TrackedChangeHandler;
-import com.neo.notification.model.ChangeDelta;
-import com.neo.notification.util.NeoGetTrackedFieldsFromBlob;
-
-import java.util.List;
-
-public class NeoNotificationTriggerFunction {
-
-    // Resolve once per function process
-    private static final String CONFIG_CONTAINER_NAME = System.getenv("Blob_ContainerName_Config");
-    private static final String DATA_CONTAINER_NAME   = System.getenv("Blob_ContainerName_Data");
-
-    // Shared, thread‑safe clients (from your singleton provider)
-    private static final BlobContainerClient CONFIG_CONTAINER =
-            BlobClientProvider.container(CONFIG_CONTAINER_NAME);
-    private static final BlobContainerClient DATA_CONTAINER =
-            BlobClientProvider.container(DATA_CONTAINER_NAME);
-
-    @FunctionName("NeoCosmosChangeFeedTrigger")
-    public void run(
-        @CosmosDBTrigger(
-            name = "docs",
-            databaseName = "%DatabaseName_1%",
-            containerName = "%ContainerNameToTrack_1%",
-            leaseContainerName = "%LeaseContainer_1%",
-            createLeaseContainerIfNotExists = false,
-            connection = "CosmosDBConnection")
-        List<ObjectNode> documents,
-        final ExecutionContext context) {
-
-        if (documents == null || documents.isEmpty()) return;
-
-        // Which logical Cosmos container are we comparing rules for?
-        final String cosmosContainerName = System.getenv("ContainerNameToTrack_1");
-
-        // Load fields-to-track (you already have this util)
-        List<String> fieldsToTrack =
-            NeoGetTrackedFieldsFromBlob.getTrackedFields(CONFIG_CONTAINER, cosmosContainerName);
-
-        for (ObjectNode newDoc : documents) {
-            List<ChangeDelta> deltas = TrackedChangeHandler.detectChanges(
-                    cosmosContainerName,
-                    newDoc,
-                    DATA_CONTAINER,
-                    fieldsToTrack,
-                    context.getLogger());
-
-            if (deltas.isEmpty()) {
-                context.getLogger().info("No tracked changes for id=" +
-                        (newDoc.has("id") ? newDoc.get("id").asText() : "<no-id>"));
-                continue;
-            }
-
-            // >>> Next step: build your Service Bus message from 'deltas' and enqueue
-            // prepareAndSendMessage(deltas, newDoc, cosmosContainerName);
+/**
+ * Download a blob to JSON using non-deprecated APIs.
+ * Uses downloadContent() with a stream fallback for maximum compatibility.
+ */
+private static com.fasterxml.jackson.databind.node.ObjectNode readJsonObject(
+        com.azure.storage.blob.BlobClient client,
+        java.util.logging.Logger log) {
+    try {
+        String json = client.downloadContent().toString(); // BinaryData -> String (UTF-8)
+        return (com.fasterxml.jackson.databind.node.ObjectNode)
+                new com.fasterxml.jackson.databind.ObjectMapper().readTree(json);
+    } catch (Exception fastPathFail) {
+        try (var out = new java.io.ByteArrayOutputStream(4096)) {
+            client.downloadStream(out);
+            String json = out.toString(java.nio.charset.StandardCharsets.UTF_8);
+            return (com.fasterxml.jackson.databind.node.ObjectNode)
+                    new com.fasterxml.jackson.databind.ObjectMapper().readTree(json);
+        } catch (Exception e) {
+            log.severe("Blob read failed: " + client.getBlobUrl() + " - " + e.getMessage());
+            throw new RuntimeException("Blob read failed: " + client.getBlobUrl(), e);
         }
     }
 }
 
-This gives you:
-	•	a clean method signature that returns List<ChangeDelta>,
-	•	a caller in your trigger that loads the tracked fields, calls the handler, and then you can use the result to build the Service Bus message in the next step.
+/** Minimal path sanitizer — replace '/' to keep blob names valid. */
+private static String safePath(String id) {
+    return id.replace("/", "_");
+}
 
-Say the word and I’ll implement TrackedChangeHandler.detectChanges(...) (read latest snapshot from Blob, compare only the tracked fields, first-change vs subsequent-change logic, version/tags, ETag concurrency, etc.).
+
+⸻
+
+How to call it inside your existing detectChanges(...)
+
+// inside TrackedChangeHandler.detectChanges(...)
+
+String docId = newDoc.get("id").asText();
+
+// get old JSON (NONE / BASELINE / LATEST handled inside)
+OldSnapshot oldSnap = getOldSnapshot(
+        BlobClientProvider.service(),  // your singleton
+        dataContainer,                 // your tracked-data container client
+        cosmosContainerName,           // logical container name
+        docId,
+        log);
+
+// now you have oldSnap.json() to compare with your "new tracked projection"
+// oldSnap.source() tells you if it was NONE, BASELINE, or LATEST
+
+Notes
+	•	This code does not filter to tracked fields — compare however you prefer after this (you said you already have tracked list/read). If you want me to also filter here, say the word and I’ll add it.
+	•	Uses latest Azure SDK (downloadContent()), with a stream fallback (some emulators).
+	•	Thread-safe (stateless), no caching, no synchronization.
+
+When you’re ready, we’ll add the compare step and then the write new version + tag flip step.
