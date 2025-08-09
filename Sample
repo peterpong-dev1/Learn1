@@ -1,150 +1,152 @@
-Got it—your layout is:
+got it—you want just the “compute delta” piece: compare only the tracked fields from your config between newDoc (from change feed) and oldSnap (from Blob), including support for nested paths like address.city or items[0].name. Here’s a tight, productiony utility you can drop in.
 
-config/
-  <container>-tracked-fields.json
-data/
-  <container>/
-    <docId>/
-      <docId>.json                (baseline)
-      <docId>-<yyyyMMddHHmmss>.json  (versions…)
+Change model
 
-You already hold a shared BlobContainerClient DATA_CONTAINER that points to data. Perfect. From here, keep everything under that one container and treat the rest as virtual folders (just blob names with slashes).
+public final class ChangeDelta {
+    public enum Kind { ADDED, REMOVED, MODIFIED }
 
-Here’s a clean, production‑style way to proceed.
+    private final String fieldPath;      // e.g., "address.city"
+    private final JsonNode oldValue;     // may be null
+    private final JsonNode newValue;     // may be null
+    private final Kind kind;
 
-1) Path & tagging helpers (tiny, reusable)
-
-package com.neo.notification.blob;
-
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
-import java.time.OffsetDateTime;
-import java.time.format.DateTimeFormatter;
-
-public final class BlobPaths {
-    private static final DateTimeFormatter TS = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
-
-    private BlobPaths() {}
-
-    /** Ensure docId is path‑safe */
-    public static String safe(String s) {
-        return URLEncoder.encode(s, StandardCharsets.UTF_8);
+    public ChangeDelta(String fieldPath, JsonNode oldValue, JsonNode newValue, Kind kind) {
+        this.fieldPath = fieldPath;
+        this.oldValue  = oldValue;
+        this.newValue  = newValue;
+        this.kind      = kind;
     }
 
-    /** e.g. container1/abc%2F123/ */
-    public static String folder(String logicalContainer, String docId) {
-        return safe(logicalContainer) + "/" + safe(docId) + "/";
-    }
+    public String  getFieldPath() { return fieldPath; }
+    public JsonNode getOldValue() { return oldValue; }
+    public JsonNode getNewValue() { return newValue; }
+    public Kind     getKind()     { return kind; }
 
-    /** Baseline name: e.g. container1/abc/id.json */
-    public static String baseline(String logicalContainer, String docId) {
-        return folder(logicalContainer, docId) + safe(docId) + ".json";
-    }
-
-    /** Version name: e.g. container1/abc/id-20250730T084512.json */
-    public static String version(String logicalContainer, String docId, OffsetDateTime when) {
-        return folder(logicalContainer, docId) + safe(docId) + "-" + TS.format(when) + ".json";
-    }
-
-    /** Tag query to locate “latest” for this doc */
-    public static String latestTagQuery(String logicalContainer, String docId) {
-        // Tags are strings; keep values simple (no quotes inside).
-        return "@docId = '" + safe(docId) + "' AND @container = '" + safe(logicalContainer) + "' AND @latest = 'true'";
+    @Override public String toString() {
+        return "ChangeDelta{" + fieldPath + ", " + kind + ", old=" + oldValue + ", new=" + newValue + "}";
     }
 }
 
-2) Read “old snapshot” (latest via tags → fallback baseline)
+Delta calculator (only tracked fields)
 
-Pass in your shared DATA_CONTAINER and the logical Cosmos container name for this trigger.
-
-package com.neo.notification.change;
-
-import com.azure.core.util.IterableStream;
-import com.azure.storage.blob.BlobClient;
-import com.azure.storage.blob.BlobContainerClient;
-import com.azure.storage.blob.models.TaggedBlobItem;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.MissingNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
-import java.io.ByteArrayOutputStream;
-import java.nio.charset.StandardCharsets;
-import java.util.Map;
-import java.util.logging.Logger;
+import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
-import static com.neo.notification.blob.BlobPaths.*;
+public final class TrackedDelta {
 
-public final class OldSnapshotReader {
-    private static final ObjectMapper MAPPER = new ObjectMapper();
-
-    private OldSnapshotReader() {}
+    private TrackedDelta() {}
 
     /**
-     * Load the previous (old) content to compare against.
-     * 1) Try index tags (latest=true) under the same DATA container.
-     * 2) Fallback to the baseline blob (first-time case).
-     * Returns null if not found.
+     * Compare only the tracked field paths and return deltas.
+     * Paths support dots and array indexes, e.g.:
+     *   "address.city", "policy.status.code", "items[0].name", "lines[2].amount.value"
+     *
+     * @param newDoc       full latest document from change feed
+     * @param oldDoc       snapshot from Blob (may be null or empty)
+     * @param trackedPaths list of field paths to compare
      */
-    public static ObjectNode loadOld(
-            BlobContainerClient dataContainer,
-            String logicalContainer,
-            String docId,
-            Logger log) {
+    public static List<ChangeDelta> compute(ObjectNode newDoc,
+                                            ObjectNode oldDoc,
+                                            List<String> trackedPaths) {
+        Objects.requireNonNull(newDoc, "newDoc");
+        if (trackedPaths == null || trackedPaths.isEmpty()) return Collections.emptyList();
 
-        // 1) Try latest via tags (search limited to the “data” container)
-        String query = latestTagQuery(logicalContainer, docId);
-        IterableStream<TaggedBlobItem> hits = dataContainer.findBlobsByTags(query);
+        final ObjectNode safeOld = oldDoc == null ? newDoc.objectNode() : oldDoc;
+        final List<ChangeDelta> out = new ArrayList<>(trackedPaths.size());
 
-        TaggedBlobItem hit = hits.stream().findFirst().orElse(null);
-        if (hit != null) {
-            BlobClient latest = dataContainer.getBlobClient(hit.getName());
-            return readJson(latest, log);
+        for (String path : trackedPaths) {
+            if (path == null || path.isBlank()) continue;
+
+            JsonNode newVal = getByPath(newDoc, path);
+            JsonNode oldVal = getByPath(safeOld, path);
+
+            boolean newMissing = isMissingOrNull(newVal);
+            boolean oldMissing = isMissingOrNull(oldVal);
+
+            if (oldMissing && newMissing) {
+                // both absent/null → no delta
+                continue;
+            } else if (oldMissing && !newMissing) {
+                out.add(new ChangeDelta(path, null, newVal, ChangeDelta.Kind.ADDED));
+            } else if (!oldMissing && newMissing) {
+                out.add(new ChangeDelta(path, oldVal, null, ChangeDelta.Kind.REMOVED));
+            } else if (!jsonDeepEquals(oldVal, newVal)) {
+                out.add(new ChangeDelta(path, oldVal, newVal, ChangeDelta.Kind.MODIFIED));
+            }
         }
-
-        // 2) Fallback to baseline
-        BlobClient baseline = dataContainer.getBlobClient(baseline(logicalContainer, docId));
-        if (baseline.exists()) {
-            return readJson(baseline, log);
-        }
-
-        // Not found (truly first ever)
-        return null;
+        return out;
     }
 
-    private static ObjectNode readJson(BlobClient blob, Logger log) {
-        try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-            blob.download(out);
-            String json = out.toString(StandardCharsets.UTF_8);
-            return (ObjectNode) MAPPER.readTree(json);
-        } catch (Exception e) {
-            log.severe("Failed to read blob '" + blob.getBlobName() + "': " + e.getMessage());
-            return null;
+    /* -------------------- helpers -------------------- */
+
+    // Accepts dot + [index] segments: a.b[0].c
+    private static final Pattern SEGMENT = Pattern.compile("(\\w+)(\\[(\\d+)])?");
+
+    /** Navigate by a dotted/Indexed path. Returns MissingNode if not found. */
+    private static JsonNode getByPath(JsonNode root, String path) {
+        if (root == null || root.isMissingNode() || root.isNull()) return MissingNode.getInstance();
+
+        String[] parts = path.split("\\.");
+        JsonNode cur = root;
+
+        for (String raw : parts) {
+            Matcher m = SEGMENT.matcher(raw);
+            if (!m.matches()) return MissingNode.getInstance(); // invalid segment
+
+            String field = m.group(1);
+            String indexStr = m.group(3);
+
+            cur = cur.get(field);
+            if (cur == null) return MissingNode.getInstance();
+
+            if (indexStr != null) {
+                if (!cur.isArray()) return MissingNode.getInstance();
+                int idx = Integer.parseInt(indexStr);
+                if (idx < 0 || idx >= cur.size()) return MissingNode.getInstance();
+                cur = cur.get(idx);
+            }
         }
+        return cur == null ? MissingNode.getInstance() : cur;
+    }
+
+    /** Treat MissingNode OR explicit null as “missing” for change semantics. */
+    private static boolean isMissingOrNull(JsonNode n) {
+        return n == null || n.isMissingNode() || n.isNull();
+    }
+
+    /** Deep structural equality, tolerant to numeric 1 vs 1.0 differences. */
+    private static boolean jsonDeepEquals(JsonNode a, JsonNode b) {
+        if (a == b) return true;
+        if (a == null || b == null) return false;
+
+        // Normalize numbers to string form to avoid 1 vs 1.0 surprises
+        if (a.isNumber() && b.isNumber()) {
+            return a.decimalValue().compareTo(b.decimalValue()) == 0;
+        }
+        return a.equals(b);
     }
 }
 
-3) How to call it from your Function trigger
+How you call it in your handler
 
-You already created and share:
+// inside your TrackedChangeHandler.detectChanges(...)
+ObjectNode newDoc = incoming;          // from change feed
+ObjectNode oldDoc = oldSnapshotObject; // from blob (null if none)
+List<String> tracked = fieldsToTrack;  // from config JSON
 
-private static final BlobContainerClient DATA_CONTAINER =
-    BlobClientProvider.container(System.getenv("Blob_ContainerName_Data"));
+List<ChangeDelta> deltas = TrackedDelta.compute(newDoc, oldDoc, tracked);
 
-In the trigger method:
+// now you can build your Service Bus message from `deltas`
 
-String logicalContainer = System.getenv("ContainerNameToTrack_1");  // the Cosmos container this function watches
-String docId = newDoc.get("id").asText();
+Notes
+	•	Only tracked paths are checked—everything else is ignored.
+	•	Works for nested and indexed fields.
+	•	Treats “missing vs null” as meaningful (ADDED/REMOVED).
+	•	Returns a small, clean ChangeDelta list you can serialize straight into your message payload.
 
-ObjectNode oldDoc = OldSnapshotReader.loadOld(DATA_CONTAINER, logicalContainer, docId, context.getLogger());
-/*
- oldDoc == null:
-   - truly first time (no baseline yet), OR
-   - baseline missing: choose your policy (e.g., treat as “no change” and create baseline).
- Otherwise:
-   - compare oldDoc vs newDoc for your tracked fields.
-*/
-
-4) Next steps (quick)
-	•	After comparing, write a new version blob (e.g., version(...)) and update tags on the previous “latest” to false, then set tags on the new “latest” to true (@docId, @container, @latest=true).
-	•	Use ETag conditional headers on updates to avoid collisions. You already have the shared DATA_CONTAINER, so no new clients are needed.
-
-This keeps your “one DATA container, many virtual folders” design, lets you handle “first time vs later” cleanly, and scales well.
+If you want me to also wire this into your “update snapshot + tag latest” step right after deltas ≠ empty, say the word and I’ll bolt that on top.
