@@ -1,137 +1,150 @@
-got it — you want a small method inside your existing TrackedChangeHandler that your trigger calls via detectChanges(...), and that method should just fetch the “old JSON” to compare, handling both cases:
-	•	Later changes → find the latest by index tag
-	•	First time → read baseline file named id.json under the docId folder
+Got it—your layout is:
 
-Here’s a tight CS‑1 drop‑in for your class.
+config/
+  <container>-tracked-fields.json
+data/
+  <container>/
+    <docId>/
+      <docId>.json                (baseline)
+      <docId>-<yyyyMMddHHmmss>.json  (versions…)
 
-⸻
+You already hold a shared BlobContainerClient DATA_CONTAINER that points to data. Perfect. From here, keep everything under that one container and treat the rest as virtual folders (just blob names with slashes).
 
-In TrackedChangeHandler add this:
+Here’s a clean, production‑style way to proceed.
 
-/**
- * Minimal holder for the previously-stored snapshot you will compare against.
- * Keeps the source so your caller can branch (NONE / BASELINE / LATEST).
- */
-public static final class OldSnapshot {
-    public enum Source { LATEST, BASELINE, NONE }
-    private final Source source;
-    private final com.fasterxml.jackson.databind.node.ObjectNode json;  // null if NONE
-    public OldSnapshot(Source source, com.fasterxml.jackson.databind.node.ObjectNode json) {
-        this.source = source; this.json = json;
+1) Path & tagging helpers (tiny, reusable)
+
+package com.neo.notification.blob;
+
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.time.OffsetDateTime;
+import java.time.format.DateTimeFormatter;
+
+public final class BlobPaths {
+    private static final DateTimeFormatter TS = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
+
+    private BlobPaths() {}
+
+    /** Ensure docId is path‑safe */
+    public static String safe(String s) {
+        return URLEncoder.encode(s, StandardCharsets.UTF_8);
     }
-    public Source source() { return source; }
-    public com.fasterxml.jackson.databind.node.ObjectNode json() { return json; }
+
+    /** e.g. container1/abc%2F123/ */
+    public static String folder(String logicalContainer, String docId) {
+        return safe(logicalContainer) + "/" + safe(docId) + "/";
+    }
+
+    /** Baseline name: e.g. container1/abc/id.json */
+    public static String baseline(String logicalContainer, String docId) {
+        return folder(logicalContainer, docId) + safe(docId) + ".json";
+    }
+
+    /** Version name: e.g. container1/abc/id-20250730T084512.json */
+    public static String version(String logicalContainer, String docId, OffsetDateTime when) {
+        return folder(logicalContainer, docId) + safe(docId) + "-" + TS.format(when) + ".json";
+    }
+
+    /** Tag query to locate “latest” for this doc */
+    public static String latestTagQuery(String logicalContainer, String docId) {
+        // Tags are strings; keep values simple (no quotes inside).
+        return "@docId = '" + safe(docId) + "' AND @container = '" + safe(logicalContainer) + "' AND @latest = 'true'";
+    }
 }
 
-/**
- * Resolve and load the "old" JSON snapshot for a doc, handling:
- * 1) LATEST (by Blob Index tags: docId + container + latest=true)
- * 2) BASELINE (first-time file: <container>/<docId>/<docId>.json, no tags)
- * 3) NONE    (no prior snapshot exists)
- *
- * Thread-safety: stateless (method-local variables only).
- *
- * @param serviceClient   shared BlobServiceClient (singleton)
- * @param dataContainer   blob container where snapshots live (e.g., "tracked-data")
- * @param logicalContainer logical Cosmos container name used in your blob paths/tags (e.g., "Customer")
- * @param docId           document id from newDoc.get("id")
- * @param log             Azure Functions logger
- * @return OldSnapshot with source + JSON (json==null when source==NONE)
- */
-public static OldSnapshot getOldSnapshot(
-        com.azure.storage.blob.BlobServiceClient serviceClient,
-        com.azure.storage.blob.BlobContainerClient dataContainer,
-        String logicalContainer,
-        String docId,
-        java.util.logging.Logger log) {
+2) Read “old snapshot” (latest via tags → fallback baseline)
 
-    // ----- 1) Try current LATEST via Blob Index tags -----
-    // Query: @docId = '<docId>' AND @container = '<logicalContainer>' AND @latest = 'true'
-    String d = docId.replace("'", "''");
-    String c = logicalContainer.replace("'", "''");
-    String query = "@docId = '" + d + "' AND @container = '" + c + "' AND @latest = 'true'";
+Pass in your shared DATA_CONTAINER and the logical Cosmos container name for this trigger.
 
-    com.azure.core.http.rest.PagedIterable<com.azure.storage.blob.models.TaggedBlobItem> hits =
-            serviceClient.findBlobsByTags(query);
-    com.azure.storage.blob.models.TaggedBlobItem hit =
-            hits.stream().findFirst().orElse(null);
+package com.neo.notification.change;
 
-    if (hit != null) {
-        var client = serviceClient
-                .getBlobContainerClient(hit.getContainerName())
-                .getBlobClient(hit.getBlobName());
-        var json = readJsonObject(client, log);
-        return new OldSnapshot(OldSnapshot.Source.LATEST, json);
+import com.azure.core.util.IterableStream;
+import com.azure.storage.blob.BlobClient;
+import com.azure.storage.blob.BlobContainerClient;
+import com.azure.storage.blob.models.TaggedBlobItem;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.Map;
+import java.util.logging.Logger;
+
+import static com.neo.notification.blob.BlobPaths.*;
+
+public final class OldSnapshotReader {
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    private OldSnapshotReader() {}
+
+    /**
+     * Load the previous (old) content to compare against.
+     * 1) Try index tags (latest=true) under the same DATA container.
+     * 2) Fallback to the baseline blob (first-time case).
+     * Returns null if not found.
+     */
+    public static ObjectNode loadOld(
+            BlobContainerClient dataContainer,
+            String logicalContainer,
+            String docId,
+            Logger log) {
+
+        // 1) Try latest via tags (search limited to the “data” container)
+        String query = latestTagQuery(logicalContainer, docId);
+        IterableStream<TaggedBlobItem> hits = dataContainer.findBlobsByTags(query);
+
+        TaggedBlobItem hit = hits.stream().findFirst().orElse(null);
+        if (hit != null) {
+            BlobClient latest = dataContainer.getBlobClient(hit.getName());
+            return readJson(latest, log);
+        }
+
+        // 2) Fallback to baseline
+        BlobClient baseline = dataContainer.getBlobClient(baseline(logicalContainer, docId));
+        if (baseline.exists()) {
+            return readJson(baseline, log);
+        }
+
+        // Not found (truly first ever)
+        return null;
     }
 
-    // ----- 2) Fallback to first-time BASELINE file (no tags) -----
-    // You said baseline naming is "<container>/<docId>/<docId>.json"
-    String baselinePath = logicalContainer + "/" + safePath(docId) + "/" + docId + ".json";
-    var baseline = dataContainer.getBlobClient(baselinePath);
-    if (baseline.exists()) {
-        var json = readJsonObject(baseline, log);
-        return new OldSnapshot(OldSnapshot.Source.BASELINE, json);
-    }
-
-    // ----- 3) Nothing there yet → NONE -----
-    log.info(() -> "No prior snapshot found for container=" + logicalContainer + ", docId=" + docId);
-    return new OldSnapshot(OldSnapshot.Source.NONE, null);
-}
-
-/* ---------- helpers (private) ---------- */
-
-/**
- * Download a blob to JSON using non-deprecated APIs.
- * Uses downloadContent() with a stream fallback for maximum compatibility.
- */
-private static com.fasterxml.jackson.databind.node.ObjectNode readJsonObject(
-        com.azure.storage.blob.BlobClient client,
-        java.util.logging.Logger log) {
-    try {
-        String json = client.downloadContent().toString(); // BinaryData -> String (UTF-8)
-        return (com.fasterxml.jackson.databind.node.ObjectNode)
-                new com.fasterxml.jackson.databind.ObjectMapper().readTree(json);
-    } catch (Exception fastPathFail) {
-        try (var out = new java.io.ByteArrayOutputStream(4096)) {
-            client.downloadStream(out);
-            String json = out.toString(java.nio.charset.StandardCharsets.UTF_8);
-            return (com.fasterxml.jackson.databind.node.ObjectNode)
-                    new com.fasterxml.jackson.databind.ObjectMapper().readTree(json);
+    private static ObjectNode readJson(BlobClient blob, Logger log) {
+        try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            blob.download(out);
+            String json = out.toString(StandardCharsets.UTF_8);
+            return (ObjectNode) MAPPER.readTree(json);
         } catch (Exception e) {
-            log.severe("Blob read failed: " + client.getBlobUrl() + " - " + e.getMessage());
-            throw new RuntimeException("Blob read failed: " + client.getBlobUrl(), e);
+            log.severe("Failed to read blob '" + blob.getBlobName() + "': " + e.getMessage());
+            return null;
         }
     }
 }
 
-/** Minimal path sanitizer — replace '/' to keep blob names valid. */
-private static String safePath(String id) {
-    return id.replace("/", "_");
-}
+3) How to call it from your Function trigger
 
+You already created and share:
 
-⸻
+private static final BlobContainerClient DATA_CONTAINER =
+    BlobClientProvider.container(System.getenv("Blob_ContainerName_Data"));
 
-How to call it inside your existing detectChanges(...)
+In the trigger method:
 
-// inside TrackedChangeHandler.detectChanges(...)
-
+String logicalContainer = System.getenv("ContainerNameToTrack_1");  // the Cosmos container this function watches
 String docId = newDoc.get("id").asText();
 
-// get old JSON (NONE / BASELINE / LATEST handled inside)
-OldSnapshot oldSnap = getOldSnapshot(
-        BlobClientProvider.service(),  // your singleton
-        dataContainer,                 // your tracked-data container client
-        cosmosContainerName,           // logical container name
-        docId,
-        log);
+ObjectNode oldDoc = OldSnapshotReader.loadOld(DATA_CONTAINER, logicalContainer, docId, context.getLogger());
+/*
+ oldDoc == null:
+   - truly first time (no baseline yet), OR
+   - baseline missing: choose your policy (e.g., treat as “no change” and create baseline).
+ Otherwise:
+   - compare oldDoc vs newDoc for your tracked fields.
+*/
 
-// now you have oldSnap.json() to compare with your "new tracked projection"
-// oldSnap.source() tells you if it was NONE, BASELINE, or LATEST
+4) Next steps (quick)
+	•	After comparing, write a new version blob (e.g., version(...)) and update tags on the previous “latest” to false, then set tags on the new “latest” to true (@docId, @container, @latest=true).
+	•	Use ETag conditional headers on updates to avoid collisions. You already have the shared DATA_CONTAINER, so no new clients are needed.
 
-Notes
-	•	This code does not filter to tracked fields — compare however you prefer after this (you said you already have tracked list/read). If you want me to also filter here, say the word and I’ll add it.
-	•	Uses latest Azure SDK (downloadContent()), with a stream fallback (some emulators).
-	•	Thread-safe (stateless), no caching, no synchronization.
-
-When you’re ready, we’ll add the compare step and then the write new version + tag flip step.
+This keeps your “one DATA container, many virtual folders” design, lets you handle “first time vs later” cleanly, and scales well.
