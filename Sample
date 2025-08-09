@@ -1,90 +1,27 @@
-public class NeoChangeFeedFunctions {
-
-  private static final String CONFIG_CONTAINER_NAME = System.getenv("BlobConfigContainer");  // e.g. "config"
-  private static final String DATA_CONTAINER_NAME   = System.getenv("BlobDataContainer");    // e.g. "tracked-data"
-
-  // Shared across all trigger methods in this class (and safe)
-  private static final BlobContainerClient CONFIG_CONTAINER =
-      BlobClientProvider.container(CONFIG_CONTAINER_NAME);
-  private static final BlobContainerClient DATA_CONTAINER =
-      BlobClientProvider.container(DATA_CONTAINER_NAME);
-
-  @FunctionName("TriggerForContainerA")
-  public void onA(
-      @CosmosDBTrigger(/* ... */) List<ObjectNode> items,
-      ExecutionContext ctx) {
-
-    for (ObjectNode doc : items) {
-      String docId = doc.get("id").asText();
-      // read tracked fields config from blob
-      String cfgBlobName = System.getenv("TrackedFields_ContainerA"); // e.g. "containerA-tracked.json"
-      BlobClient cfgBlob = CONFIG_CONTAINER.getBlobClient(cfgBlobName);
-
-      // work with data blobs for this doc
-      String latestPath = "ContainerA/" + docId + "/latest.json";
-      BlobClient latest = DATA_CONTAINER.getBlobClient(latestPath);
-
-      // ... your compare / version / tag logic here ...
+// NeoGetTrackedFieldsFromBlob.java
+public static List<String> getTrackedFields(BlobContainerClient configContainer,
+                                            String logicalContainerName) {
+    if (configContainer == null || !configContainer.exists()) {
+        System.err.println("Config container is null or does not exist.");
+        return Collections.emptyList();
     }
-  }
-
-  @FunctionName("TriggerForContainerB")
-  public void onB(
-      @CosmosDBTrigger(/* ... */) List<ObjectNode> items,
-      ExecutionContext ctx) {
-
-    for (ObjectNode doc : items) {
-      String docId = doc.get("id").asText();
-      String cfgBlobName = System.getenv("TrackedFields_ContainerB");
-      BlobClient cfgBlob = CONFIG_CONTAINER.getBlobClient(cfgBlobName);
-
-      String latestPath = "ContainerB/" + docId + "/latest.json";
-      BlobClient latest = DATA_CONTAINER.getBlobClient(latestPath);
-
-      // ... logic ...
-    }
-  }
-}
-
-package com.neo.blob;
-
-import com.azure.storage.blob.BlobClient;
-import com.azure.storage.blob.BlobContainerClient;
-import com.azure.storage.blob.BlobServiceClient;
-import com.azure.storage.blob.BlobServiceClientBuilder;
-
-/** Minimal, thread-safe singleton for Azure Blob clients. */
-public final class BlobClientProvider {
-    private BlobClientProvider() {}
-
-    // Reads from local.settings.json in dev, App Settings in Azure
-    private static final String BLOB_CONNECTION = System.getenv("BlobConnection");
-
-    /** Holder idiom: lazy init; JVM guarantees thread-safe class init. */
-    private static final class Holder {
-        static final BlobServiceClient SERVICE =
-            new BlobServiceClientBuilder()
-                .connectionString(require(BLOB_CONNECTION, "BlobConnection is missing"))
-                .buildClient();
+    if (logicalContainerName == null || logicalContainerName.isBlank()) {
+        return Collections.emptyList();
     }
 
-    /** One shared BlobServiceClient per Function App worker process. */
-    public static BlobServiceClient service() {
-        return Holder.SERVICE;
-    }
+    String blobName = logicalContainerName + "-tracked-fields.json";
+    try {
+        var blob = configContainer.getBlobClient(blobName);
+        if (!blob.exists()) {
+            System.err.println("Tracked-fields blob missing: " + blobName);
+            return Collections.emptyList();
+        }
+        String json = blob.downloadContent().toString(); // BinaryData -> String
+        if (json == null || json.isBlank()) return Collections.emptyList();
 
-    /** Get a container client (cheap, thread-safe). */
-    public static BlobContainerClient container(String containerName) {
-        return service().getBlobContainerClient(containerName);
-    }
-
-    /** Get a BlobClient for a specific blob path. */
-    public static BlobClient blob(String containerName, String blobPath) {
-        return container(containerName).getBlobClient(blobPath);
-    }
-
-    private static String require(String v, String msg) {
-        if (v == null || v.isBlank()) throw new IllegalStateException(msg);
-        return v;
+        return MAPPER.readValue(json, new TypeReference<List<String>>() {});
+    } catch (Exception e) {
+        System.err.println("Error reading tracked fields: " + e.getMessage());
+        return Collections.emptyList();
     }
 }
