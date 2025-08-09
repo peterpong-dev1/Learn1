@@ -1,40 +1,47 @@
-package com.neo.utils;
+public class NeoChangeFeedFunctions {
 
-import com.azure.storage.blob.*;
-import com.azure.storage.blob.specialized.BlobLeaseClient;
-import com.azure.storage.blob.specialized.BlobLeaseClientBuilder;
-import com.azure.storage.blob.specialized.BlockBlobClient;
+  private static final String CONFIG_CONTAINER_NAME = System.getenv("BlobConfigContainer");  // e.g. "config"
+  private static final String DATA_CONTAINER_NAME   = System.getenv("BlobDataContainer");    // e.g. "tracked-data"
 
-public class BlobClientProvider {
+  // Shared across all trigger methods in this class (and safe)
+  private static final BlobContainerClient CONFIG_CONTAINER =
+      BlobClientProvider.container(CONFIG_CONTAINER_NAME);
+  private static final BlobContainerClient DATA_CONTAINER =
+      BlobClientProvider.container(DATA_CONTAINER_NAME);
 
-    private static final String CONNECTION_STRING = System.getenv("BlobConnection");
+  @FunctionName("TriggerForContainerA")
+  public void onA(
+      @CosmosDBTrigger(/* ... */) List<ObjectNode> items,
+      ExecutionContext ctx) {
 
-    private static final BlobServiceClient blobServiceClient = new BlobServiceClientBuilder()
-            .connectionString(CONNECTION_STRING)
-            .buildClient();
+    for (ObjectNode doc : items) {
+      String docId = doc.get("id").asText();
+      // read tracked fields config from blob
+      String cfgBlobName = System.getenv("TrackedFields_ContainerA"); // e.g. "containerA-tracked.json"
+      BlobClient cfgBlob = CONFIG_CONTAINER.getBlobClient(cfgBlobName);
 
-    /**
-     * Returns a BlobContainerClient for the given container name.
-     */
-    public static BlobContainerClient getContainerClient(String containerName) {
-        return blobServiceClient.getBlobContainerClient(containerName);
+      // work with data blobs for this doc
+      String latestPath = "ContainerA/" + docId + "/latest.json";
+      BlobClient latest = DATA_CONTAINER.getBlobClient(latestPath);
+
+      // ... your compare / version / tag logic here ...
     }
+  }
 
-    /**
-     * Returns a BlockBlobClient for the given container and blob name.
-     */
-    public static BlockBlobClient getBlockBlobClient(String containerName, String blobName) {
-        BlobContainerClient containerClient = getContainerClient(containerName);
-        return containerClient.getBlobClient(blobName).getBlockBlobClient();
-    }
+  @FunctionName("TriggerForContainerB")
+  public void onB(
+      @CosmosDBTrigger(/* ... */) List<ObjectNode> items,
+      ExecutionContext ctx) {
 
-    /**
-     * Returns a LeaseClient for the given container and blob name.
-     */
-    public static BlobLeaseClient getBlobLeaseClient(String containerName, String blobName) {
-        BlockBlobClient blockBlobClient = getBlockBlobClient(containerName, blobName);
-        return new BlobLeaseClientBuilder()
-                .blobClient(blockBlobClient)
-                .buildClient();
+    for (ObjectNode doc : items) {
+      String docId = doc.get("id").asText();
+      String cfgBlobName = System.getenv("TrackedFields_ContainerB");
+      BlobClient cfgBlob = CONFIG_CONTAINER.getBlobClient(cfgBlobName);
+
+      String latestPath = "ContainerB/" + docId + "/latest.json";
+      BlobClient latest = DATA_CONTAINER.getBlobClient(latestPath);
+
+      // ... logic ...
     }
+  }
 }
