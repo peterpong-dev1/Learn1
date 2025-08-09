@@ -1,152 +1,276 @@
-got it—you want just the “compute delta” piece: compare only the tracked fields from your config between newDoc (from change feed) and oldSnap (from Blob), including support for nested paths like address.city or items[0].name. Here’s a tight, productiony utility you can drop in.
+Great question — and good instinct.
 
-Change model
+Storing the whole document in the snapshot is usually the wiser move for production:
+	•	Pros: future‑proof (if new tracked fields are added later, you can compute deltas without re‑baselining), great for audits/replay/debugging, simpler export/BI.
+	•	Cons: more storage/read I/O. You can mitigate with lifecycle/retention (e.g., keep last N versions or 90 days).
 
+If storage is acceptable (it usually is on Blob), I recommend full‑doc snapshots + compare only the tracked paths at runtime.
+
+⸻
+
+CS‑1: Delta on tracked paths with array wildcards
+
+The code below compares only the paths you pass in (strings like:
+	•	status
+	•	address.city
+	•	items[*].price.amount  ← array wildcard (option 3)
+), against full‑document snapshots.
+	•	Supports dot paths and [*] wildcard for arrays (index‑agnostic).
+	•	Compares array results as multisets (order‑insensitive), so moving elements doesn’t trigger false changes.
+	•	Works for scalars or nested objects (objects are canonicalized to JSON strings).
+
+ChangeDelta.java
+
+package com.neo.notification.diff;
+
+import com.fasterxml.jackson.databind.JsonNode;
+
+/**
+ * Represents a delta for a tracked field path.
+ * oldValue/newValue are JSON-rendered strings to keep payload small and readable.
+ */
 public final class ChangeDelta {
     public enum Kind { ADDED, REMOVED, MODIFIED }
 
-    private final String fieldPath;      // e.g., "address.city"
-    private final JsonNode oldValue;     // may be null
-    private final JsonNode newValue;     // may be null
+    private final String fieldPath;
+    private final String oldValue; // JSON string (or null)
+    private final String newValue; // JSON string (or null)
     private final Kind kind;
 
-    public ChangeDelta(String fieldPath, JsonNode oldValue, JsonNode newValue, Kind kind) {
+    public ChangeDelta(String fieldPath, String oldValue, String newValue, Kind kind) {
         this.fieldPath = fieldPath;
-        this.oldValue  = oldValue;
-        this.newValue  = newValue;
-        this.kind      = kind;
+        this.oldValue = oldValue;
+        this.newValue = newValue;
+        this.kind = kind;
     }
 
-    public String  getFieldPath() { return fieldPath; }
-    public JsonNode getOldValue() { return oldValue; }
-    public JsonNode getNewValue() { return newValue; }
-    public Kind     getKind()     { return kind; }
+    public String getFieldPath() { return fieldPath; }
+    public String getOldValue()  { return oldValue; }
+    public String getNewValue()  { return newValue; }
+    public Kind getKind()        { return kind; }
 
     @Override public String toString() {
         return "ChangeDelta{" + fieldPath + ", " + kind + ", old=" + oldValue + ", new=" + newValue + "}";
     }
 }
 
-Delta calculator (only tracked fields)
+TrackedDelta.java
 
+package com.neo.notification.diff;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.MissingNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.node.*;
 
+import java.math.BigDecimal;
 import java.util.*;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
+/**
+ * CS-1: Computes deltas only for provided tracked paths.
+ * Supports:
+ *   - Dot paths: a.b.c
+ *   - Array wildcard: items[*].price.amount   (index-agnostic)
+ *
+ * Strategy:
+ *   - Resolve each path to a list of matches (0..N JsonNodes).
+ *   - Normalize matches to JSON strings.
+ *   - Compare as multisets (order-insensitive) for array wildcards.
+ *   - For scalar paths, compare singletons.
+ *
+ * Thread-safety: stateless utilities; no shared mutable state.
+ */
 public final class TrackedDelta {
 
     private TrackedDelta() {}
 
     /**
-     * Compare only the tracked field paths and return deltas.
-     * Paths support dots and array indexes, e.g.:
-     *   "address.city", "policy.status.code", "items[0].name", "lines[2].amount.value"
+     * Compute deltas for tracked paths between old and new JSON documents.
      *
-     * @param newDoc       full latest document from change feed
-     * @param oldDoc       snapshot from Blob (may be null or empty)
-     * @param trackedPaths list of field paths to compare
+     * @param oldDoc       full snapshot JSON (may be null => treated as empty object)
+     * @param newDoc       latest document JSON (required)
+     * @param trackedPaths list of tracked path expressions (dot + [*] wildcards)
      */
-    public static List<ChangeDelta> compute(ObjectNode newDoc,
-                                            ObjectNode oldDoc,
+    public static List<ChangeDelta> compute(ObjectNode oldDoc,
+                                            ObjectNode newDoc,
                                             List<String> trackedPaths) {
         Objects.requireNonNull(newDoc, "newDoc");
         if (trackedPaths == null || trackedPaths.isEmpty()) return Collections.emptyList();
 
-        final ObjectNode safeOld = oldDoc == null ? newDoc.objectNode() : oldDoc;
+        final ObjectNode safeOld = (oldDoc == null) ? newDoc.objectNode() : oldDoc;
         final List<ChangeDelta> out = new ArrayList<>(trackedPaths.size());
 
         for (String path : trackedPaths) {
             if (path == null || path.isBlank()) continue;
 
-            JsonNode newVal = getByPath(newDoc, path);
-            JsonNode oldVal = getByPath(safeOld, path);
+            boolean hasWildcard = path.contains("[*]");
 
-            boolean newMissing = isMissingOrNull(newVal);
-            boolean oldMissing = isMissingOrNull(oldVal);
+            List<JsonNode> oldMatches = resolveAll(safeOld, path);
+            List<JsonNode> newMatches = resolveAll(newDoc, path);
 
-            if (oldMissing && newMissing) {
-                // both absent/null → no delta
-                continue;
-            } else if (oldMissing && !newMissing) {
-                out.add(new ChangeDelta(path, null, newVal, ChangeDelta.Kind.ADDED));
-            } else if (!oldMissing && newMissing) {
-                out.add(new ChangeDelta(path, oldVal, null, ChangeDelta.Kind.REMOVED));
-            } else if (!jsonDeepEquals(oldVal, newVal)) {
-                out.add(new ChangeDelta(path, oldVal, newVal, ChangeDelta.Kind.MODIFIED));
+            if (hasWildcard) {
+                // Compare as multisets (order-insensitive)
+                if (!multisetEqual(renderAll(oldMatches), renderAll(newMatches))) {
+                    out.add(new ChangeDelta(path,
+                            toCompactJsonArray(renderAll(oldMatches)),
+                            toCompactJsonArray(renderAll(newMatches)),
+                            classifyWildcardChange(oldMatches, newMatches)));
+                }
+            } else {
+                // Scalar path: compare first (or null)
+                String oldStr = firstOrNull(renderAll(oldMatches));
+                String newStr = firstOrNull(renderAll(newMatches));
+
+                if (oldStr == null && newStr == null) {
+                    // no-op
+                } else if (oldStr == null && newStr != null) {
+                    out.add(new ChangeDelta(path, null, newStr, ChangeDelta.Kind.ADDED));
+                } else if (oldStr != null && newStr == null) {
+                    out.add(new ChangeDelta(path, oldStr, null, ChangeDelta.Kind.REMOVED));
+                } else if (!jsonValueEquals(oldMatches, newMatches)) {
+                    out.add(new ChangeDelta(path, oldStr, newStr, ChangeDelta.Kind.MODIFIED));
+                }
             }
         }
         return out;
     }
 
-    /* -------------------- helpers -------------------- */
+    /* ---------------- resolvers ---------------- */
 
-    // Accepts dot + [index] segments: a.b[0].c
-    private static final Pattern SEGMENT = Pattern.compile("(\\w+)(\\[(\\d+)])?");
+    /**
+     * Resolve a path like "a.b[*].c" to all matching nodes.
+     * Grammar (simple):
+     *   segment := NAME | NAME[*]
+     *   path    := segment(.segment)*
+     */
+    static List<JsonNode> resolveAll(JsonNode root, String path) {
+        if (root == null || root.isMissingNode() || root.isNull()) return List.of();
+        String[] segments = path.split("\\.");
 
-    /** Navigate by a dotted/Indexed path. Returns MissingNode if not found. */
-    private static JsonNode getByPath(JsonNode root, String path) {
-        if (root == null || root.isMissingNode() || root.isNull()) return MissingNode.getInstance();
+        List<JsonNode> frontier = List.of(root);
+        for (String seg : segments) {
+            boolean wildcard = seg.endsWith("[*]");
+            String name = wildcard ? seg.substring(0, seg.length() - 3) : seg;
 
-        String[] parts = path.split("\\.");
-        JsonNode cur = root;
+            List<JsonNode> next = new ArrayList<>();
+            for (JsonNode cur : frontier) {
+                JsonNode child = name.isEmpty() ? cur : cur.get(name);
+                if (child == null || child.isMissingNode() || child.isNull()) continue;
 
-        for (String raw : parts) {
-            Matcher m = SEGMENT.matcher(raw);
-            if (!m.matches()) return MissingNode.getInstance(); // invalid segment
+                if (wildcard) {
+                    if (child.isArray()) {
+                        for (JsonNode elem : child) {
+                            next.add(elem);
+                        }
+                    }
+                    // if not array, no matches
+                } else {
+                    next.add(child);
+                }
+            }
+            frontier = next;
+            if (frontier.isEmpty()) break;
+        }
 
-            String field = m.group(1);
-            String indexStr = m.group(3);
+        return frontier;
+    }
 
-            cur = cur.get(field);
-            if (cur == null) return MissingNode.getInstance();
+    /* --------------- equality & render helpers --------------- */
 
-            if (indexStr != null) {
-                if (!cur.isArray()) return MissingNode.getInstance();
-                int idx = Integer.parseInt(indexStr);
-                if (idx < 0 || idx >= cur.size()) return MissingNode.getInstance();
-                cur = cur.get(idx);
+    private static boolean jsonValueEquals(List<JsonNode> oldMatches, List<JsonNode> newMatches) {
+        // Scalar compare: treat 1 and 1.0 as equal, compare deep structures by JSON
+        String o = firstOrNull(renderAll(oldMatches));
+        String n = firstOrNull(renderAll(newMatches));
+        return Objects.equals(o, n);
+    }
+
+    private static List<String> renderAll(List<JsonNode> nodes) {
+        List<String> out = new ArrayList<>(nodes.size());
+        for (JsonNode n : nodes) {
+            out.add(renderNode(n));
+        }
+        return out;
+    }
+
+    /** Canonicalize nodes to strings for comparison/logging. */
+    private static String renderNode(JsonNode n) {
+        if (n == null || n.isNull() || n.isMissingNode()) return null;
+        if (n.isNumber()) {
+            // normalize numerics (1 vs 1.0)
+            try {
+                return new BigDecimal(n.asText()).stripTrailingZeros().toPlainString();
+            } catch (NumberFormatException ignore) {
+                return n.asText();
             }
         }
-        return cur == null ? MissingNode.getInstance() : cur;
-    }
-
-    /** Treat MissingNode OR explicit null as “missing” for change semantics. */
-    private static boolean isMissingOrNull(JsonNode n) {
-        return n == null || n.isMissingNode() || n.isNull();
-    }
-
-    /** Deep structural equality, tolerant to numeric 1 vs 1.0 differences. */
-    private static boolean jsonDeepEquals(JsonNode a, JsonNode b) {
-        if (a == b) return true;
-        if (a == null || b == null) return false;
-
-        // Normalize numbers to string form to avoid 1 vs 1.0 surprises
-        if (a.isNumber() && b.isNumber()) {
-            return a.decimalValue().compareTo(b.decimalValue()) == 0;
+        if (n.isValueNode()) {
+            return n.asText();
         }
-        return a.equals(b);
+        // Object/array → compact JSON
+        return n.toString();
+    }
+
+    private static String firstOrNull(List<String> values) {
+        for (String v : values) if (v != null) return v;
+        return null;
+    }
+
+    private static boolean multisetEqual(List<String> a, List<String> b) {
+        return toMultiset(a).equals(toMultiset(b));
+        // Order-insensitive; counts matter.
+    }
+
+    private static Map<String, Integer> toMultiset(List<String> list) {
+        Map<String, Integer> m = new HashMap<>();
+        for (String s : list) {
+            String key = (s == null) ? "__NULL__" : s;
+            m.merge(key, 1, Integer::sum);
+        }
+        return m;
+    }
+
+    private static String toCompactJsonArray(List<String> vals) {
+        // Render nulls as JSON nulls
+        StringBuilder sb = new StringBuilder(16 + vals.size() * 8);
+        sb.append('[');
+        for (int i = 0; i < vals.size(); i++) {
+            if (i > 0) sb.append(',');
+            String v = vals.get(i);
+            if (v == null) sb.append("null");
+            else if (looksLikeJson(v)) sb.append(v);
+            else sb.append('"').append(escapeJson(v)).append('"');
+        }
+        sb.append(']');
+        return sb.toString();
+    }
+
+    private static boolean looksLikeJson(String v) {
+        if (v == null || v.isEmpty()) return false;
+        char c = v.charAt(0);
+        return c == '{' || c == '[' || c == '"' || c == 't' || c == 'f' || c == 'n' || c == '-' || (c >= '0' && c <= '9');
+    }
+
+    private static String escapeJson(String s) {
+        return s.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    private static ChangeDelta.Kind classifyWildcardChange(List<JsonNode> oldM, List<JsonNode> newM) {
+        if (oldM.isEmpty() && !newM.isEmpty()) return ChangeDelta.Kind.ADDED;
+        if (!oldM.isEmpty() && newM.isEmpty()) return ChangeDelta.Kind.REMOVED;
+        return ChangeDelta.Kind.MODIFIED;
     }
 }
 
-How you call it in your handler
+How to use in your handler
 
-// inside your TrackedChangeHandler.detectChanges(...)
-ObjectNode newDoc = incoming;          // from change feed
-ObjectNode oldDoc = oldSnapshotObject; // from blob (null if none)
-List<String> tracked = fieldsToTrack;  // from config JSON
+// You already loaded full old snapshot (ObjectNode oldDoc) and newDoc (ObjectNode)
+List<ChangeDelta> deltas = TrackedDelta.compute(oldDoc, newDoc, fieldsToTrack);
+// If deltas.isEmpty() → no tracked changes
+// Otherwise, use deltas to build your message and then persist a new version/tag latest.
 
-List<ChangeDelta> deltas = TrackedDelta.compute(newDoc, oldDoc, tracked);
 
-// now you can build your Service Bus message from `deltas`
+⸻
 
-Notes
-	•	Only tracked paths are checked—everything else is ignored.
-	•	Works for nested and indexed fields.
-	•	Treats “missing vs null” as meaningful (ADDED/REMOVED).
-	•	Returns a small, clean ChangeDelta list you can serialize straight into your message payload.
-
-If you want me to also wire this into your “update snapshot + tag latest” step right after deltas ≠ empty, say the word and I’ll bolt that on top.
+If you want, next I can give you a small wrapper that:
+	•	calls TrackedDelta.compute(...),
+	•	when there are changes, writes the versioned snapshot + updates latest tag (using ETag),
+	•	when there are no changes, does nothing (as you requested).
