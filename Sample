@@ -45,3 +45,46 @@ public class NeoChangeFeedFunctions {
     }
   }
 }
+
+package com.neo.blob;
+
+import com.azure.storage.blob.BlobClient;
+import com.azure.storage.blob.BlobContainerClient;
+import com.azure.storage.blob.BlobServiceClient;
+import com.azure.storage.blob.BlobServiceClientBuilder;
+
+/** Minimal, thread-safe singleton for Azure Blob clients. */
+public final class BlobClientProvider {
+    private BlobClientProvider() {}
+
+    // Reads from local.settings.json in dev, App Settings in Azure
+    private static final String BLOB_CONNECTION = System.getenv("BlobConnection");
+
+    /** Holder idiom: lazy init; JVM guarantees thread-safe class init. */
+    private static final class Holder {
+        static final BlobServiceClient SERVICE =
+            new BlobServiceClientBuilder()
+                .connectionString(require(BLOB_CONNECTION, "BlobConnection is missing"))
+                .buildClient();
+    }
+
+    /** One shared BlobServiceClient per Function App worker process. */
+    public static BlobServiceClient service() {
+        return Holder.SERVICE;
+    }
+
+    /** Get a container client (cheap, thread-safe). */
+    public static BlobContainerClient container(String containerName) {
+        return service().getBlobContainerClient(containerName);
+    }
+
+    /** Get a BlobClient for a specific blob path. */
+    public static BlobClient blob(String containerName, String blobPath) {
+        return container(containerName).getBlobClient(blobPath);
+    }
+
+    private static String require(String v, String msg) {
+        if (v == null || v.isBlank()) throw new IllegalStateException(msg);
+        return v;
+    }
+}
