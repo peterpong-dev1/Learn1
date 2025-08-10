@@ -1,183 +1,130 @@
-Perfect — here’s a drop‑in version that wires the scalar comparison into a computeDelta(...) method. Paste these methods into your existing class (e.g., the same class where you handle the change feed). No utilities, no extras—just scalar logic (Scenarios 1–3).
+Perfect—let’s switch everything to strongly‑typed deltas.
 
-// ======= Delta (Scalar-only) =======
+Below is a clean version of both classes so your pipeline returns List<ChangeDelta> end‑to‑end.
+It replaces the old Map<String,Object> helpers and also makes compareScalarFields return a list.
 
-/**
- * Compute delta for scalar tracked fields only (ADDED / REMOVED / UPDATED).
- * - snapshotOld: previous JSON snapshot (from blob). May be null for first-time.
- * - newDoc: latest Cosmos DB document (from change feed). Required.
- * - trackedFields: dot-paths, e.g., "status", "email", "Item.address.phone".
- * @return list of change records: {path, type, oldValue, newValue}
- */
-private List<Map<String, Object>> computeDelta(ObjectNode snapshotOld,
-                                               ObjectNode newDoc,
-                                               List<String> trackedFields) {
-    List<Map<String, Object>> changes = new ArrayList<>();
-    if (newDoc == null || trackedFields == null || trackedFields.isEmpty()) {
+// ---------------- ChangeDelta.java ----------------
+public final class ChangeDelta {
+    public enum Kind { ADDED, REMOVED, MODIFIED }
+
+    private final String fieldPath;  // e.g., "address.city" or "items[0].price.amount"
+    private final String oldValue;   // compact scalar (null if missing)
+    private final String newValue;   // compact scalar (null if missing)
+    private final Kind   kind;
+
+    public ChangeDelta(String fieldPath, String oldValue, String newValue, Kind kind) {
+        this.fieldPath = fieldPath;
+        this.oldValue  = oldValue;
+        this.newValue  = newValue;
+        this.kind      = kind;
+    }
+
+    public String getFieldPath() { return fieldPath; }
+    public String getOldValue()  { return oldValue; }
+    public String getNewValue()  { return newValue; }
+    public Kind   getKind()      { return kind; }
+
+    @Override public String toString() {
+        return "ChangeDelta{path=" + fieldPath + ", kind=" + kind +
+               ", old=" + oldValue + ", new=" + newValue + "}";
+    }
+}
+
+// ---------------- TrackedDelta.java ----------------
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.util.*;
+
+public final class TrackedDelta {
+    private TrackedDelta() {}
+
+    /** Compute delta for scalar tracked fields only (ADDED / REMOVED / MODIFIED). */
+    public static List<ChangeDelta> computeDelta(ObjectNode snapshotOld,
+                                                 ObjectNode newDoc,
+                                                 List<String> trackedFields) {
+        List<ChangeDelta> changes = new ArrayList<>();
+        if (newDoc == null || trackedFields == null || trackedFields.isEmpty()) {
+            return changes;
+        }
+        changes.addAll(compareScalarFields(snapshotOld, newDoc, trackedFields));
         return changes;
     }
-    compareScalarFields(snapshotOld, newDoc, trackedFields, changes);
-    return changes;
-}
 
-/**
- * Compares only scalar fields between old and new documents.
- * Adds any detected changes to the provided deltaResults list.
- *
- * Scenarios covered:
- * 1) UPDATED: old & new present, values differ
- * 2) ADDED:   old missing, new present
- * 3) REMOVED: old present, new missing
- */
-private void compareScalarFields(ObjectNode oldDoc,
-                                 ObjectNode newDoc,
-                                 List<String> trackedFields,
-                                 List<Map<String, Object>> deltaResults) {
-    for (String fieldPath : trackedFields) {
-        if (fieldPath == null || fieldPath.isBlank()) continue;
+    /** Compares only scalar fields between old and new documents. */
+    private static List<ChangeDelta> compareScalarFields(ObjectNode oldDoc,
+                                                         ObjectNode newDoc,
+                                                         List<String> trackedFields) {
+        List<ChangeDelta> results = new ArrayList<>();
 
-        JsonNode oldValue = getValueByPath(oldDoc, fieldPath);
-        JsonNode newValue = getValueByPath(newDoc, fieldPath);
+        for (String fieldPath : trackedFields) {
+            if (fieldPath == null || fieldPath.isBlank()) continue;
 
-        boolean oldPresent = oldValue != null && !oldValue.isMissingNode();
-        boolean newPresent = newValue != null && !newValue.isMissingNode();
+            JsonNode oldVal = getValueByPath(oldDoc, fieldPath);
+            JsonNode newVal = getValueByPath(newDoc, fieldPath);
 
-        if (oldPresent && newPresent) {
-            if (!safeEqualsScalar(oldValue, newValue)) {
-                deltaResults.add(changeRecord(fieldPath, "UPDATED", oldValue, newValue));
+            boolean oldPresent = oldVal != null && !oldVal.isMissingNode();
+            boolean newPresent = newVal != null && !newVal.isMissingNode();
+
+            if (oldPresent && newPresent) {
+                if (!safeEqualsScalar(oldVal, newVal)) {
+                    results.add(changeRecord(fieldPath, ChangeDelta.Kind.MODIFIED, oldVal, newVal));
+                }
+            } else if (!oldPresent && newPresent) {
+                results.add(changeRecord(fieldPath, ChangeDelta.Kind.ADDED, null, newVal));
+            } else if (oldPresent && !newPresent) {
+                results.add(changeRecord(fieldPath, ChangeDelta.Kind.REMOVED, oldVal, null));
             }
-        } else if (!oldPresent && newPresent) {
-            deltaResults.add(changeRecord(fieldPath, "ADDED", null, newValue));
-        } else if (oldPresent && !newPresent) {
-            deltaResults.add(changeRecord(fieldPath, "REMOVED", oldValue, null));
+            // else both missing -> no change
         }
-        // else: both missing → no change
+
+        return results;
+    }
+
+    /** Navigate a dot-separated path like "item.address.phone"; returns null if missing. */
+    private static JsonNode getValueByPath(JsonNode node, String fieldPath) {
+        if (node == null || fieldPath == null || fieldPath.isBlank()) return null;
+        String[] parts = fieldPath.split("\\.");
+        JsonNode current = node;
+        for (String part : parts) {
+            if (current == null || current.isMissingNode()) return null;
+            current = current.get(part);
+        }
+        return current;
+    }
+
+    /** Compare two scalar JsonNodes safely (treat nulls correctly). */
+    private static boolean safeEqualsScalar(JsonNode oldVal, JsonNode newVal) {
+        if (oldVal == null && newVal == null) return true;
+        if (oldVal == null || newVal == null) return false;
+        if (!oldVal.isValueNode() || !newVal.isValueNode()) return false; // only scalars here
+        String a = toScalarString(oldVal);
+        String b = toScalarString(newVal);
+        return Objects.equals(a, b);
+    }
+
+    /** Convert a scalar JsonNode to a compact String (or null). */
+    private static String toScalarString(JsonNode val) {
+        if (val == null || val.isNull()) return null;
+        if (val.isTextual())  return val.asText();
+        if (val.isNumber())   return val.numberValue().toString();
+        if (val.isBoolean())  return Boolean.toString(val.asBoolean());
+        return val.asText(); // fallback
+    }
+
+    /** Build a ChangeDelta object (replaces old Map<String,Object> version). */
+    private static ChangeDelta changeRecord(String path, ChangeDelta.Kind kind,
+                                            JsonNode oldVal, JsonNode newVal) {
+        String oldS = (oldVal != null && !oldVal.isMissingNode()) ? toScalarString(oldVal) : null;
+        String newS = (newVal != null && !newVal.isMissingNode()) ? toScalarString(newVal) : null;
+        return new ChangeDelta(path, oldS, newS, kind);
     }
 }
 
-/** Navigate a dot-separated path like "Item.address.phone"; returns null if any segment missing. */
-private JsonNode getValueByPath(JsonNode node, String fieldPath) {
-    if (node == null || fieldPath == null || fieldPath.isBlank()) return null;
-    String[] parts = fieldPath.split("\\.");
-    JsonNode current = node;
-    for (String part : parts) {
-        if (current == null || current.isMissingNode()) return null;
-        current = current.get(part);
-    }
-    return current;
-}
+How to use from your handler
 
-/** Compare two scalar JsonNodes safely (treats nulls correctly). */
-private boolean safeEqualsScalar(JsonNode a, JsonNode b) {
-    if (a == null && b == null) return true;
-    if (a == null || b == null) return false;
-    if (!a.isValueNode() || !b.isValueNode()) return false; // non-scalar not supported here
-    // Normalize to Java types
-    Object va = toScalar(a);
-    Object vb = toScalar(b);
-    return Objects.equals(va, vb);
-}
+List<ChangeDelta> deltas =
+    TrackedDelta.computeDelta(snapshotFromBlobStorage, newDoc, trackedFields);
 
-/** Convert a scalar JsonNode to a plain Java value. */
-private Object toScalar(JsonNode n) {
-    if (n == null || n.isNull()) return null;
-    if (n.isTextual())  return n.asText();
-    if (n.isNumber())   return n.numberValue();
-    if (n.isBoolean())  return n.asBoolean();
-    return n.asText(); // fallback
-}
+This will remove the “Type mismatch: cannot convert from List<Map<String,Object>> to List” error you saw at the call site.
 
-/** Build a standard change record map. */
-private Map<String, Object> changeRecord(String path, String type, JsonNode oldVal, JsonNode newVal) {
-    Map<String, Object> record = new LinkedHashMap<>();
-    record.put("path", path);
-    record.put("type", type);
-    record.put("oldValue", (oldVal != null && !oldVal.isMissingNode()) ? toScalar(oldVal) : null);
-    record.put("newValue", (newVal != null && !newVal.isMissingNode()) ? toScalar(newVal) : null);
-    return record;
-}
-
-How it works (quick recap)
-	•	Dot paths like Item.address.phone walk the JSON tree with getValueByPath.
-	•	Only scalars (string/number/boolean/null) are compared.
-	•	Produces a simple list of { path, type, oldValue, newValue } maps you can pass to your message builder.
-
-
-
-
-Perfect. Here’s a tiny, drop‑in way to push your computed delta to an Azure Storage Queue for testing.
-
-1) App settings (local.settings.json)
-
-Add these (or set as env vars in Azure):
-
-{
-  "Values": {
-    "AzureWebJobsStorage": "UseDevelopmentStorage=true",   // or your storage conn string
-    "DELTA_DEBUG_MODE": "true",
-    "DELTA_DEBUG_QUEUE": "delta-debug",                    // queue name
-    "DELTA_DEBUG_TTL_MIN": "15"                            // auto-expire minutes
-  }
-}
-
-2) Java snippet (call right after computeDelta(...))
-
-import com.azure.storage.queue.*;
-import com.azure.core.util.BinaryData;
-import java.time.Duration;
-import java.util.List;
-import java.util.Map;
-
-// Call this after you build: List<Map<String, Object>> delta = computeDelta(...);
-private void sendDeltaToStorageQueueIfDebug(List<Map<String, Object>> delta) {
-    if (delta == null || delta.isEmpty()) return;
-    if (!"true".equalsIgnoreCase(System.getenv("DELTA_DEBUG_MODE"))) return;
-
-    String conn  = System.getenv("AzureWebJobsStorage");                 // Storage account conn
-    String qName = System.getenv().getOrDefault("DELTA_DEBUG_QUEUE", "delta-debug");
-    int ttlMin   = parseInt(System.getenv("DELTA_DEBUG_TTL_MIN"), 15);   // expire messages quickly
-
-    QueueClient q = new QueueClientBuilder()
-            .connectionString(conn)
-            .queueName(qName)
-            .buildClient();
-
-    if (!q.exists()) q.create(); // create once for dev
-
-    try {
-        String body = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(delta);
-
-        // keep messages small (<64KB). If bigger, store delta in Blob and send a short pointer instead.
-        q.sendMessageWithResponse(
-                BinaryData.fromString(body).toString(),
-                Duration.ZERO,                       // no initial delay
-                Duration.ofMinutes(ttlMin),          // auto-delete after TTL
-                null, null);
-    } catch (Exception e) {
-        // non-fatal for tests; you can also log to Application Insights
-        System.err.println("Delta debug queue send failed: " + e.getMessage());
-    }
-}
-
-private int parseInt(String v, int def) {
-    try { return Integer.parseInt(v); } catch (Exception e) { return def; }
-}
-
-3) Where to call it
-
-var delta = computeDelta(snapshotOld, newDoc, trackedFields);
-sendDeltaToStorageQueueIfDebug(delta);
-
-4) View messages
-	•	Portal → Storage account → Queues → delta-debug → Peek messages, or
-	•	Azure Storage Explorer (nice UI).
-
-Notes
-	•	Max message size is ~64 KB. If your delta grows, put the full JSON in Blob and send only {blobUrl, docId, when} to the queue.
-	•	For zero cost local testing, use Azurite and keep AzureWebJobsStorage=UseDevelopmentStorage=true.
-
-That’s it—quick visual testing, no Service Bus needed.
-
-
-
-When you’re ready to add arrays or arrays-of-objects, we’ll extend computeDelta(...) to call additional helpers (e.g., compareArraySet, compareArrayObjectKeyed) without changing the return shape.
+If any piece in your screenshots differs (e.g., you support array paths like items[*].price), tell me and I’ll adapt the getValueByPath to your exact path syntax.
