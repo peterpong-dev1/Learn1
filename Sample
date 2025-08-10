@@ -102,4 +102,82 @@ How it works (quick recap)
 	•	Only scalars (string/number/boolean/null) are compared.
 	•	Produces a simple list of { path, type, oldValue, newValue } maps you can pass to your message builder.
 
+
+
+
+Perfect. Here’s a tiny, drop‑in way to push your computed delta to an Azure Storage Queue for testing.
+
+1) App settings (local.settings.json)
+
+Add these (or set as env vars in Azure):
+
+{
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",   // or your storage conn string
+    "DELTA_DEBUG_MODE": "true",
+    "DELTA_DEBUG_QUEUE": "delta-debug",                    // queue name
+    "DELTA_DEBUG_TTL_MIN": "15"                            // auto-expire minutes
+  }
+}
+
+2) Java snippet (call right after computeDelta(...))
+
+import com.azure.storage.queue.*;
+import com.azure.core.util.BinaryData;
+import java.time.Duration;
+import java.util.List;
+import java.util.Map;
+
+// Call this after you build: List<Map<String, Object>> delta = computeDelta(...);
+private void sendDeltaToStorageQueueIfDebug(List<Map<String, Object>> delta) {
+    if (delta == null || delta.isEmpty()) return;
+    if (!"true".equalsIgnoreCase(System.getenv("DELTA_DEBUG_MODE"))) return;
+
+    String conn  = System.getenv("AzureWebJobsStorage");                 // Storage account conn
+    String qName = System.getenv().getOrDefault("DELTA_DEBUG_QUEUE", "delta-debug");
+    int ttlMin   = parseInt(System.getenv("DELTA_DEBUG_TTL_MIN"), 15);   // expire messages quickly
+
+    QueueClient q = new QueueClientBuilder()
+            .connectionString(conn)
+            .queueName(qName)
+            .buildClient();
+
+    if (!q.exists()) q.create(); // create once for dev
+
+    try {
+        String body = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(delta);
+
+        // keep messages small (<64KB). If bigger, store delta in Blob and send a short pointer instead.
+        q.sendMessageWithResponse(
+                BinaryData.fromString(body).toString(),
+                Duration.ZERO,                       // no initial delay
+                Duration.ofMinutes(ttlMin),          // auto-delete after TTL
+                null, null);
+    } catch (Exception e) {
+        // non-fatal for tests; you can also log to Application Insights
+        System.err.println("Delta debug queue send failed: " + e.getMessage());
+    }
+}
+
+private int parseInt(String v, int def) {
+    try { return Integer.parseInt(v); } catch (Exception e) { return def; }
+}
+
+3) Where to call it
+
+var delta = computeDelta(snapshotOld, newDoc, trackedFields);
+sendDeltaToStorageQueueIfDebug(delta);
+
+4) View messages
+	•	Portal → Storage account → Queues → delta-debug → Peek messages, or
+	•	Azure Storage Explorer (nice UI).
+
+Notes
+	•	Max message size is ~64 KB. If your delta grows, put the full JSON in Blob and send only {blobUrl, docId, when} to the queue.
+	•	For zero cost local testing, use Azurite and keep AzureWebJobsStorage=UseDevelopmentStorage=true.
+
+That’s it—quick visual testing, no Service Bus needed.
+
+
+
 When you’re ready to add arrays or arrays-of-objects, we’ll extend computeDelta(...) to call additional helpers (e.g., compareArraySet, compareArrayObjectKeyed) without changing the return shape.
