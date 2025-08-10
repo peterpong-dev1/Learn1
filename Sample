@@ -1,130 +1,54 @@
-Perfect—let’s switch everything to strongly‑typed deltas.
+Got it. From now on, I’ll include proper error handling and rethrow exceptions so the Function can safely retry.
 
-Below is a clean version of both classes so your pipeline returns List<ChangeDelta> end‑to‑end.
-It replaces the old Map<String,Object> helpers and also makes compareScalarFields return a list.
+Here’s a compact pattern you can drop around your pipeline today:
 
-// ---------------- ChangeDelta.java ----------------
-public final class ChangeDelta {
-    public enum Kind { ADDED, REMOVED, MODIFIED }
+public void processChange(ObjectNode newDoc, ExecutionContext ctx) {
+    final Logger log = ctx.getLogger();
+    final String docId = newDoc.path("id").asText(null);
 
-    private final String fieldPath;  // e.g., "address.city" or "items[0].price.amount"
-    private final String oldValue;   // compact scalar (null if missing)
-    private final String newValue;   // compact scalar (null if missing)
-    private final Kind   kind;
+    try {
+        // 1) Load tracked fields (throw if missing/error)
+        List<String> tracked = loadTrackedFieldsOrThrow();
 
-    public ChangeDelta(String fieldPath, String oldValue, String newValue, Kind kind) {
-        this.fieldPath = fieldPath;
-        this.oldValue  = oldValue;
-        this.newValue  = newValue;
-        this.kind      = kind;
-    }
+        // 2) Load snapshot (null = create; I/O/parsing error = throw)
+        ObjectNode snapshot = loadSnapshotOrThrow(docId);
 
-    public String getFieldPath() { return fieldPath; }
-    public String getOldValue()  { return oldValue; }
-    public String getNewValue()  { return newValue; }
-    public Kind   getKind()      { return kind; }
+        // 3) CREATE path: seed baseline/latest, then return
+        if (snapshot == null) {
+            seedInitialSnapshotOrThrow(docId, newDoc);
+            log.info("CREATE seeded for id=" + docId);
+            return;
+        }
 
-    @Override public String toString() {
-        return "ChangeDelta{path=" + fieldPath + ", kind=" + kind +
-               ", old=" + oldValue + ", new=" + newValue + "}";
+        // 4) Compute delta (throw on unexpected errors)
+        List<Map<String,Object>> delta = computeDelta(snapshot, newDoc, tracked);
+
+        // 5) If no changes, exit
+        if (delta.isEmpty()) {
+            log.info("No tracked changes for id=" + docId);
+            return;
+        }
+
+        // 6) Send to Service Bus (throw if send fails)
+        sendToServiceBusOrThrow(docId, delta);
+
+        // 7) Persist snapshot/version/tags (throw if you prefer to fail & retry)
+        updateSnapshotVersionOrThrow(docId, newDoc);
+
+    } catch (Exception e) {
+        // Make retries visible and safe
+        log.severe("PROCESSING FAILED for id=" + docId + ": " + e.getMessage());
+        // Optional: log stacktrace
+        // e.printStackTrace();
+        // Rethrow to trigger retry by Functions
+        throw (e instanceof RuntimeException) ? (RuntimeException) e : new RuntimeException(e);
     }
 }
 
-// ---------------- TrackedDelta.java ----------------
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-import java.util.*;
+Tiny guidelines I’ll follow in all code I send you:
+	•	Throw early on config/blob read/parse failures (don’t silently skip).
+	•	Differentiate: null = snapshot not found (create); exception = I/O/parse error (retry).
+	•	Guard idempotency on the send step (e.g., include a dedupe key like {docId, etag, changeFeedLsn}).
+	•	Log structured JSON for failures and deltas for easy tracing in Log Stream / App Insights.
 
-public final class TrackedDelta {
-    private TrackedDelta() {}
-
-    /** Compute delta for scalar tracked fields only (ADDED / REMOVED / MODIFIED). */
-    public static List<ChangeDelta> computeDelta(ObjectNode snapshotOld,
-                                                 ObjectNode newDoc,
-                                                 List<String> trackedFields) {
-        List<ChangeDelta> changes = new ArrayList<>();
-        if (newDoc == null || trackedFields == null || trackedFields.isEmpty()) {
-            return changes;
-        }
-        changes.addAll(compareScalarFields(snapshotOld, newDoc, trackedFields));
-        return changes;
-    }
-
-    /** Compares only scalar fields between old and new documents. */
-    private static List<ChangeDelta> compareScalarFields(ObjectNode oldDoc,
-                                                         ObjectNode newDoc,
-                                                         List<String> trackedFields) {
-        List<ChangeDelta> results = new ArrayList<>();
-
-        for (String fieldPath : trackedFields) {
-            if (fieldPath == null || fieldPath.isBlank()) continue;
-
-            JsonNode oldVal = getValueByPath(oldDoc, fieldPath);
-            JsonNode newVal = getValueByPath(newDoc, fieldPath);
-
-            boolean oldPresent = oldVal != null && !oldVal.isMissingNode();
-            boolean newPresent = newVal != null && !newVal.isMissingNode();
-
-            if (oldPresent && newPresent) {
-                if (!safeEqualsScalar(oldVal, newVal)) {
-                    results.add(changeRecord(fieldPath, ChangeDelta.Kind.MODIFIED, oldVal, newVal));
-                }
-            } else if (!oldPresent && newPresent) {
-                results.add(changeRecord(fieldPath, ChangeDelta.Kind.ADDED, null, newVal));
-            } else if (oldPresent && !newPresent) {
-                results.add(changeRecord(fieldPath, ChangeDelta.Kind.REMOVED, oldVal, null));
-            }
-            // else both missing -> no change
-        }
-
-        return results;
-    }
-
-    /** Navigate a dot-separated path like "item.address.phone"; returns null if missing. */
-    private static JsonNode getValueByPath(JsonNode node, String fieldPath) {
-        if (node == null || fieldPath == null || fieldPath.isBlank()) return null;
-        String[] parts = fieldPath.split("\\.");
-        JsonNode current = node;
-        for (String part : parts) {
-            if (current == null || current.isMissingNode()) return null;
-            current = current.get(part);
-        }
-        return current;
-    }
-
-    /** Compare two scalar JsonNodes safely (treat nulls correctly). */
-    private static boolean safeEqualsScalar(JsonNode oldVal, JsonNode newVal) {
-        if (oldVal == null && newVal == null) return true;
-        if (oldVal == null || newVal == null) return false;
-        if (!oldVal.isValueNode() || !newVal.isValueNode()) return false; // only scalars here
-        String a = toScalarString(oldVal);
-        String b = toScalarString(newVal);
-        return Objects.equals(a, b);
-    }
-
-    /** Convert a scalar JsonNode to a compact String (or null). */
-    private static String toScalarString(JsonNode val) {
-        if (val == null || val.isNull()) return null;
-        if (val.isTextual())  return val.asText();
-        if (val.isNumber())   return val.numberValue().toString();
-        if (val.isBoolean())  return Boolean.toString(val.asBoolean());
-        return val.asText(); // fallback
-    }
-
-    /** Build a ChangeDelta object (replaces old Map<String,Object> version). */
-    private static ChangeDelta changeRecord(String path, ChangeDelta.Kind kind,
-                                            JsonNode oldVal, JsonNode newVal) {
-        String oldS = (oldVal != null && !oldVal.isMissingNode()) ? toScalarString(oldVal) : null;
-        String newS = (newVal != null && !newVal.isMissingNode()) ? toScalarString(newVal) : null;
-        return new ChangeDelta(path, oldS, newS, kind);
-    }
-}
-
-How to use from your handler
-
-List<ChangeDelta> deltas =
-    TrackedDelta.computeDelta(snapshotFromBlobStorage, newDoc, trackedFields);
-
-This will remove the “Type mismatch: cannot convert from List<Map<String,Object>> to List” error you saw at the call site.
-
-If any piece in your screenshots differs (e.g., you support array paths like items[*].price), tell me and I’ll adapt the getValueByPath to your exact path syntax.
+When you’re ready, I can weave this pattern into your actual classes and methods.
