@@ -1,40 +1,25 @@
-Great question — and good instinct.
+gotcha — let’s simplify the option‑3 delta logic without losing features.
+This is CS‑1 code: clean names, human comments, supports dot paths and [*] array wildcard, and returns clear deltas.
 
-Storing the whole document in the snapshot is usually the wiser move for production:
-	•	Pros: future‑proof (if new tracked fields are added later, you can compute deltas without re‑baselining), great for audits/replay/debugging, simpler export/BI.
-	•	Cons: more storage/read I/O. You can mitigate with lifecycle/retention (e.g., keep last N versions or 90 days).
-
-If storage is acceptable (it usually is on Blob), I recommend full‑doc snapshots + compare only the tracked paths at runtime.
-
-⸻
-
-CS‑1: Delta on tracked paths with array wildcards
-
-The code below compares only the paths you pass in (strings like:
-	•	status
-	•	address.city
-	•	items[*].price.amount  ← array wildcard (option 3)
-), against full‑document snapshots.
-	•	Supports dot paths and [*] wildcard for arrays (index‑agnostic).
-	•	Compares array results as multisets (order‑insensitive), so moving elements doesn’t trigger false changes.
-	•	Works for scalars or nested objects (objects are canonicalized to JSON strings).
-
-ChangeDelta.java
+ChangeDelta.java (simple, readable)
 
 package com.neo.notification.diff;
 
 import com.fasterxml.jackson.databind.JsonNode;
 
 /**
- * Represents a delta for a tracked field path.
- * oldValue/newValue are JSON-rendered strings to keep payload small and readable.
+ * A single tracked-field change.
+ * kind:
+ *  - ADDED:    path was missing/null before, now present
+ *  - REMOVED:  path was present before, now missing/null
+ *  - MODIFIED: present in both, but value differs
  */
 public final class ChangeDelta {
     public enum Kind { ADDED, REMOVED, MODIFIED }
 
-    private final String fieldPath;
-    private final String oldValue; // JSON string (or null)
-    private final String newValue; // JSON string (or null)
+    private final String fieldPath;   // e.g., "address.city" or "items[*].price.amount"
+    private final String oldValue;    // compact JSON or scalar text (null if not present)
+    private final String newValue;    // compact JSON or scalar text (null if not present)
     private final Kind kind;
 
     public ChangeDelta(String fieldPath, String oldValue, String newValue, Kind kind) {
@@ -50,154 +35,147 @@ public final class ChangeDelta {
     public Kind getKind()        { return kind; }
 
     @Override public String toString() {
-        return "ChangeDelta{" + fieldPath + ", " + kind + ", old=" + oldValue + ", new=" + newValue + "}";
+        return "ChangeDelta{path=" + fieldPath + ", kind=" + kind +
+               ", old=" + oldValue + ", new=" + newValue + "}";
     }
 }
 
-TrackedDelta.java
+TrackedDelta.java (option‑3, simplified)
 
 package com.neo.notification.diff;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.*;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.MissingNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
-import java.math.BigDecimal;
 import java.util.*;
 
 /**
- * CS-1: Computes deltas only for provided tracked paths.
+ * Compute deltas ONLY for the given tracked paths.
  * Supports:
- *   - Dot paths: a.b.c
- *   - Array wildcard: items[*].price.amount   (index-agnostic)
+ *   - Dot paths: "a.b.c"
+ *   - Array wildcard: "items[*].price.amount"  (index-agnostic; compares as unordered lists)
  *
- * Strategy:
- *   - Resolve each path to a list of matches (0..N JsonNodes).
- *   - Normalize matches to JSON strings.
- *   - Compare as multisets (order-insensitive) for array wildcards.
- *   - For scalar paths, compare singletons.
+ * Design:
+ *   - For each tracked path, resolve all matching JsonNodes in old/new docs.
+ *   - No wildcard: compare first value (scalar) -> ADDED/REMOVED/MODIFIED
+ *   - With wildcard: compare all matches as an unordered multiset of values (order-insensitive)
  *
- * Thread-safety: stateless utilities; no shared mutable state.
+ * Thread-safety: stateless; uses only local variables. Safe to call from concurrent triggers.
  */
 public final class TrackedDelta {
+
+    private static final ObjectMapper M = new ObjectMapper();
 
     private TrackedDelta() {}
 
     /**
-     * Compute deltas for tracked paths between old and new JSON documents.
+     * Compare tracked paths between old snapshot and new document.
      *
-     * @param oldDoc       full snapshot JSON (may be null => treated as empty object)
-     * @param newDoc       latest document JSON (required)
-     * @param trackedPaths list of tracked path expressions (dot + [*] wildcards)
+     * @param oldDoc       full old snapshot (may be null => treated as {})
+     * @param newDoc       full new document (required)
+     * @param trackedPaths list of field paths (dot + [*] wildcard)
      */
     public static List<ChangeDelta> compute(ObjectNode oldDoc,
                                             ObjectNode newDoc,
                                             List<String> trackedPaths) {
-        Objects.requireNonNull(newDoc, "newDoc");
+        Objects.requireNonNull(newDoc, "newDoc must not be null");
         if (trackedPaths == null || trackedPaths.isEmpty()) return Collections.emptyList();
 
-        final ObjectNode safeOld = (oldDoc == null) ? newDoc.objectNode() : oldDoc;
-        final List<ChangeDelta> out = new ArrayList<>(trackedPaths.size());
+        final ObjectNode safeOld = (oldDoc == null) ? M.createObjectNode() : oldDoc;
+        final List<ChangeDelta> changes = new ArrayList<>();
 
         for (String path : trackedPaths) {
             if (path == null || path.isBlank()) continue;
 
-            boolean hasWildcard = path.contains("[*]");
+            boolean wildcard = path.contains("[*]");
 
-            List<JsonNode> oldMatches = resolveAll(safeOld, path);
-            List<JsonNode> newMatches = resolveAll(newDoc, path);
+            List<JsonNode> oldValues = resolveAllMatches(safeOld, path);
+            List<JsonNode> newValues = resolveAllMatches(newDoc,  path);
 
-            if (hasWildcard) {
-                // Compare as multisets (order-insensitive)
-                if (!multisetEqual(renderAll(oldMatches), renderAll(newMatches))) {
-                    out.add(new ChangeDelta(path,
-                            toCompactJsonArray(renderAll(oldMatches)),
-                            toCompactJsonArray(renderAll(newMatches)),
-                            classifyWildcardChange(oldMatches, newMatches)));
+            if (wildcard) {
+                // Compare as unordered collections (array order shouldn’t cause a change)
+                List<String> oldRendered = renderAll(oldValues);
+                List<String> newRendered = renderAll(newValues);
+
+                if (!multisetEquals(oldRendered, newRendered)) {
+                    changes.add(new ChangeDelta(
+                            path,
+                            toJsonArray(oldRendered),
+                            toJsonArray(newRendered),
+                            classifyWildcard(oldRendered, newRendered)
+                    ));
                 }
             } else {
-                // Scalar path: compare first (or null)
-                String oldStr = firstOrNull(renderAll(oldMatches));
-                String newStr = firstOrNull(renderAll(newMatches));
+                // Scalar comparison (first match if any)
+                String oldVal = firstNonNull(renderAll(oldValues));
+                String newVal = firstNonNull(renderAll(newValues));
 
-                if (oldStr == null && newStr == null) {
-                    // no-op
-                } else if (oldStr == null && newStr != null) {
-                    out.add(new ChangeDelta(path, null, newStr, ChangeDelta.Kind.ADDED));
-                } else if (oldStr != null && newStr == null) {
-                    out.add(new ChangeDelta(path, oldStr, null, ChangeDelta.Kind.REMOVED));
-                } else if (!jsonValueEquals(oldMatches, newMatches)) {
-                    out.add(new ChangeDelta(path, oldStr, newStr, ChangeDelta.Kind.MODIFIED));
+                if (oldVal == null && newVal == null) {
+                    // no difference
+                } else if (oldVal == null) {
+                    changes.add(new ChangeDelta(path, null, newVal, ChangeDelta.Kind.ADDED));
+                } else if (newVal == null) {
+                    changes.add(new ChangeDelta(path, oldVal, null, ChangeDelta.Kind.REMOVED));
+                } else if (!Objects.equals(oldVal, newVal)) {
+                    changes.add(new ChangeDelta(path, oldVal, newVal, ChangeDelta.Kind.MODIFIED));
                 }
             }
         }
-        return out;
+        return changes;
     }
 
-    /* ---------------- resolvers ---------------- */
+    /* ================= Path resolution ================= */
 
     /**
-     * Resolve a path like "a.b[*].c" to all matching nodes.
-     * Grammar (simple):
-     *   segment := NAME | NAME[*]
-     *   path    := segment(.segment)*
+     * Resolve a path with optional [*] wildcards into all matching JsonNodes.
+     * Example: items[*].price.amount
      */
-    static List<JsonNode> resolveAll(JsonNode root, String path) {
+    static List<JsonNode> resolveAllMatches(JsonNode root, String path) {
         if (root == null || root.isMissingNode() || root.isNull()) return List.of();
+
+        List<JsonNode> current = List.of(root);
         String[] segments = path.split("\\.");
 
-        List<JsonNode> frontier = List.of(root);
-        for (String seg : segments) {
-            boolean wildcard = seg.endsWith("[*]");
-            String name = wildcard ? seg.substring(0, seg.length() - 3) : seg;
+        for (String segment : segments) {
+            boolean isWildcard = segment.endsWith("[*]");
+            String fieldName = isWildcard ? segment.substring(0, segment.length() - 3) : segment;
 
             List<JsonNode> next = new ArrayList<>();
-            for (JsonNode cur : frontier) {
-                JsonNode child = name.isEmpty() ? cur : cur.get(name);
+            for (JsonNode node : current) {
+                JsonNode child = fieldName.isEmpty() ? node : node.get(fieldName);
                 if (child == null || child.isMissingNode() || child.isNull()) continue;
 
-                if (wildcard) {
+                if (isWildcard) {
                     if (child.isArray()) {
-                        for (JsonNode elem : child) {
-                            next.add(elem);
-                        }
-                    }
-                    // if not array, no matches
+                        child.forEach(next::add);
+                    } // if not array, no matches
                 } else {
                     next.add(child);
                 }
             }
-            frontier = next;
-            if (frontier.isEmpty()) break;
+            current = next;
+            if (current.isEmpty()) break;
         }
-
-        return frontier;
+        return current;
     }
 
-    /* --------------- equality & render helpers --------------- */
+    /* ================= Render / compare helpers ================= */
 
-    private static boolean jsonValueEquals(List<JsonNode> oldMatches, List<JsonNode> newMatches) {
-        // Scalar compare: treat 1 and 1.0 as equal, compare deep structures by JSON
-        String o = firstOrNull(renderAll(oldMatches));
-        String n = firstOrNull(renderAll(newMatches));
-        return Objects.equals(o, n);
-    }
-
+    /** Render nodes to comparable strings: numbers normalized; objects/arrays as compact JSON. */
     private static List<String> renderAll(List<JsonNode> nodes) {
         List<String> out = new ArrayList<>(nodes.size());
-        for (JsonNode n : nodes) {
-            out.add(renderNode(n));
-        }
+        for (JsonNode n : nodes) out.add(renderOne(n));
         return out;
     }
 
-    /** Canonicalize nodes to strings for comparison/logging. */
-    private static String renderNode(JsonNode n) {
+    private static String renderOne(JsonNode n) {
         if (n == null || n.isNull() || n.isMissingNode()) return null;
         if (n.isNumber()) {
-            // normalize numerics (1 vs 1.0)
+            // Normalize numeric text so 1 vs 1.0 doesn’t cause false deltas
             try {
-                return new BigDecimal(n.asText()).stripTrailingZeros().toPlainString();
+                return new java.math.BigDecimal(n.asText()).stripTrailingZeros().toPlainString();
             } catch (NumberFormatException ignore) {
                 return n.asText();
             }
@@ -205,22 +183,17 @@ public final class TrackedDelta {
         if (n.isValueNode()) {
             return n.asText();
         }
-        // Object/array → compact JSON
+        // Object/array → compact JSON string
         return n.toString();
     }
 
-    private static String firstOrNull(List<String> values) {
-        for (String v : values) if (v != null) return v;
-        return null;
+    /** Compare as unordered collections with counts (multiset). */
+    private static boolean multisetEquals(List<String> a, List<String> b) {
+        return toCounts(a).equals(toCounts(b));
     }
 
-    private static boolean multisetEqual(List<String> a, List<String> b) {
-        return toMultiset(a).equals(toMultiset(b));
-        // Order-insensitive; counts matter.
-    }
-
-    private static Map<String, Integer> toMultiset(List<String> list) {
-        Map<String, Integer> m = new HashMap<>();
+    private static Map<String,Integer> toCounts(List<String> list) {
+        Map<String,Integer> m = new HashMap<>();
         for (String s : list) {
             String key = (s == null) ? "__NULL__" : s;
             m.merge(key, 1, Integer::sum);
@@ -228,16 +201,22 @@ public final class TrackedDelta {
         return m;
     }
 
-    private static String toCompactJsonArray(List<String> vals) {
-        // Render nulls as JSON nulls
-        StringBuilder sb = new StringBuilder(16 + vals.size() * 8);
+    /** First non-null string or null if none. */
+    private static String firstNonNull(List<String> values) {
+        for (String v : values) if (v != null) return v;
+        return null;
+    }
+
+    /** Pretty JSON array from a list of scalar/JSON strings (null → JSON null). */
+    private static String toJsonArray(List<String> vals) {
+        StringBuilder sb = new StringBuilder(8 + vals.size() * 8);
         sb.append('[');
         for (int i = 0; i < vals.size(); i++) {
             if (i > 0) sb.append(',');
             String v = vals.get(i);
             if (v == null) sb.append("null");
-            else if (looksLikeJson(v)) sb.append(v);
-            else sb.append('"').append(escapeJson(v)).append('"');
+            else if (looksLikeJson(v)) sb.append(v);      // already JSON (object/array/number/bool/null)
+            else sb.append('"').append(escapeQuotes(v)).append('"');
         }
         sb.append(']');
         return sb.toString();
@@ -249,28 +228,30 @@ public final class TrackedDelta {
         return c == '{' || c == '[' || c == '"' || c == 't' || c == 'f' || c == 'n' || c == '-' || (c >= '0' && c <= '9');
     }
 
-    private static String escapeJson(String s) {
+    private static String escapeQuotes(String s) {
         return s.replace("\\", "\\\\").replace("\"", "\\\"");
-    }
-
-    private static ChangeDelta.Kind classifyWildcardChange(List<JsonNode> oldM, List<JsonNode> newM) {
-        if (oldM.isEmpty() && !newM.isEmpty()) return ChangeDelta.Kind.ADDED;
-        if (!oldM.isEmpty() && newM.isEmpty()) return ChangeDelta.Kind.REMOVED;
-        return ChangeDelta.Kind.MODIFIED;
     }
 }
 
-How to use in your handler
+Why this is simpler
+	•	Clear method names: resolveAllMatches, renderAll, multisetEquals.
+	•	No extra indirections; all helpers are small and local.
+	•	Keeps all functionality you asked for (dot paths, [*], unordered array compare).
 
-// You already loaded full old snapshot (ObjectNode oldDoc) and newDoc (ObjectNode)
-List<ChangeDelta> deltas = TrackedDelta.compute(oldDoc, newDoc, fieldsToTrack);
-// If deltas.isEmpty() → no tracked changes
-// Otherwise, use deltas to build your message and then persist a new version/tag latest.
+How to call (example)
 
+// oldDoc and newDoc are full ObjectNode docs
+List<String> tracked = fieldsToTrack;   // e.g., ["status","address.city","items[*].price.amount"]
 
-⸻
+List<ChangeDelta> deltas = TrackedDelta.compute(oldDoc, newDoc, tracked);
 
-If you want, next I can give you a small wrapper that:
-	•	calls TrackedDelta.compute(...),
-	•	when there are changes, writes the versioned snapshot + updates latest tag (using ETag),
-	•	when there are no changes, does nothing (as you requested).
+if (deltas.isEmpty()) {
+    log.info("No tracked deltas.");
+} else {
+    // build your Service Bus message from `deltas`
+}
+
+If you want, I can now add a very small wrapper that:
+	•	calls TrackedDelta.compute(...)
+	•	if there are changes, writes your versioned snapshot and updates latest=true (with ETag guard)
+	•	if there are no changes, does nothing (per your latest direction)
