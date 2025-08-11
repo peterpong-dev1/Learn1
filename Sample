@@ -1,239 +1,25 @@
-package com.neo.notification.blob;
+int maxRetries = 2; // initial try + 1 retry
+for (int attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+        // Prepare request with If-Match using priorETag
+        var opts = new BlockBlobSimpleUploadOptions(
+                new ByteArrayInputStream(payload), payload.length)
+            .setHeaders(new BlobHttpHeaders().setContentType("application/json; charset=utf-8"))
+            .setRequestConditions(new BlobRequestConditions().setIfMatch(priorETag));
 
-import com.azure.core.util.Context;
-import com.azure.storage.blob.BlobContainerClient;
-import com.azure.storage.blob.models.*;
-import com.azure.storage.blob.specialized.BlockBlobClient;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+        block.uploadWithResponse(opts, Duration.ofSeconds(30), Context.NONE);
+        log.info("Blob updated successfully on attempt " + attempt);
+        break; // ✅ success, exit loop
 
-import java.nio.charset.StandardCharsets;
-import java.time.OffsetDateTime;
-import java.time.format.DateTimeFormatter;
-import java.util.*;
-import java.util.logging.Logger;
-
-/**
- * Post-send snapshot operations for CREATE/MODIFY flows.
- *
- * CREATE  -> ensureBaselineAfterSend(): create baseline "<container>/<id>/<id>.json"
- *            with tags {logicalContainer, docId, isLatest=true, versionTs}. Duplicate-safe.
- *
- * MODIFY  -> writeVersionAndFlipAfterSend(): create new version
- *            "<container>/<id>/<timestamp>.json" tagged isLatest=true,
- *            then flip previous latest to isLatest=false using ETag precondition.
- *
- * Notes
- * - Uses index tags for fast lookup (findBlobsByTags).
- * - Uses If-None-Match="*" for idempotent baseline creation.
- * - Uses ETag precondition when flipping previous latest to avoid races.
- */
-public final class SnapshotPostSendOps {
-
-    private static final ObjectMapper MAPPER = new ObjectMapper();
-
-    private SnapshotPostSendOps() {}
-
-    /* -------------------- Public API -------------------- */
-
-    /**
-     * CREATE flow: ensure the baseline snapshot exists. If it already exists,
-     * this method returns false (idempotent success).
-     *
-     * @return true if the baseline was created now; false if it already existed.
-     */
-    public static boolean ensureBaselineAfterSend(
-            BlobContainerClient dataContainer,
-            String logicalContainer,
-            String docId,
-            ObjectNode newDoc,
-            Logger log) {
-
-        final String blobPath = baselinePath(logicalContainer, docId);
-        final BlockBlobClient block = dataContainer.getBlobClient(blobPath).getBlockBlobClient();
-
-        try {
-            // Serialize the doc (or build a reduced snapshot if you prefer)
-            byte[] payload = MAPPER.writeValueAsString(newDoc).getBytes(StandardCharsets.UTF_8);
-
-            // Tag the baseline as latest (first write is "latest" by definition)
-            Map<String, String> tags = baseTags(logicalContainer, docId);
-            tags.put("isLatest", "true");
-            tags.put("versionTs", nowIso()); // for debugging/queries
-
-            // Idempotent create: only if blob does not exist
-            BlobRequestConditions cond = new BlobRequestConditions().setIfNoneMatch("*");
-
-            BlockBlobSimpleUploadOptions opts = new BlockBlobSimpleUploadOptions(payload)
-                    .setRequestConditions(cond)
-                    .setTags(tags); // index tags are set on create
-
-            block.uploadWithResponse(opts, null, Context.NONE);
-            log.info("Baseline snapshot CREATED: " + blobPath);
-            return true;
-
-        } catch (BlobStorageException bse) {
-            if (bse.getErrorCode() == BlobErrorCode.BLOB_ALREADY_EXISTS) {
-                // Another instance beat us—treat as success
-                log.info("Baseline snapshot already exists (idempotent): " + blobPath);
-                return false;
-            }
-            log.severe("Baseline create failed: " + bse.getErrorCode() + " " + bse.getMessage());
-            throw new RuntimeException(bse);
-        } catch (Exception ex) {
-            log.severe("Unexpected error creating baseline: " + ex.getMessage());
-            throw new RuntimeException(ex);
-        }
-    }
-
-    /**
-     * MODIFY flow: write a new version with isLatest=true, then flip the previous latest
-     * to isLatest=false using the previous blob's ETag.
-     */
-    public static void writeVersionAndFlipAfterSend(
-            BlobContainerClient dataContainer,
-            String logicalContainer,
-            String docId,
-            ObjectNode newDoc,
-            Logger log) {
-
-        // 1) Find existing "latest" (by tags); fallback to baseline if no prior versions.
-        LatestBlob currentLatest = findCurrentLatest(dataContainer, logicalContainer, docId, log);
-
-        // 2) Upload a new version as latest
-        final String versionTs = nowIso().replace(":", "-"); // filename-safe
-        final String newVersionPath = versionPath(logicalContainer, docId, versionTs);
-        final BlockBlobClient newVersion = dataContainer.getBlobClient(newVersionPath).getBlockBlobClient();
-
-        try {
-            byte[] payload = MAPPER.writeValueAsString(newDoc).getBytes(StandardCharsets.UTF_8);
-
-            Map<String, String> tags = baseTags(logicalContainer, docId);
-            tags.put("isLatest", "true");
-            tags.put("versionTs", versionTs);
-
-            BlockBlobSimpleUploadOptions opts = new BlockBlobSimpleUploadOptions(payload)
-                    .setTags(tags);
-
-            newVersion.uploadWithResponse(opts, null, Context.NONE);
-            log.info("New version CREATED as latest: " + newVersionPath);
-
-        } catch (Exception ex) {
-            log.severe("Version upload failed for id=" + docId + ": " + ex.getMessage());
-            throw new RuntimeException(ex);
-        }
-
-        // 3) Flip the previous latest to false (if any), guarded by its ETag
-        if (currentLatest != null) {
-            try {
-                Map<String, String> flipTags = baseTags(logicalContainer, docId);
-                flipTags.put("isLatest", "false");
-                flipTags.put("versionTs", currentLatest.versionTs);
-
-                TagsConditions tagCond = new TagsConditions().setIfMatch(currentLatest.eTag);
-                currentLatest.client.setTagsWithResponse(flipTags, tagCond, null, Context.NONE);
-
-                log.info("Previous latest FLIPPED to false: " + currentLatest.path);
-            } catch (BlobStorageException bse) {
-                // If another instance flipped it first, you'll see 412 (Precondition Failed)
-                if (bse.getStatusCode() == 412) {
-                    log.info("Previous latest already flipped by another instance: " + currentLatest.path);
-                } else {
-                    log.severe("Flip latest failed: " + bse.getErrorCode() + " " + bse.getMessage());
-                    throw new RuntimeException(bse);
-                }
-            } catch (Exception ex) {
-                log.severe("Unexpected error flipping latest: " + ex.getMessage());
-                throw new RuntimeException(ex);
-            }
-        }
-    }
-
-    /* -------------------- Helpers -------------------- */
-
-    // Build "<container>/<id>/<id>.json"
-    private static String baselinePath(String logicalContainer, String docId) {
-        return logicalContainer + "/" + docId + "/" + docId + ".json";
-    }
-
-    // Build "<container>/<id>/<timestamp>.json"
-    private static String versionPath(String logicalContainer, String docId, String versionTs) {
-        return logicalContainer + "/" + docId + "/" + versionTs + ".json";
-    }
-
-    private static Map<String, String> baseTags(String logicalContainer, String docId) {
-        Map<String, String> t = new HashMap<>();
-        t.put("logicalContainer", logicalContainer);
-        t.put("docId", docId);
-        return t;
-    }
-
-    private static String nowIso() {
-        return OffsetDateTime.now().format(DateTimeFormatter.ISO_INSTANT);
-    }
-
-    /**
-     * Find the current "latest" blob:
-     *  - prefer a blob tagged isLatest='true'
-     *  - else fallback to the baseline blob if present
-     */
-    private static LatestBlob findCurrentLatest(
-            BlobContainerClient dataContainer,
-            String logicalContainer,
-            String docId,
-            Logger log) {
-
-        // Query by index tags
-        String query = String.format(
-                "logicalContainer = '%s' AND docId = '%s' AND isLatest = 'true'",
-                logicalContainer, docId);
-
-        Optional<TaggedBlobItem> first = dataContainer.findBlobsByTags(query)
-                .stream()
-                .findFirst();
-
-        if (first.isPresent()) {
-            String path = first.get().getName();
-            var client = dataContainer.getBlobClient(path);
-            BlobProperties props = client.getProperties();    // gets ETag + tags
-            String etag = props.getETag();
-            String ts = safeGet(props.getTags(), "versionTs");
-            return new LatestBlob(path, client, etag, ts);
-        }
-
-        // Fallback: baseline
-        String baselinePath = baselinePath(logicalContainer, docId);
-        var baseClient = dataContainer.getBlobClient(baselinePath);
-        if (baseClient.exists()) {
-            BlobProperties props = baseClient.getProperties();
-            String etag = props.getETag();
-            String ts = safeGet(props.getTags(), "versionTs");
-            return new LatestBlob(baselinePath, baseClient, etag, ts);
-        }
-
-        log.info("No existing baseline/latest found for id=" + docId);
-        return null;
-    }
-
-    private static String safeGet(Map<String, String> map, String key) {
-        return map == null ? "" : map.getOrDefault(key, "");
-    }
-
-    /** Minimal holder for the blob we consider "current latest". */
-    private static final class LatestBlob {
-        final String path;
-        final com.azure.storage.blob.specialized.BlobClientBase client;
-        final String eTag;
-        final String versionTs;
-
-        LatestBlob(String path,
-                   com.azure.storage.blob.specialized.BlobClientBase client,
-                   String eTag,
-                   String versionTs) {
-            this.path = path;
-            this.client = client;
-            this.eTag = eTag;
-            this.versionTs = versionTs;
+    } catch (BlobStorageException bse) {
+        if (bse.getStatusCode() == 412 && attempt < maxRetries) {
+            log.warning("ETag mismatch, re-reading blob for retry...");
+            // Re-read the blob to get the latest ETag and possibly merge changes
+            BlobProperties props = client.getProperties();
+            priorETag = props.getETag();
+            // Optionally re-download contents & recompute delta
+        } else {
+            throw bse; // permanent failure or max retries reached
         }
     }
 }
