@@ -1,72 +1,49 @@
-import com.azure.core.util.Context;
-import com.azure.storage.blob.BlobContainerClient;
-import com.azure.storage.blob.specialized.BlockBlobClient;
-import com.azure.storage.blob.models.*;
-import java.io.ByteArrayInputStream;
-import java.nio.charset.StandardCharsets;
-import java.time.OffsetDateTime;
-import java.time.format.DateTimeFormatter;
-import java.time.Duration;
-import java.util.HashMap;
-import java.util.Map;
+final String docId = newDoc.get("id").asText();
+ObjectNode baseline = null;
+boolean isCreate;
 
-public final class CreateBlob {
+try {
+    // 1) Read snapshot to decide CREATE vs MODIFY
+    baseline = GetSnapshotFromBlob.getSnapshotFromBlobStorage(
+        DATA_CONTAINER, cosmosContainerName, docId, log);
+    isCreate = (baseline == null);
+} catch (IOException io) {
+    // Storage hiccup -> let Azure Functions retry so we don't send a message yet
+    log.severe("Snapshot read error for id=" + docId + ": " + io.getMessage());
+    throw new RuntimeException(io);
+}
 
-  /**
-   * Creates the baseline snapshot if it doesn't exist.
-   * Returns true if created, false if it already existed.
-   * Throws RuntimeException on transient storage errors so Azure Functions can retry.
-   */
-  public static boolean createBaselineIfAbsent(
-      BlobContainerClient dataContainer,
-      String logicalContainer,
-      String docId,
-      com.fasterxml.jackson.databind.node.ObjectNode newDoc,
-      java.util.logging.Logger log) {
+// 2) Build message (include deltas only if modify)
+String eventType = isCreate ? "CREATE" : "MODIFY";
+ServiceBusMessage msg = MessageFactory.build(newDoc, baseline, eventType, cosmosContainerName);
 
-    // 1) Build the blob path (your helper that forms "containerName/docId/<docId>.json")
-    final String blobPath = BlobPaths.baseline(logicalContainer, docId);
+// 3) Send first (so we never persist a state the world didn't hear about)
+try {
+    busSender.sendMessage(msg);
+    log.info("Service Bus message sent for id=" + docId + ", type=" + eventType);
+} catch (Exception sendEx) {
+    // Fail fast so Functions will retry the whole invocation
+    log.severe("Failed to send message for id=" + docId + ": " + sendEx.getMessage());
+    throw new RuntimeException(sendEx);
+}
 
-    // 2) Serialize content (store full doc, or a slimmed snapshot if you prefer)
-    byte[] payload = newDoc.toString().getBytes(StandardCharsets.UTF_8);
-
-    // 3) Build index tags
-    Map<String, String> tags = new HashMap<>();
-    tags.put("logicalContainer", logicalContainer);
-    tags.put("docId", docId);
-    tags.put("isLatest", "true");
-    tags.put("versionTs", OffsetDateTime.now().format(DateTimeFormatter.ISO_INSTANT));
-
-    // 4) Idempotent create: If-None-Match: "*" (create only if doesn't exist)
-    BlobRequestConditions cond = new BlobRequestConditions().setIfNoneMatch("*");
-
-    BlockBlobClient block = dataContainer.getBlobClient(blobPath).getBlockBlobClient();
-
-    try {
-      BlockBlobSimpleUploadOptions opts =
-          new BlockBlobSimpleUploadOptions(new ByteArrayInputStream(payload), payload.length)
-              .setRequestConditions(cond)
-              .setTags(tags)
-              .setContentType("application/json; charset=utf-8");
-
-      block.uploadWithResponse(opts, Duration.ofSeconds(30), Context.NONE);
-
-      log.info("Created baseline snapshot: " + blobPath);
-      return true;
-
-    } catch (BlobStorageException bse) {
-      // If two instances race, the loser gets BLOB_ALREADY_EXISTS → treat as success (false)
-      if (bse.getErrorCode() == BlobErrorCode.BLOB_ALREADY_EXISTS) {
-        log.info("Baseline already exists (idempotent create): " + blobPath);
-        return false;
-      }
-      log.severe("BlobStorageException creating baseline for id=" + docId + ": "
-          + bse.getErrorCode() + " / " + bse.getMessage());
-      throw new RuntimeException(bse);
-
-    } catch (Exception ex) {
-      log.severe("Unexpected error creating baseline for id=" + docId + ": " + ex.getMessage());
-      throw new RuntimeException(ex);
+// 4) Persist snapshot AFTER successful send
+try {
+    if (isCreate) {
+        // Idempotent: uses If-None-Match "*" and will return false if someone else already created it
+        boolean created = CreateBlob.createBaselineIfAbsent(
+            DATA_CONTAINER, cosmosContainerName, docId, newDoc, log);
+        log.info(created
+            ? "Baseline created for id=" + docId
+            : "Baseline already existed (idempotent) for id=" + docId);
+    } else {
+        // Write new version + flip latest tag (or overwrite latest per your strategy)
+        UpdateBlob.writeVersionAndFlipLatest(
+            DATA_CONTAINER, cosmosContainerName, docId, baseline, newDoc, log);
+        log.info("Snapshot updated for id=" + docId);
     }
-  }
+} catch (Exception persistEx) {
+    // Persist failed but message was sent; surface error so you can alert/replay if needed
+    log.severe("Post-send snapshot persist failed for id=" + docId + ": " + persistEx.getMessage());
+    throw new RuntimeException(persistEx);
 }
