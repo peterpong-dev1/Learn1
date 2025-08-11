@@ -23,3 +23,160 @@ for (int attempt = 1; attempt <= maxRetries; attempt++) {
         }
     }
 }
+
+
+======
+
+Short answer: No, tags aren’t required if you always read/write the same blob path (<container>/<docId>/id.json) and you don’t need server‑side searching. With Blob Versioning enabled, simply overwriting id.json creates versions automatically. Tags were only helping us find “latest” across many blobs; if you always know the exact path, you can drop tags entirely.
+
+Here’s a clean versioning‑based flow + code (Java, Azure Storage v12) that keeps it simple.
+
+⸻
+
+Flow (no tags)
+	1.	Build blob path once: container/<docId>/id.json.
+	2.	Read current id.json (if exists) → treat as MODIFY; else CREATE. Capture its ETag.
+	3.	(If MODIFY) compute deltas vs the downloaded snapshot.
+	4.	Send message to Service Bus.
+	5.	Overwrite id.json with the new content using If‑Match=oldETag (optimistic concurrency).
+	•	If precondition fails (412), another instance already wrote a newer copy → log & retry small backoff.
+
+Azure will turn the overwritten old content into a previous version automatically. No manual version files, no flipping.
+
+⸻
+
+Code
+
+import com.azure.core.util.Context;
+import com.azure.storage.blob.*;
+import com.azure.storage.blob.models.*;
+import com.azure.storage.blob.specialized.BlockBlobClient;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+
+import java.io.ByteArrayOutputStream;
+import java.io.ByteArrayInputStream;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.List;
+import java.util.logging.Logger;
+
+public final class BlobVersioningOps {
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    private BlobVersioningOps() {}
+
+    /** Simple holder for current snapshot + its ETag (null if blob didn’t exist). */
+    public static final class Snapshot {
+        public final ObjectNode json;   // may be null if not found (CREATE)
+        public final String eTag;       // null if not found
+        Snapshot(ObjectNode json, String eTag) { this.json = json; this.eTag = eTag; }
+        public boolean isCreate() { return json == null; }
+    }
+
+    /** Build the fixed blob path: <logicalContainer>/<docId>/id.json */
+    public static String path(String logicalContainer, String docId) {
+        return logicalContainer + "/" + docId + "/id.json";
+    }
+
+    /** Download current id.json if present (no tags/metadata needed). */
+    public static Snapshot readCurrent(BlobContainerClient dataContainer,
+                                       String logicalContainer,
+                                       String docId,
+                                       Logger log) {
+        String blobPath = path(logicalContainer, docId);
+        BlobClient client = dataContainer.getBlobClient(blobPath);
+
+        if (!client.exists()) {
+            log.info("Snapshot not found (CREATE): " + blobPath);
+            return new Snapshot(null, null);
+        }
+
+        try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            client.download(out);
+            String json = out.toString(StandardCharsets.UTF_8);
+            BlobProperties props = client.getProperties();
+            log.info("Read snapshot: " + blobPath + " eTag=" + props.getETag());
+            return new Snapshot((ObjectNode) MAPPER.readTree(json), props.getETag());
+        } catch (Exception e) {
+            throw new RuntimeException("Failed reading snapshot " + blobPath + ": " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Overwrite id.json with the new content. Old content automatically becomes a blob version.
+     * Uses If-Match with previous ETag (when present) to avoid lost updates.
+     */
+    public static void overwriteWithVersioning(BlobContainerClient dataContainer,
+                                               String logicalContainer,
+                                               String docId,
+                                               ObjectNode newDoc,
+                                               String previousETag,   // null allowed (CREATE)
+                                               Logger log) {
+        String blobPath = path(logicalContainer, docId);
+        BlockBlobClient block = dataContainer.getBlobClient(blobPath).getBlockBlobClient();
+
+        try {
+            byte[] payload = MAPPER.writeValueAsString(newDoc).getBytes(StandardCharsets.UTF_8);
+
+            BlobHttpHeaders headers = new BlobHttpHeaders().setContentType("application/json; charset=utf-8");
+
+            BlockBlobSimpleUploadOptions opts = new BlockBlobSimpleUploadOptions(
+                    new ByteArrayInputStream(payload), payload.length)
+                    .setHeaders(headers);
+
+            // For modify, protect with If-Match (optimistic concurrency)
+            if (previousETag != null && !previousETag.isBlank()) {
+                BlobRequestConditions cond = new BlobRequestConditions().setIfMatch(previousETag);
+                opts.setRequestConditions(cond);
+            }
+
+            block.uploadWithResponse(opts, Duration.ofSeconds(30), Context.NONE);
+            log.info("Overwrote snapshot (version created automatically): " + blobPath);
+
+        } catch (BlobStorageException bse) {
+            if (bse.getStatusCode() == 412) {
+                // Precondition failed: someone else wrote a newer copy first
+                log.warning("ETag mismatch on overwrite (race). Consider retrying: " + blobPath);
+            } else {
+                throw new RuntimeException("Blob overwrite failed: " + bse.getErrorCode() + " " + bse.getMessage(), bse);
+            }
+        } catch (Exception e) {
+            throw new RuntimeException("Unexpected overwrite error: " + e.getMessage(), e);
+        }
+    }
+}
+
+How you call it in your Function
+
+// 0) Get the fixed blob path for this doc
+final String docId = newDoc.get("id").asText();
+
+// 1) Read current snapshot (decide create vs modify)
+BlobVersioningOps.Snapshot snap = BlobVersioningOps.readCurrent(DATA_CONTAINER, cosmosContainerName, docId, log);
+boolean isCreate = snap.isCreate();
+
+// 2) If MODIFY, compute deltas vs snap.json (scalar fields, etc.)
+List<ChangeInfo> deltas = List.of();
+if (!isCreate) {
+    deltas = GetDelta.computeScalarDeltas(snap.json, newDoc, fieldsToTrack);
+    if (deltas.isEmpty()) {
+        log.info("No tracked changes for id=" + docId);
+        return; // nothing to notify
+    }
+}
+
+// 3) Send to Service Bus first (set deterministic MessageId: docId + newDoc.get("_ts") or your own ts)
+// busSender.sendMessage(buildMessage(docId, cosmosContainerName, isCreate ? "CREATE" : "MODIFY", deltas, newDoc));
+
+// 4) Persist new state: overwrite id.json -> Azure creates a previous version automatically
+BlobVersioningOps.overwriteWithVersioning(DATA_CONTAINER, cosmosContainerName, docId, newDoc, snap.eTag, log);
+
+Notes
+	•	No tags anywhere. We always address id.json directly.
+	•	CREATE: previousETag == null → first upload succeeds and establishes the baseline; later overwrites create versions.
+	•	MODIFY: If‑Match(previousETag) protects against races. If you get a 412, just re‑read and retry once with the new ETag.
+	•	To view old versions: Portal → Container → Blob → Versions tab (you can download/restore).
+	•	Cleanup: add a Lifecycle Management rule to delete versions older than N days.
+
+If you later decide you do need server-side searches (e.g., “give me all latest blobs for container X”), we can add one lightweight tag (like logicalContainer) to the base blob only—optional. But for your “always know the path” plan, you’re good with no tags.
