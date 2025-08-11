@@ -207,8 +207,137 @@ public final class SnapshotPostSendOps {
     }
 }
 
+
+
+
+
 Why this design
 	•	You can’t lease something that doesn’t exist, so baseline creation stays “try upload → if already exists, ignore”.
 	•	For updates, the only shared state you mutate is the previous latest’s tags. A 15‑second lease guarantees only one instance flips it at a time. If two instances race, the loser can’t acquire the lease and just logs a warning; the winner’s flip is enough.
+
+
+
+// --- inside SnapshotPostSendOps ---
+
+private static final class LatestBlob {
+    final String path;
+    final com.azure.storage.blob.specialized.BlobClientBase client;
+    final String eTag;
+    final String versionTs;
+    final boolean hadTags;        // <— NEW: did this blob already have tags?
+    final boolean isBaseline;     // <— NEW: is this the baseline path?
+    LatestBlob(String path,
+               com.azure.storage.blob.specialized.BlobClientBase client,
+               String eTag,
+               String versionTs,
+               boolean hadTags,
+               boolean isBaseline) {
+        this.path = path;
+        this.client = client;
+        this.eTag = eTag;
+        this.versionTs = versionTs;
+        this.hadTags = hadTags;
+        this.isBaseline = isBaseline;
+    }
+}
+
+private static LatestBlob findCurrentLatest(
+        BlobContainerClient dataContainer,
+        String logicalContainer,
+        String docId,
+        Logger log) {
+
+    // Try tag query first
+    String q = String.format("logicalContainer = '%s' AND docId = '%s' AND isLatest = 'true'",
+            logicalContainer, docId);
+    var tagged = dataContainer.findBlobsByTags(q).stream().findFirst();
+    if (tagged.isPresent()) {
+        var path = tagged.get().getName();
+        var bc   = dataContainer.getBlobClient(path);
+        var p    = bc.getProperties();
+        var tags = p.getTags();
+        return new LatestBlob(path, bc, p.getETag(),
+                tags.getOrDefault("versionTs", ""), true, false);
+    }
+
+    // Fallback to baseline (may have no tags yet)
+    String baselinePath = baselinePath(logicalContainer, docId);
+    var base = dataContainer.getBlobClient(baselinePath);
+    if (base.exists()) {
+        var p = base.getProperties();
+        var tags = p.getTags();           // could be null/empty
+        boolean hadTags = tags != null && !tags.isEmpty();
+        String ts = hadTags ? tags.getOrDefault("versionTs", "") : "";
+        return new LatestBlob(baselinePath, base, p.getETag(), ts, hadTags, true);
+    }
+
+    return null;
+}
+
+public static void writeVersionAndFlipAfterSend(
+        BlobContainerClient dataContainer,
+        String logicalContainer,
+        String docId,
+        ObjectNode newDoc,
+        Logger log) {
+
+    LatestBlob currentLatest = findCurrentLatest(dataContainer, logicalContainer, docId, log);
+
+    // 1) upload new version with isLatest=true (unchanged)
+    String versionTs = OffsetDateTime.now().format(DateTimeFormatter.ISO_INSTANT).replace(":", "-");
+    var newPath  = versionPath(logicalContainer, docId, versionTs);
+    var newBlock = dataContainer.getBlobClient(newPath).getBlockBlobClient();
+    try {
+        byte[] payload = MAPPER.writeValueAsString(newDoc).getBytes(StandardCharsets.UTF_8);
+        Map<String,String> tags = baseTags(logicalContainer, docId);
+        tags.put("isLatest","true");
+        tags.put("versionTs", versionTs);
+        newBlock.uploadWithResponse(new BlockBlobSimpleUploadOptions(payload).setTags(tags), null, Context.NONE);
+        log.info("Wrote new version: " + newPath);
+    } catch (Exception ex) {
+        log.severe("Version upload failed for id=" + docId + ": " + ex.getMessage());
+        throw new RuntimeException(ex);
+    }
+
+    // 2) flip or backfill tags on previous latest/baseline
+    if (currentLatest != null) {
+        try {
+            Map<String,String> newTags = baseTags(logicalContainer, docId);
+            newTags.put("isLatest", "false");
+            // if baseline had no tags before, backfill a timestamp (use lastModified or a marker)
+            String prevTs = currentLatest.versionTs;
+            if (!currentLatest.hadTags) {
+                prevTs = Optional.ofNullable(currentLatest.client.getProperties().getLastModified())
+                                 .map(OffsetDateTime::toInstant)
+                                 .map(Object::toString)
+                                 .orElse("baseline");
+            }
+            newTags.put("versionTs", prevTs);
+
+            // use ETag precondition when possible; if we’re backfilling tags for a tag-less baseline,
+            // ETag still works; if it 412’s, someone else updated first — safe to ignore
+            var tagCond = new TagsConditions().setIfMatch(currentLatest.eTag);
+            currentLatest.client.setTagsWithResponse(newTags, tagCond, null, Context.NONE);
+            log.info((currentLatest.hadTags ? "Flipped" : "Backfilled") +
+                     " previous latest tags on: " + currentLatest.path);
+
+        } catch (BlobStorageException bse) {
+            if (bse.getStatusCode() == 412) {
+                log.info("Previous latest already updated by another instance: " + currentLatest.path);
+            } else {
+                log.severe("Failed updating previous latest: " + bse.getErrorCode() + " " + bse.getMessage());
+                throw new RuntimeException(bse);
+            }
+        } catch (Exception ex) {
+            log.severe("Unexpected error updating previous latest: " + ex.getMessage());
+            throw new RuntimeException(ex);
+        }
+    }
+}
+
+
+
+
+
 
 If you want, I can also show the tiny calling snippet again (after you send to Service Bus) wired to these lease-based methods.
