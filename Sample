@@ -1,54 +1,101 @@
-Got it. From now on, I’ll include proper error handling and rethrow exceptions so the Function can safely retry.
+package com.neo.notification.change;
 
-Here’s a compact pattern you can drop around your pipeline today:
+import com.azure.core.util.Context;
+import com.azure.storage.blob.BlobClient;
+import com.azure.storage.blob.BlobContainerClient;
+import com.azure.storage.blob.models.BlobErrorCode;
+import com.azure.storage.blob.models.BlobParallelUploadOptions;
+import com.azure.storage.blob.models.BlobRequestConditions;
+import com.azure.storage.blob.models.BlobStorageException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
-public void processChange(ObjectNode newDoc, ExecutionContext ctx) {
-    final Logger log = ctx.getLogger();
-    final String docId = newDoc.path("id").asText(null);
+import java.nio.charset.StandardCharsets;
+import java.time.OffsetDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.logging.Logger;
 
-    try {
-        // 1) Load tracked fields (throw if missing/error)
-        List<String> tracked = loadTrackedFieldsOrThrow();
+/**
+ * Utilities to create the initial snapshot for a Cosmos DB document in Blob Storage.
+ * <p>
+ * Use this only when you’ve determined it's a "create" (no prior snapshot found).
+ * The method:
+ *  1) Builds the baseline blob path: {logicalContainer}/{docId}/{docId}.json
+ *  2) Uploads content with "If-None-Match: *" (idempotent create – no overwrite)
+ *  3) Sets index tags: logicalContainer, docId, isLatest=true, versionTs
+ */
+public final class CreateSnapshot {
 
-        // 2) Load snapshot (null = create; I/O/parsing error = throw)
-        ObjectNode snapshot = loadSnapshotOrThrow(docId);
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
-        // 3) CREATE path: seed baseline/latest, then return
-        if (snapshot == null) {
-            seedInitialSnapshotOrThrow(docId, newDoc);
-            log.info("CREATE seeded for id=" + docId);
-            return;
+    private CreateSnapshot() {}
+
+    /**
+     * Creates the first snapshot blob for a document if it doesn't already exist.
+     *
+     * @param dataContainer      Blob container where snapshots live (e.g., "tracked-data")
+     * @param logicalContainer   Logical Cosmos container name (e.g., "CustomerContainer")
+     * @param docId              Document id
+     * @param newDoc             Full new document (or subset you want to store)
+     * @param log                Azure Functions logger
+     * @return true if the blob was created; false if it already existed
+     *
+     * @throws RuntimeException  rethrows transient storage errors so Functions can retry
+     */
+    public static boolean createBaselineIfAbsent(
+            BlobContainerClient dataContainer,
+            String logicalContainer,
+            String docId,
+            ObjectNode newDoc,
+            Logger log) {
+
+        // 1) Build blob path. “Folders” are virtual – this is a single blob name.
+        final String blobPath = logicalContainer + "/" + docId + "/" + docId + ".json";
+        final BlobClient blob = dataContainer.getBlobClient(blobPath);
+
+        try {
+            // 2) Serialize the content to store. For a lighter snapshot, create a slim ObjectNode
+            //    with only tracked fields instead of storing the whole newDoc.
+            byte[] payload = MAPPER.writeValueAsString(newDoc).getBytes(StandardCharsets.UTF_8);
+
+            // 3) Build tags used later for quick lookup (indexing)
+            Map<String, String> tags = new HashMap<>();
+            tags.put("logicalContainer", logicalContainer);
+            tags.put("docId", docId);
+            tags.put("isLatest", "true");
+            // ISO‑8601 UTC timestamp; tag values must be ASCII and short
+            tags.put("versionTs", OffsetDateTime.now().format(DateTimeFormatter.ISO_INSTANT));
+
+            // 4) Idempotent create: If-None-Match: "*" means "create only if it doesn't exist"
+            BlobRequestConditions cond = new BlobRequestConditions().setIfNoneMatch("*");
+
+            BlobParallelUploadOptions opts =
+                    new BlobParallelUploadOptions(payload)
+                            .setRequestConditions(cond)
+                            .setTags(tags);
+
+            blob.uploadWithResponse(opts, null, Context.NONE);
+
+            log.info("Created baseline snapshot blob: " + blobPath);
+            return true;
+
+        } catch (BlobStorageException bse) {
+            // If two instances race, the loser gets BLOB_ALREADY_EXISTS – treat as idempotent success
+            if (bse.getErrorCode() == BlobErrorCode.BLOB_ALREADY_EXISTS) {
+                log.info("Baseline already exists (idempotent create): " + blobPath);
+                return false;
+            }
+            // Other storage errors – log and rethrow to let Functions retry safely
+            log.severe("BlobStorageException creating baseline for id=" + docId + ": "
+                    + bse.getErrorCode() + " / " + bse.getMessage());
+            throw new RuntimeException(bse);
+
+        } catch (Exception ex) {
+            // JSON serialization or unexpected errors – log and rethrow for retry/alerting
+            log.severe("Unexpected error creating baseline for id=" + docId + ": " + ex.getMessage());
+            throw new RuntimeException(ex);
         }
-
-        // 4) Compute delta (throw on unexpected errors)
-        List<Map<String,Object>> delta = computeDelta(snapshot, newDoc, tracked);
-
-        // 5) If no changes, exit
-        if (delta.isEmpty()) {
-            log.info("No tracked changes for id=" + docId);
-            return;
-        }
-
-        // 6) Send to Service Bus (throw if send fails)
-        sendToServiceBusOrThrow(docId, delta);
-
-        // 7) Persist snapshot/version/tags (throw if you prefer to fail & retry)
-        updateSnapshotVersionOrThrow(docId, newDoc);
-
-    } catch (Exception e) {
-        // Make retries visible and safe
-        log.severe("PROCESSING FAILED for id=" + docId + ": " + e.getMessage());
-        // Optional: log stacktrace
-        // e.printStackTrace();
-        // Rethrow to trigger retry by Functions
-        throw (e instanceof RuntimeException) ? (RuntimeException) e : new RuntimeException(e);
     }
 }
-
-Tiny guidelines I’ll follow in all code I send you:
-	•	Throw early on config/blob read/parse failures (don’t silently skip).
-	•	Differentiate: null = snapshot not found (create); exception = I/O/parse error (retry).
-	•	Guard idempotency on the send step (e.g., include a dedupe key like {docId, etag, changeFeedLsn}).
-	•	Log structured JSON for failures and deltas for easy tracing in Log Stream / App Insights.
-
-When you’re ready, I can weave this pattern into your actual classes and methods.
