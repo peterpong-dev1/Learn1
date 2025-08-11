@@ -1,101 +1,72 @@
-package com.neo.notification.change;
-
 import com.azure.core.util.Context;
-import com.azure.storage.blob.BlobClient;
 import com.azure.storage.blob.BlobContainerClient;
-import com.azure.storage.blob.models.BlobErrorCode;
-import com.azure.storage.blob.models.BlobParallelUploadOptions;
-import com.azure.storage.blob.models.BlobRequestConditions;
-import com.azure.storage.blob.models.BlobStorageException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-
+import com.azure.storage.blob.specialized.BlockBlobClient;
+import com.azure.storage.blob.models.*;
+import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.logging.Logger;
 
-/**
- * Utilities to create the initial snapshot for a Cosmos DB document in Blob Storage.
- * <p>
- * Use this only when you’ve determined it's a "create" (no prior snapshot found).
- * The method:
- *  1) Builds the baseline blob path: {logicalContainer}/{docId}/{docId}.json
- *  2) Uploads content with "If-None-Match: *" (idempotent create – no overwrite)
- *  3) Sets index tags: logicalContainer, docId, isLatest=true, versionTs
- */
-public final class CreateSnapshot {
+public final class CreateBlob {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+  /**
+   * Creates the baseline snapshot if it doesn't exist.
+   * Returns true if created, false if it already existed.
+   * Throws RuntimeException on transient storage errors so Azure Functions can retry.
+   */
+  public static boolean createBaselineIfAbsent(
+      BlobContainerClient dataContainer,
+      String logicalContainer,
+      String docId,
+      com.fasterxml.jackson.databind.node.ObjectNode newDoc,
+      java.util.logging.Logger log) {
 
-    private CreateSnapshot() {}
+    // 1) Build the blob path (your helper that forms "containerName/docId/<docId>.json")
+    final String blobPath = BlobPaths.baseline(logicalContainer, docId);
 
-    /**
-     * Creates the first snapshot blob for a document if it doesn't already exist.
-     *
-     * @param dataContainer      Blob container where snapshots live (e.g., "tracked-data")
-     * @param logicalContainer   Logical Cosmos container name (e.g., "CustomerContainer")
-     * @param docId              Document id
-     * @param newDoc             Full new document (or subset you want to store)
-     * @param log                Azure Functions logger
-     * @return true if the blob was created; false if it already existed
-     *
-     * @throws RuntimeException  rethrows transient storage errors so Functions can retry
-     */
-    public static boolean createBaselineIfAbsent(
-            BlobContainerClient dataContainer,
-            String logicalContainer,
-            String docId,
-            ObjectNode newDoc,
-            Logger log) {
+    // 2) Serialize content (store full doc, or a slimmed snapshot if you prefer)
+    byte[] payload = newDoc.toString().getBytes(StandardCharsets.UTF_8);
 
-        // 1) Build blob path. “Folders” are virtual – this is a single blob name.
-        final String blobPath = logicalContainer + "/" + docId + "/" + docId + ".json";
-        final BlobClient blob = dataContainer.getBlobClient(blobPath);
+    // 3) Build index tags
+    Map<String, String> tags = new HashMap<>();
+    tags.put("logicalContainer", logicalContainer);
+    tags.put("docId", docId);
+    tags.put("isLatest", "true");
+    tags.put("versionTs", OffsetDateTime.now().format(DateTimeFormatter.ISO_INSTANT));
 
-        try {
-            // 2) Serialize the content to store. For a lighter snapshot, create a slim ObjectNode
-            //    with only tracked fields instead of storing the whole newDoc.
-            byte[] payload = MAPPER.writeValueAsString(newDoc).getBytes(StandardCharsets.UTF_8);
+    // 4) Idempotent create: If-None-Match: "*" (create only if doesn't exist)
+    BlobRequestConditions cond = new BlobRequestConditions().setIfNoneMatch("*");
 
-            // 3) Build tags used later for quick lookup (indexing)
-            Map<String, String> tags = new HashMap<>();
-            tags.put("logicalContainer", logicalContainer);
-            tags.put("docId", docId);
-            tags.put("isLatest", "true");
-            // ISO‑8601 UTC timestamp; tag values must be ASCII and short
-            tags.put("versionTs", OffsetDateTime.now().format(DateTimeFormatter.ISO_INSTANT));
+    BlockBlobClient block = dataContainer.getBlobClient(blobPath).getBlockBlobClient();
 
-            // 4) Idempotent create: If-None-Match: "*" means "create only if it doesn't exist"
-            BlobRequestConditions cond = new BlobRequestConditions().setIfNoneMatch("*");
+    try {
+      BlockBlobSimpleUploadOptions opts =
+          new BlockBlobSimpleUploadOptions(new ByteArrayInputStream(payload), payload.length)
+              .setRequestConditions(cond)
+              .setTags(tags)
+              .setContentType("application/json; charset=utf-8");
 
-            BlobParallelUploadOptions opts =
-                    new BlobParallelUploadOptions(payload)
-                            .setRequestConditions(cond)
-                            .setTags(tags);
+      block.uploadWithResponse(opts, Duration.ofSeconds(30), Context.NONE);
 
-            blob.uploadWithResponse(opts, null, Context.NONE);
+      log.info("Created baseline snapshot: " + blobPath);
+      return true;
 
-            log.info("Created baseline snapshot blob: " + blobPath);
-            return true;
+    } catch (BlobStorageException bse) {
+      // If two instances race, the loser gets BLOB_ALREADY_EXISTS → treat as success (false)
+      if (bse.getErrorCode() == BlobErrorCode.BLOB_ALREADY_EXISTS) {
+        log.info("Baseline already exists (idempotent create): " + blobPath);
+        return false;
+      }
+      log.severe("BlobStorageException creating baseline for id=" + docId + ": "
+          + bse.getErrorCode() + " / " + bse.getMessage());
+      throw new RuntimeException(bse);
 
-        } catch (BlobStorageException bse) {
-            // If two instances race, the loser gets BLOB_ALREADY_EXISTS – treat as idempotent success
-            if (bse.getErrorCode() == BlobErrorCode.BLOB_ALREADY_EXISTS) {
-                log.info("Baseline already exists (idempotent create): " + blobPath);
-                return false;
-            }
-            // Other storage errors – log and rethrow to let Functions retry safely
-            log.severe("BlobStorageException creating baseline for id=" + docId + ": "
-                    + bse.getErrorCode() + " / " + bse.getMessage());
-            throw new RuntimeException(bse);
-
-        } catch (Exception ex) {
-            // JSON serialization or unexpected errors – log and rethrow for retry/alerting
-            log.severe("Unexpected error creating baseline for id=" + docId + ": " + ex.getMessage());
-            throw new RuntimeException(ex);
-        }
+    } catch (Exception ex) {
+      log.severe("Unexpected error creating baseline for id=" + docId + ": " + ex.getMessage());
+      throw new RuntimeException(ex);
     }
+  }
 }
