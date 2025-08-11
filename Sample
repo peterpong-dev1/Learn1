@@ -1,49 +1,129 @@
-final String docId = newDoc.get("id").asText();
-ObjectNode baseline = null;
-boolean isCreate;
+You’re right to double‑check that. In your snippet, baseline is only null when isCreate == true. You only call processChanges(...) when !isCreate, so baseline is guaranteed non‑null there. Safe. 👍
 
+Here’s a clean wrapper so you don’t pass a bare ObjectNode.
+
+1) Result wrapper
+
+package com.neo.notification.snapshot;
+
+import com.fasterxml.jackson.databind.node.ObjectNode;
+
+public final class SnapshotResult {
+    public enum Source { LATEST, BASELINE, NONE }
+
+    private final Source source;
+    private final ObjectNode json;
+
+    private SnapshotResult(Source source, ObjectNode json) {
+        this.source = source;
+        this.json = json;
+    }
+
+    public static SnapshotResult latest(ObjectNode json)   { return new SnapshotResult(Source.LATEST, json); }
+    public static SnapshotResult baseline(ObjectNode json) { return new SnapshotResult(Source.BASELINE, json); }
+    public static SnapshotResult none()                    { return new SnapshotResult(Source.NONE, null); }
+
+    public Source source()      { return source; }
+    public ObjectNode json()    { return json; }
+    public boolean isCreate()   { return source == Source.NONE; }
+}
+
+2) Reader that returns the wrapper
+
+package com.neo.notification.snapshot;
+
+import com.azure.storage.blob.*;
+import com.azure.storage.blob.models.PagedIterable;
+import com.azure.storage.blob.models.TaggedBlobItem;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.logging.Logger;
+
+public final class GetSnapshotFromBlob {
+    private static final com.fasterxml.jackson.databind.ObjectMapper MAPPER =
+            new com.fasterxml.jackson.databind.ObjectMapper();
+
+    public static SnapshotResult getSnapshotFromBlobStorage(
+            BlobContainerClient dataContainer,
+            String logicalContainer,
+            String docId,
+            Logger log) throws java.io.IOException {
+
+        // 1) Try the latest via index tags
+        String query = String.format("logicalContainer = '%s' AND docId = '%s' AND isLatest = 'true'",
+                                     logicalContainer, docId);
+        PagedIterable<TaggedBlobItem> blobItems = dataContainer.findBlobsByTags(query);
+        TaggedBlobItem item = blobItems.stream().findFirst().orElse(null);
+        if (item != null) {
+            BlobClient latest = dataContainer.getBlobClient(item.getName());
+            ObjectNode json = readJsonObject(latest, log);
+            log.info("Snapshot source=LATEST: " + item.getName());
+            return SnapshotResult.latest(json);
+        }
+
+        // 2) Fallback to baseline {container}/{docId}/{docId}.json
+        String baselinePath = logicalContainer + "/" + docId + "/" + docId + ".json";
+        BlobClient baseline = dataContainer.getBlobClient(baselinePath);
+        if (baseline.exists()) {
+            ObjectNode json = readJsonObject(baseline, log);
+            log.info("Snapshot source=BASELINE: " + baselinePath);
+            return SnapshotResult.baseline(json);
+        }
+
+        // 3) Truly first time (create)
+        log.info("Snapshot source=NONE (create) for id=" + docId);
+        return SnapshotResult.none();
+    }
+
+    private static ObjectNode readJsonObject(BlobClient client, Logger log) throws java.io.IOException {
+        try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            client.download(out);
+            String json = out.toString(StandardCharsets.UTF_8);
+            return (ObjectNode) MAPPER.readTree(json);
+        } catch (Exception e) {
+            log.severe("Failed to read blob '" + client.getBlobName() + "': " + e.getMessage());
+            // Propagate so the caller can decide to retry/abort
+            if (e instanceof java.io.IOException) throw (java.io.IOException) e;
+            throw new java.io.IOException(e);
+        }
+    }
+}
+
+3) Using it in your Function
+
+final String docId = newDoc.get("id").asText();
+
+SnapshotResult snap;
 try {
-    // 1) Read snapshot to decide CREATE vs MODIFY
-    baseline = GetSnapshotFromBlob.getSnapshotFromBlobStorage(
-        DATA_CONTAINER, cosmosContainerName, docId, log);
-    isCreate = (baseline == null);
+    snap = GetSnapshotFromBlob.getSnapshotFromBlobStorage(DATA_CONTAINER, cosmosContainerName, docId, context.getLogger());
 } catch (IOException io) {
-    // Storage hiccup -> let Azure Functions retry so we don't send a message yet
-    log.severe("Snapshot read error for id=" + docId + ": " + io.getMessage());
+    // Storage hiccup; let Functions retry
     throw new RuntimeException(io);
 }
 
-// 2) Build message (include deltas only if modify)
+boolean isCreate = snap.isCreate();
+ObjectNode baseline = snap.json(); // non-null when !isCreate
+
+List<ChangeInfo> deltas = List.of();
+if (!isCreate) {
+    deltas = TrackedChangeHandler.processChanges(
+        cosmosContainerName, newDoc, DATA_CONTAINER, fieldsToTrack, baseline, context.getLogger());
+    if (deltas.isEmpty()) {
+        context.getLogger().info("No tracked changes for id=" + docId);
+        continue;
+    }
+}
+
+// Build and send message (eventType tells downstream CREATE vs MODIFY)
 String eventType = isCreate ? "CREATE" : "MODIFY";
 ServiceBusMessage msg = MessageFactory.build(newDoc, baseline, eventType, cosmosContainerName);
+busSender.sendMessage(msg);
 
-// 3) Send first (so we never persist a state the world didn't hear about)
-try {
-    busSender.sendMessage(msg);
-    log.info("Service Bus message sent for id=" + docId + ", type=" + eventType);
-} catch (Exception sendEx) {
-    // Fail fast so Functions will retry the whole invocation
-    log.severe("Failed to send message for id=" + docId + ": " + sendEx.getMessage());
-    throw new RuntimeException(sendEx);
-}
+// After successful send, persist snapshot/version as needed…
 
-// 4) Persist snapshot AFTER successful send
-try {
-    if (isCreate) {
-        // Idempotent: uses If-None-Match "*" and will return false if someone else already created it
-        boolean created = CreateBlob.createBaselineIfAbsent(
-            DATA_CONTAINER, cosmosContainerName, docId, newDoc, log);
-        log.info(created
-            ? "Baseline created for id=" + docId
-            : "Baseline already existed (idempotent) for id=" + docId);
-    } else {
-        // Write new version + flip latest tag (or overwrite latest per your strategy)
-        UpdateBlob.writeVersionAndFlipLatest(
-            DATA_CONTAINER, cosmosContainerName, docId, baseline, newDoc, log);
-        log.info("Snapshot updated for id=" + docId);
-    }
-} catch (Exception persistEx) {
-    // Persist failed but message was sent; surface error so you can alert/replay if needed
-    log.severe("Post-send snapshot persist failed for id=" + docId + ": " + persistEx.getMessage());
-    throw new RuntimeException(persistEx);
-}
+This keeps the logic clear:
+	•	Wrapper tells you where the snapshot came from.
+	•	isCreate() is a one-liner decision.
+	•	baseline is only used when !isCreate, so it won’t be null in the delta computation.
