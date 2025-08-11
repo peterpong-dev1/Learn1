@@ -1,129 +1,214 @@
-You’re right to double‑check that. In your snippet, baseline is only null when isCreate == true. You only call processChanges(...) when !isCreate, so baseline is guaranteed non‑null there. Safe. 👍
+Totally—if you want to use blob leases (not ETags) for concurrency, here’s a drop‑in version of your class that:
+	•	still does idempotent create for the first baseline (no lease possible before a blob exists), and
+	•	on MODIFY acquires a short lease (15s) on the previous latest blob before flipping its tags to isLatest=false.
+	•	Upload of the new version doesn’t need a lease (it’s a new name), so it stays simple and fast.
 
-Here’s a clean wrapper so you don’t pass a bare ObjectNode.
+SnapshotPostSendOps (lease‑based)
 
-1) Result wrapper
+package com.neo.notification.blob;
 
-package com.neo.notification.snapshot;
-
+import com.azure.core.util.Context;
+import com.azure.storage.blob.BlobContainerClient;
+import com.azure.storage.blob.models.*;
+import com.azure.storage.blob.specialized.BlobClientBase;
+import com.azure.storage.blob.specialized.BlockBlobClient;
+import com.azure.storage.blob.specialized.BlobLeaseClient;
+import com.azure.storage.blob.specialized.BlobLeaseClientBuilder;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
-public final class SnapshotResult {
-    public enum Source { LATEST, BASELINE, NONE }
-
-    private final Source source;
-    private final ObjectNode json;
-
-    private SnapshotResult(Source source, ObjectNode json) {
-        this.source = source;
-        this.json = json;
-    }
-
-    public static SnapshotResult latest(ObjectNode json)   { return new SnapshotResult(Source.LATEST, json); }
-    public static SnapshotResult baseline(ObjectNode json) { return new SnapshotResult(Source.BASELINE, json); }
-    public static SnapshotResult none()                    { return new SnapshotResult(Source.NONE, null); }
-
-    public Source source()      { return source; }
-    public ObjectNode json()    { return json; }
-    public boolean isCreate()   { return source == Source.NONE; }
-}
-
-2) Reader that returns the wrapper
-
-package com.neo.notification.snapshot;
-
-import com.azure.storage.blob.*;
-import com.azure.storage.blob.models.PagedIterable;
-import com.azure.storage.blob.models.TaggedBlobItem;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-
-import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.time.OffsetDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.*;
 import java.util.logging.Logger;
 
-public final class GetSnapshotFromBlob {
-    private static final com.fasterxml.jackson.databind.ObjectMapper MAPPER =
-            new com.fasterxml.jackson.databind.ObjectMapper();
+/**
+ * Post-send snapshot ops using blob leases for concurrency when updating existing blobs.
+ *
+ * CREATE:
+ *   - Try to upload baseline (no lease possible before blob exists). If we see
+ *     BLOB_ALREADY_EXISTS, treat as success (idempotent).
+ *
+ * MODIFY:
+ *   - Find current-latest (tag isLatest=true or fallback baseline).
+ *   - Upload a NEW version (no lease needed; new name).
+ *   - Acquire a short lease on the previous-latest, flip its tags to isLatest=false
+ *     under the lease, then release the lease.
+ */
+public final class SnapshotPostSendOps {
 
-    public static SnapshotResult getSnapshotFromBlobStorage(
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final int LEASE_SECONDS = 15; // minimum server-supported lease duration
+
+    private SnapshotPostSendOps() {}
+
+    // ----------------------- path & tags helpers -----------------------
+    private static String baselinePath(String container, String docId) {
+        return container + "/" + docId + "/" + docId + ".json";
+    }
+
+    private static String versionPath(String container, String docId, String versionTs) {
+        return container + "/" + docId + "/" + versionTs + ".json";
+    }
+
+    private static Map<String, String> baseTags(String logicalContainer, String docId) {
+        Map<String, String> t = new HashMap<>();
+        t.put("logicalContainer", logicalContainer);
+        t.put("docId", docId);
+        return t;
+    }
+
+    // ----------------------- CREATE (idempotent) -----------------------
+    public static boolean ensureBaselineAfterSend(
             BlobContainerClient dataContainer,
             String logicalContainer,
             String docId,
-            Logger log) throws java.io.IOException {
+            ObjectNode newDoc,
+            Logger log) {
 
-        // 1) Try the latest via index tags
-        String query = String.format("logicalContainer = '%s' AND docId = '%s' AND isLatest = 'true'",
-                                     logicalContainer, docId);
-        PagedIterable<TaggedBlobItem> blobItems = dataContainer.findBlobsByTags(query);
-        TaggedBlobItem item = blobItems.stream().findFirst().orElse(null);
-        if (item != null) {
-            BlobClient latest = dataContainer.getBlobClient(item.getName());
-            ObjectNode json = readJsonObject(latest, log);
-            log.info("Snapshot source=LATEST: " + item.getName());
-            return SnapshotResult.latest(json);
+        final String blobPath = baselinePath(logicalContainer, docId);
+        final BlockBlobClient block = dataContainer.getBlobClient(blobPath).getBlockBlobClient();
+
+        try {
+            byte[] payload = MAPPER.writeValueAsString(newDoc).getBytes(StandardCharsets.UTF_8);
+
+            Map<String, String> tags = baseTags(logicalContainer, docId);
+            tags.put("isLatest", "true");
+            tags.put("versionTs", OffsetDateTime.now().format(DateTimeFormatter.ISO_INSTANT));
+
+            // No lease available before the blob exists. Just try to create.
+            BlockBlobSimpleUploadOptions opts = new BlockBlobSimpleUploadOptions(payload).setTags(tags);
+            block.uploadWithResponse(opts, null, Context.NONE);
+            log.info("Created baseline snapshot: " + blobPath);
+            return true;
+
+        } catch (BlobStorageException bse) {
+            if (bse.getErrorCode() == BlobErrorCode.BLOB_ALREADY_EXISTS) {
+                log.info("Baseline already exists (idempotent): " + blobPath);
+                return false;
+            }
+            log.severe("Baseline create failed: " + bse.getErrorCode() + " " + bse.getMessage());
+            throw new RuntimeException(bse);
+        } catch (Exception ex) {
+            log.severe("Baseline create unexpected error: " + ex.getMessage());
+            throw new RuntimeException(ex);
         }
-
-        // 2) Fallback to baseline {container}/{docId}/{docId}.json
-        String baselinePath = logicalContainer + "/" + docId + "/" + docId + ".json";
-        BlobClient baseline = dataContainer.getBlobClient(baselinePath);
-        if (baseline.exists()) {
-            ObjectNode json = readJsonObject(baseline, log);
-            log.info("Snapshot source=BASELINE: " + baselinePath);
-            return SnapshotResult.baseline(json);
-        }
-
-        // 3) Truly first time (create)
-        log.info("Snapshot source=NONE (create) for id=" + docId);
-        return SnapshotResult.none();
     }
 
-    private static ObjectNode readJsonObject(BlobClient client, Logger log) throws java.io.IOException {
-        try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-            client.download(out);
-            String json = out.toString(StandardCharsets.UTF_8);
-            return (ObjectNode) MAPPER.readTree(json);
-        } catch (Exception e) {
-            log.severe("Failed to read blob '" + client.getBlobName() + "': " + e.getMessage());
-            // Propagate so the caller can decide to retry/abort
-            if (e instanceof java.io.IOException) throw (java.io.IOException) e;
-            throw new java.io.IOException(e);
+    // ----------------------- MODIFY (version + flip) -----------------------
+    public static void writeVersionAndFlipAfterSend(
+            BlobContainerClient dataContainer,
+            String logicalContainer,
+            String docId,
+            ObjectNode newDoc,
+            Logger log) {
+
+        // Find the current "latest" (could be baseline)
+        LatestBlob currentLatest = findCurrentLatest(dataContainer, logicalContainer, docId, log);
+
+        // Upload NEW version (no lease needed — new object name)
+        final String versionTs = OffsetDateTime.now().format(DateTimeFormatter.ISO_INSTANT).replace(":", "-");
+        final String newVersionPath = versionPath(logicalContainer, docId, versionTs);
+        final BlockBlobClient newVersion = dataContainer.getBlobClient(newVersionPath).getBlockBlobClient();
+
+        try {
+            byte[] payload = MAPPER.writeValueAsString(newDoc).getBytes(StandardCharsets.UTF_8);
+
+            Map<String, String> tags = baseTags(logicalContainer, docId);
+            tags.put("isLatest", "true");
+            tags.put("versionTs", versionTs);
+
+            BlockBlobSimpleUploadOptions opts = new BlockBlobSimpleUploadOptions(payload).setTags(tags);
+            newVersion.uploadWithResponse(opts, null, Context.NONE);
+            log.info("Wrote new version: " + newVersionPath);
+
+        } catch (Exception ex) {
+            log.severe("Version upload failed for id=" + docId + ": " + ex.getMessage());
+            throw new RuntimeException(ex);
+        }
+
+        // Flip previous latest under a lease (if any)
+        if (currentLatest != null) {
+            BlobLeaseClient lease = new BlobLeaseClientBuilder()
+                    .blobClient(currentLatest.client)
+                    .buildClient();
+
+            String leaseId = null;
+            try {
+                leaseId = lease.acquireLease(LEASE_SECONDS); // block others
+                Map<String, String> newTags = baseTags(logicalContainer, docId);
+                newTags.put("isLatest", "false");
+                newTags.put("versionTs", currentLatest.versionTs);
+
+                // Pass the lease to tag update
+                TagsConditions tc = new TagsConditions().setLeaseId(leaseId);
+                currentLatest.client.setTagsWithResponse(newTags, tc, null, Context.NONE);
+                log.info("Flipped previous latest to false (under lease): " + currentLatest.path);
+
+            } catch (BlobStorageException bse) {
+                // If lease fails (someone else got it), it will be flipped by that contender; okay to log & continue
+                log.warning("Could not flip previous latest (lease issue?): " + bse.getErrorCode() + " " + bse.getMessage());
+            } catch (Exception ex) {
+                log.severe("Unexpected error flipping previous latest: " + ex.getMessage());
+                throw new RuntimeException(ex);
+            } finally {
+                try {
+                    if (leaseId != null) lease.releaseLease();
+                } catch (Exception ignore) {
+                    // best effort
+                }
+            }
+        }
+    }
+
+    // ----------------------- find current latest -----------------------
+    private static LatestBlob findCurrentLatest(
+            BlobContainerClient dataContainer,
+            String logicalContainer,
+            String docId,
+            Logger log) {
+
+        String q = String.format("logicalContainer = '%s' AND docId = '%s' AND isLatest = 'true'",
+                logicalContainer, docId);
+        var items = dataContainer.findBlobsByTags(q).stream().findFirst();
+
+        if (items.isPresent()) {
+            String path = items.get().getName();
+            BlobClientBase client = dataContainer.getBlobClient(path);
+            BlobProperties props = client.getProperties();
+            String ts = props.getTags().getOrDefault("versionTs", "");
+            return new LatestBlob(path, client, ts);
+        }
+
+        // Fallback to baseline if no version yet
+        String basePath = baselinePath(logicalContainer, docId);
+        BlobClientBase base = dataContainer.getBlobClient(basePath);
+        if (base.exists()) {
+            String ts = Optional.ofNullable(base.getProperties().getTags())
+                                .map(t -> t.getOrDefault("versionTs", ""))
+                                .orElse("");
+            return new LatestBlob(basePath, base, ts);
+        }
+
+        log.info("No existing latest/baseline found for id=" + docId);
+        return null;
+    }
+
+    private static final class LatestBlob {
+        final String path;
+        final BlobClientBase client;
+        final String versionTs;
+        LatestBlob(String path, BlobClientBase client, String versionTs) {
+            this.path = path;
+            this.client = client;
+            this.versionTs = versionTs;
         }
     }
 }
 
-3) Using it in your Function
+Why this design
+	•	You can’t lease something that doesn’t exist, so baseline creation stays “try upload → if already exists, ignore”.
+	•	For updates, the only shared state you mutate is the previous latest’s tags. A 15‑second lease guarantees only one instance flips it at a time. If two instances race, the loser can’t acquire the lease and just logs a warning; the winner’s flip is enough.
 
-final String docId = newDoc.get("id").asText();
-
-SnapshotResult snap;
-try {
-    snap = GetSnapshotFromBlob.getSnapshotFromBlobStorage(DATA_CONTAINER, cosmosContainerName, docId, context.getLogger());
-} catch (IOException io) {
-    // Storage hiccup; let Functions retry
-    throw new RuntimeException(io);
-}
-
-boolean isCreate = snap.isCreate();
-ObjectNode baseline = snap.json(); // non-null when !isCreate
-
-List<ChangeInfo> deltas = List.of();
-if (!isCreate) {
-    deltas = TrackedChangeHandler.processChanges(
-        cosmosContainerName, newDoc, DATA_CONTAINER, fieldsToTrack, baseline, context.getLogger());
-    if (deltas.isEmpty()) {
-        context.getLogger().info("No tracked changes for id=" + docId);
-        continue;
-    }
-}
-
-// Build and send message (eventType tells downstream CREATE vs MODIFY)
-String eventType = isCreate ? "CREATE" : "MODIFY";
-ServiceBusMessage msg = MessageFactory.build(newDoc, baseline, eventType, cosmosContainerName);
-busSender.sendMessage(msg);
-
-// After successful send, persist snapshot/version as needed…
-
-This keeps the logic clear:
-	•	Wrapper tells you where the snapshot came from.
-	•	isCreate() is a one-liner decision.
-	•	baseline is only used when !isCreate, so it won’t be null in the delta computation.
+If you want, I can also show the tiny calling snippet again (after you send to Service Bus) wired to these lease-based methods.
