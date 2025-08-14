@@ -1,111 +1,178 @@
-Gotcha—let’s add a super‑simple “debug dump” so every change‑feed document gets written to Blob Storage as a plain JSON file you can open in Portal/Storage Explorer.
+Awesome—here’s the end‑to‑end playbook for your new approach:
 
-Below is drop‑in Java code (SDK v12.31+) that:
-	•	builds a safe blob name: <logicalContainer>/<docId>/<yyyy-MM-ddTHH-mm-ssZ>.json
-	•	writes the raw change‑feed ObjectNode as UTF‑8
-	•	sets Content-Type: application/json
-	•	adds a few handy index tags (optional) so you can filter by id/container in Portal
-	•	never throws (it logs and returns), so it won’t break your function while you debug
+1) What we’re doing (in one line)
+	•	Always mirror the full Cosmos doc to Blob (versioning ON) after every change;
+	•	Notify only when tracked fields change (evaluate rules on newDoc);
+	•	Use ETag for safe writes and MessageId for duplicate detection.
 
-1) Helper: DebugDumpToBlob.java
+⸻
 
-package com.neo.notification.blob;
+2) One‑time setup
+	•	Blob Storage
+	•	Enable Blob versioning (Storage account → Data protection → Enable versioning).
+	•	Create containers:
+	•	config → holds your tracked‑fields JSON per Cosmos container.
+	•	data → holds mirrors: data/<cosmosContainer>/<docId>.json
+	•	Cosmos DB
+	•	Containers with /id (or your key) and Change Feed (it’s always on).
+	•	Create lease container (e.g., _leases) for the trigger.
+	•	Azure Function (Java)
+	•	App settings: CosmosDBConnection, AzureWebJobsStorage, BlobConnection, etc.
+	•	Service Bus
+	•	Queue/Topic with Duplicate Detection enabled (e.g., 5–10 min window).
 
-import com.azure.core.util.Context;
-import com.azure.storage.blob.BlobContainerClient;
-import com.azure.storage.blob.models.BlobHttpHeaders;
-import com.azure.storage.blob.models.BlobStorageException;
-import com.azure.storage.blob.options.BlockBlobSimpleUploadOptions;
-import com.azure.storage.blob.specialized.BlockBlobClient;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+⸻
 
-import java.nio.charset.StandardCharsets;
-import java.time.OffsetDateTime;
-import java.time.format.DateTimeFormatter;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.UUID;
-import java.util.logging.Logger;
+3) File layout in Blob
+	•	Mirror (always overwritten):
+data/<cosmosContainer>/<docId>.json
+	•	Config per Cosmos container (your tracked fields & rules):
+config/<cosmosContainer>/tracked-fields.json
+(You already standardized this format.)
 
-/** Writes every incoming change-feed doc to a debug area in Blob for easy viewing. */
-public final class DebugDumpToBlob {
+⸻
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+4) Function trigger signatures (recommended)
+	•	Use strings or JsonNode for robustness:
 
-    private DebugDumpToBlob() {}
+@CosmosDBTrigger(
+  name = "docs",
+  databaseName = "%DatabaseName_1%",
+  containerName = "%ContainerNameToTrack_1%",
+  leaseDatabaseName = "%DatabaseName_1%",
+  leaseContainerName = "%LeaseContainer_1%",
+  createLeaseContainerIfNotExists = true,
+  connection = "CosmosDBConnection")
+List<String> docsJson
 
-    /** Dump a raw change doc to blob. Never throws—logs errors and returns. */
-    public static void dump(
-            BlobContainerClient debugContainer,
-            String logicalContainer,
-            ObjectNode changeDoc,
-            Logger log) {
+Parse with Jackson to JsonNode/ObjectNode inside.
 
-        try {
-            if (changeDoc == null) {
-                log.warning("DebugDumpToBlob: changeDoc was null; nothing to write.");
-                return;
-            }
+⸻
 
-            // id may be missing in some change-feed shapes; fall back to a GUID
-            String docId = changeDoc.hasNonNull("id")
-                    ? changeDoc.get("id").asText()
-                    : "no-id-" + UUID.randomUUID();
+5) Per‑event algorithm (CREATE vs MODIFY)
 
-            // filename-safe timestamp (replace ':' so it’s portal-friendly)
-            String ts = OffsetDateTime.now().format(DateTimeFormatter.ISO_INSTANT).replace(":", "-");
+5.1 Load config once (per function instance)
+	•	Read config/<cosmosContainer>/tracked-fields.json from Blob into memory (cache with last‑read ETag to avoid repeated downloads).
 
-            // Path example: CustomerContainer/123/2025-08-13T12-34-56Z.json
-            String blobPath = logicalContainer + "/" + docId + "/" + ts + ".json";
-            BlockBlobClient blob = debugContainer.getBlobClient(blobPath).getBlockBlobClient();
+5.2 For each item from change feed
+	1.	Parse raw JSON to ObjectNode newDoc; get docId = newDoc["id"].
+	2.	Read current mirror (if exists):
+	•	blob = data/<cosmosContainer>/<docId>.json
+	•	If exists → get prevETag and baseline = read(blob).
+	•	If not → baseline = null (→ CREATE case).
+	3.	Decide CREATE/MODIFY
+	•	isCreate = (baseline == null)
+	4.	Compute deltas on tracked fields (only if MODIFY)
+	•	deltas = computeDelta(baseline, newDoc, trackedPaths)
+	•	shouldNotify = !deltas.isEmpty()
+	•	For AND rules: if any rule field changed, evaluate rule on newDoc.
+	5.	Build & send message (only when required)
+	•	eventType = isCreate ? "CREATE" : "MODIFY"
+	•	messageId = eventType + ":" + cosmosContainer + ":" + docId + ":" + newDoc["_ts"]
+	•	Send to Service Bus (duplicate detection will drop dupes).
+	6.	Always refresh mirror (even if no notify)
+	•	Serialize newDoc (pretty).
+	•	Overwrite data/<cosmosContainer>/<docId>.json with ETag If‑Match:
+	•	If prevETag != null, set If-Match = prevETag.
+	•	If it’s CREATE, use If-None-Match = "*".
+	•	(Optional) Store a stable hash in blob metadata (skip write if identical).
 
-            byte[] payload = MAPPER.writeValueAsString(changeDoc).getBytes(StandardCharsets.UTF_8);
+Why always refresh? Prevents stale mirrors so future multi‑field AND rules won’t be missed.
 
-            // Nice to have for viewing
-            BlobHttpHeaders headers = new BlobHttpHeaders()
-                    .setContentType("application/json; charset=utf-8");
+⸻
 
-            // Optional: index tags so you can search in Portal by id/container
-            Map<String, String> tags = new HashMap<>();
-            tags.put("logicalContainer", logicalContainer);
-            tags.put("docId", docId);
-            tags.put("kind", "debug");
-            tags.put("writtenAt", ts);
+6) Idempotency & retries (production‑safe)
+	•	Service Bus: set MessageId as above; turn on duplicate detection.
+	•	Blob writes:
+	•	CREATE → If-None-Match="*" (safe if another instance created first).
+	•	MODIFY → If-Match=prevETag; on 412 Precondition Failed, reload + retry once.
+	•	Exceptions:
+	•	If sending to Service Bus fails, do not write the mirror; let Functions retry the whole batch.
+	•	If sending succeeds but mirror write fails → throw RuntimeException so the batch retries; Service Bus dedupe prevents a duplicate notification.
 
-            BlockBlobSimpleUploadOptions opts = new BlockBlobSimpleUploadOptions(payload)
-                    .setHeaders(headers)
-                    .setTags(tags);
+⸻
 
-            blob.uploadWithResponse(opts, null, Context.NONE);
-            log.info("DebugDumpToBlob: wrote " + blobPath);
+7) Minimal code skeleton (call sequence)
 
-        } catch (BlobStorageException bse) {
-            log.severe("DebugDumpToBlob: storage error " + bse.getErrorCode() + " / " + bse.getMessage());
-        } catch (Exception ex) {
-            log.severe("DebugDumpToBlob: unexpected error " + ex.getMessage());
-        }
-    }
+// parse doc
+ObjectNode newDoc = MAPPER.readTree(json).deepCopy();
+String docId = newDoc.path("id").asText(null);
+if (docId == null) return;
+
+// read mirror if exists
+BlobClient mirror = DATA.container("data")
+    .getBlobClient(cosmosContainer + "/" + docId + ".json");
+
+ObjectNode baseline = null;
+String prevETag = null;
+if (mirror.exists()) {
+    BlobProperties p = mirror.getProperties();
+    prevETag = p.getETag();
+    baseline = (ObjectNode) MAPPER.readTree(mirror.downloadContent().toBytes());
 }
 
-2) Call it from your trigger (inside your loop)
+// decide notify
+boolean shouldNotify = false;
+String eventType = (baseline == null) ? "CREATE" : "MODIFY";
 
-Assuming you already have a BlobContainerClient for a debug container (use your existing singleton provider). If not, you can temporarily reuse your data container too.
+if ("CREATE".equals(eventType)) {
+    shouldNotify = RuleEvaluator.evaluateOnNewDoc(newDoc); // your AND rules
+} else {
+    var deltas = Delta.compute(baseline, newDoc, trackedPaths);
+    boolean anyRuleFieldChanged = Delta.anyRuleFieldChanged(deltas, ruleFields);
+    shouldNotify = anyRuleFieldChanged && RuleEvaluator.evaluateOnNewDoc(newDoc);
+}
 
-// at top of the function method (once)
-final BlobContainerClient DEBUG_CONTAINER =
-        BlobClientProvider.container(System.getenv("DebugContainerName")); // e.g., "debug"
+// send message if required
+if (shouldNotify) {
+    ServiceBusMessage msg = MessageFactory.build(newDoc, baseline, eventType, cosmosContainer);
+    msg.setMessageId(eventType + ":" + cosmosContainer + ":" + docId + ":" + newDoc.path("_ts").asText(""));
+    busSender.sendMessage(msg);
+}
 
-// inside your for (ObjectNode newDoc : documents) loop, first line:
-DebugDumpToBlob.dump(
-        DEBUG_CONTAINER,
-        cosmosDbContainerName,   // the logical Cosmos container name
-        newDoc,
-        context.getLogger());
+// ALWAYS refresh mirror (idempotent)
+if (baseline == null) {
+    // create
+    BlobRequestConditions c = new BlobRequestConditions().setIfNoneMatch("*");
+    mirror.uploadWithResponse(
+        new BlockBlobSimpleUploadOptions(BinaryData.fromString(pretty(newDoc)))
+            .setRequestConditions(c),
+        null, Context.NONE);
+} else {
+    // overwrite with If-Match
+    BlobRequestConditions c = new BlobRequestConditions().setIfMatch(prevETag);
+    mirror.uploadWithResponse(
+        new BlockBlobSimpleUploadOptions(BinaryData.fromString(pretty(newDoc)))
+            .setRequestConditions(c),
+        null, Context.NONE);
+}
 
-3) App setting
 
-Add one setting in your Function App (and local.settings.json while local):
-	•	DebugContainerName = debug  (create a “debug” container in your storage account)
+⸻
 
-That’s it. Now every change shows up under the debug container with a folder per logical container and per id. Open the JSON directly in the Azure Portal to see exactly what the trigger received.
+8) Observability
+	•	Log: docId, eventType, decision (notify/skip), reason (which rule), blob action (created/overwritten/skipped).
+	•	App Insights (when enabled):
+	•	Custom metric: notifications.sent (labels: container, ruleId).
+	•	Custom event: mirror.write with outcome (created/overwritten/conflict‑retry).
+
+⸻
+
+9) Ops & guardrails
+	•	Blob lifecycle: delete previous versions > N days (e.g., 30).
+	•	Poison handling: if a doc keeps failing, log to a “dead‑letter” container with the docId + exception.
+	•	Backpressure: Service Bus Auto‑scale or use Topic + multiple subscribers if throughput grows.
+
+⸻
+
+10) Testing checklist
+	•	CREATE with no rule satisfied → no notify, baseline created.
+	•	CREATE with rule satisfied → notify once, baseline created.
+	•	MODIFY touching non‑rule fields → no notify, mirror overwritten.
+	•	MODIFY touching rule fields but rule false → no notify, mirror overwritten.
+	•	MODIFY touching rule fields and rule true → notify once, mirror overwritten.
+	•	Concurrency: simulate 2 function instances writing the same mirror → one succeeds, other gets 412, retries after reload.
+
+⸻
+
+This gives you correctness (rules won’t be missed), simplicity (always mirror), and stability (ETag + SB dedupe). If you want, I can fold this into your current project files with exact method names you already use.
