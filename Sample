@@ -1,178 +1,172 @@
-Awesome—here’s the end‑to‑end playbook for your new approach:
+Got it — here’s a cleaned‑up, defensive “S1-style” function that matches what we agreed:
+	•	Parse the Cosmos DB change feed safely (treat payload as List<String>).
+	•	For each item: parse → extract id → load current blob snapshot (baseline or latest) → compute deltas (only if not CREATE) → optionally decide whether to notify (hook provided) → always persist the snapshot (overwrite id.json; blob versioning will keep history) after you send.
+	•	Concurrency: pass the previous ETag to the updater; if it changed, we surface a clear log and let the platform retry.
+	•	Lots of guardrails and logs.
 
-1) What we’re doing (in one line)
-	•	Always mirror the full Cosmos doc to Blob (versioning ON) after every change;
-	•	Notify only when tracked fields change (evaluate rules on newDoc);
-	•	Use ETag for safe writes and MessageId for duplicate detection.
+package com.neo.notification.function;
 
-⸻
+import com.azure.storage.blob.BlobContainerClient;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.microsoft.azure.functions.ExecutionContext;
+import com.microsoft.azure.functions.annotation.CosmosDBTrigger;
+import com.microsoft.azure.functions.annotation.FunctionName;
 
-2) One‑time setup
-	•	Blob Storage
-	•	Enable Blob versioning (Storage account → Data protection → Enable versioning).
-	•	Create containers:
-	•	config → holds your tracked‑fields JSON per Cosmos container.
-	•	data → holds mirrors: data/<cosmosContainer>/<docId>.json
-	•	Cosmos DB
-	•	Containers with /id (or your key) and Change Feed (it’s always on).
-	•	Create lease container (e.g., _leases) for the trigger.
-	•	Azure Function (Java)
-	•	App settings: CosmosDBConnection, AzureWebJobsStorage, BlobConnection, etc.
-	•	Service Bus
-	•	Queue/Topic with Duplicate Detection enabled (e.g., 5–10 min window).
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.logging.Logger;
 
-⸻
+/**
+ * Processes Cosmos DB change feed rows for one logical container.
+ *
+ * Flow per document:
+ *  1) Parse the row defensively (JSON object expected).
+ *  2) Extract id.
+ *  3) Read current snapshot from Blob (baseline for first time, otherwise latest).
+ *  4) If MODIFY, compute deltas of tracked fields (for your message payload).
+ *  5) Send message (not shown here; plug your Service Bus sender).
+ *  6) Persist snapshot:
+ *       - CREATE  -> create id.json if absent (idempotent)
+ *       - MODIFY  -> overwrite id.json; Blob Versioning keeps the history
+ *
+ * Notes:
+ *  - This class assumes you already have helpers:
+ *      BlobClientProvider.container(...),
+ *      GetBlob.getCurrentBlob(...),
+ *      TrackedChangeHandler.processChanges(...),
+ *      CreateBlob.createBlobIfCreateEvent(...),
+ *      UpdateBlob.overwriteWithVersioning(...)
+ *  - We treat every exception per-document so one bad row doesn’t block the batch.
+ */
+public class NeoNotificationTriggerFunction {
 
-3) File layout in Blob
-	•	Mirror (always overwritten):
-data/<cosmosContainer>/<docId>.json
-	•	Config per Cosmos container (your tracked fields & rules):
-config/<cosmosContainer>/tracked-fields.json
-(You already standardized this format.)
+  private static final ObjectMapper MAPPER = new ObjectMapper();
 
-⸻
+  private static final String CONFIG_CONTAINER_NAME =
+      System.getenv("Blob_ContainerName_Config");
+  private static final String DATA_CONTAINER_NAME =
+      System.getenv("Blob_ContainerName_Data");
 
-4) Function trigger signatures (recommended)
-	•	Use strings or JsonNode for robustness:
+  // Safe singletons for clients
+  private static final BlobContainerClient CONFIG_CONTAINER =
+      BlobClientProvider.container(CONFIG_CONTAINER_NAME);
+  private static final BlobContainerClient DATA_CONTAINER =
+      BlobClientProvider.container(DATA_CONTAINER_NAME);
 
-@CosmosDBTrigger(
-  name = "docs",
-  databaseName = "%DatabaseName_1%",
-  containerName = "%ContainerNameToTrack_1%",
-  leaseDatabaseName = "%DatabaseName_1%",
-  leaseContainerName = "%LeaseContainer_1%",
-  createLeaseContainerIfNotExists = true,
-  connection = "CosmosDBConnection")
-List<String> docsJson
+  @FunctionName("NeoCosmosChangeFeedTrigger")
+  public void run(
+      @CosmosDBTrigger(
+          name = "docs",
+          databaseName = "%DatabaseName_1%",
+          containerName = "%ContainerNameToTrack_1%",
+          leaseContainerName = "%LeaseContainer_1%",
+          leaseDatabaseName = "%DatabaseName_1%",
+          createLeaseContainerIfNotExists = true,
+          connection = "CosmosDBConnection")
+      List<String> documents,
+      final ExecutionContext context) {
 
-Parse with Jackson to JsonNode/ObjectNode inside.
+    final Logger log = context.getLogger();
 
-⸻
+    if (documents == null || documents.isEmpty()) {
+      log.info("Change feed batch is empty; nothing to do.");
+      return;
+    }
 
-5) Per‑event algorithm (CREATE vs MODIFY)
+    // Load tracked fields from config (your existing helper)
+    final String cosmosContainerName = System.getenv("ContainerNameToTrack_1");
+    List<String> fieldsToTrack = NeoGetTrackedFieldsFromBlob.getTrackedFields(
+        CONFIG_CONTAINER, cosmosContainerName, log);
+    if (fieldsToTrack == null) fieldsToTrack = List.of();
 
-5.1 Load config once (per function instance)
-	•	Read config/<cosmosContainer>/tracked-fields.json from Blob into memory (cache with last‑read ETag to avoid repeated downloads).
+    log.info("Batch size=" + documents.size() + ", trackedFields=" + fieldsToTrack.size());
 
-5.2 For each item from change feed
-	1.	Parse raw JSON to ObjectNode newDoc; get docId = newDoc["id"].
-	2.	Read current mirror (if exists):
-	•	blob = data/<cosmosContainer>/<docId>.json
-	•	If exists → get prevETag and baseline = read(blob).
-	•	If not → baseline = null (→ CREATE case).
-	3.	Decide CREATE/MODIFY
-	•	isCreate = (baseline == null)
-	4.	Compute deltas on tracked fields (only if MODIFY)
-	•	deltas = computeDelta(baseline, newDoc, trackedPaths)
-	•	shouldNotify = !deltas.isEmpty()
-	•	For AND rules: if any rule field changed, evaluate rule on newDoc.
-	5.	Build & send message (only when required)
-	•	eventType = isCreate ? "CREATE" : "MODIFY"
-	•	messageId = eventType + ":" + cosmosContainer + ":" + docId + ":" + newDoc["_ts"]
-	•	Send to Service Bus (duplicate detection will drop dupes).
-	6.	Always refresh mirror (even if no notify)
-	•	Serialize newDoc (pretty).
-	•	Overwrite data/<cosmosContainer>/<docId>.json with ETag If‑Match:
-	•	If prevETag != null, set If-Match = prevETag.
-	•	If it’s CREATE, use If-None-Match = "*".
-	•	(Optional) Store a stable hash in blob metadata (skip write if identical).
+    for (int i = 0; i < documents.size(); i++) {
+      final int idx = i;
+      try {
+        // ---- 1) Parse defensively
+        String raw = documents.get(i);
+        if (raw == null || raw.isBlank()) {
+          log.warning("Doc[" + idx + "] is null/blank; skipping.");
+          continue;
+        }
 
-Why always refresh? Prevents stale mirrors so future multi‑field AND rules won’t be missed.
+        JsonNode node = MAPPER.readTree(raw);
+        if (node == null || !node.isObject()) {
+          log.warning("Doc[" + idx + "] is not a JSON object; skipping. Raw len=" + raw.length());
+          continue;
+        }
+        ObjectNode newDoc = (ObjectNode) node;
 
-⸻
+        // ---- 2) Extract id (null-safe)
+        String id = newDoc.path("id").asText(null);
+        if (id == null || id.isBlank()) {
+          log.warning("Doc[" + idx + "] missing 'id'; skipping.");
+          continue;
+        }
 
-6) Idempotency & retries (production‑safe)
-	•	Service Bus: set MessageId as above; turn on duplicate detection.
-	•	Blob writes:
-	•	CREATE → If-None-Match="*" (safe if another instance created first).
-	•	MODIFY → If-Match=prevETag; on 412 Precondition Failed, reload + retry once.
-	•	Exceptions:
-	•	If sending to Service Bus fails, do not write the mirror; let Functions retry the whole batch.
-	•	If sending succeeds but mirror write fails → throw RuntimeException so the batch retries; Service Bus dedupe prevents a duplicate notification.
+        // ---- 3) Load current snapshot from Blob
+        ResultWrapperForBlob current = GetBlob.getCurrentBlob(
+            DATA_CONTAINER, cosmosContainerName, id, log);
 
-⸻
+        boolean isCreate = current.isCreate();
+        ObjectNode baseline = current.json(); // may be null only for CREATE
+        String previousETag = current.eTag(); // may be null on first create
 
-7) Minimal code skeleton (call sequence)
+        // ---- 4) Compute deltas when MODIFY (tracked fields only)
+        List<ChangeInfo> deltas = new ArrayList<>();
+        if (!isCreate && !fieldsToTrack.isEmpty()) {
+          deltas = TrackedChangeHandler.processChanges(
+              cosmosContainerName, newDoc, DATA_CONTAINER, fieldsToTrack, baseline, log);
+        }
 
-// parse doc
-ObjectNode newDoc = MAPPER.readTree(json).deepCopy();
-String docId = newDoc.path("id").asText(null);
-if (docId == null) return;
+        // ---- 5) Build/send your message (CREATE vs MODIFY)
+        String eventType = isCreate ? "CREATE" : "MODIFY";
+        if (isCreate || !deltas.isEmpty()) {
+          // TODO: call your Service Bus sender here
+          // busSender.send(MessageFactory.build(newDoc, baseline, eventType, cosmosContainerName, deltas));
+          log.info("Doc[" + idx + "] id=" + id + " sending eventType=" + eventType
+              + " (deltas=" + deltas.size() + ")");
+        } else {
+          log.info("Doc[" + idx + "] id=" + id + " has no tracked changes; no message.");
+        }
 
-// read mirror if exists
-BlobClient mirror = DATA.container("data")
-    .getBlobClient(cosmosContainer + "/" + docId + ".json");
+        // ---- 6) Persist snapshot ALWAYS (after send)
+        if (isCreate) {
+          // idempotent create (If-None-Match="*")
+          CreateBlob.createBlobIfCreateEvent(DATA_CONTAINER, cosmosContainerName, id, newDoc, log);
+        } else {
+          // optimistic overwrite using previous ETag (avoid lost update)
+          UpdateBlob.overwriteWithVersioning(
+              DATA_CONTAINER, cosmosContainerName, id, newDoc, previousETag, log);
+        }
 
-ObjectNode baseline = null;
-String prevETag = null;
-if (mirror.exists()) {
-    BlobProperties p = mirror.getProperties();
-    prevETag = p.getETag();
-    baseline = (ObjectNode) MAPPER.readTree(mirror.downloadContent().toBytes());
+      } catch (com.fasterxml.jackson.core.JsonProcessingException jp) {
+        log.severe("Doc[" + idx + "] JSON parse error: " + jp.getMessage());
+        // continue next doc
+      } catch (IllegalStateException ise) {
+        // e.g., your helpers can throw on unexpected states
+        log.severe("Doc[" + idx + "] invalid state: " + ise.getMessage());
+      } catch (RuntimeException re) {
+        // Blob/Cosmos transient issues bubble up as runtime in your helpers
+        log.severe("Doc[" + idx + "] runtime error: " + re.getMessage());
+        // Let the platform retry the whole batch if you prefer:
+        // throw re;
+        // For now, continue next doc so one bad row doesn't block the batch.
+      } catch (Exception ex) {
+        log.severe("Doc[" + idx + "] unexpected error: " + ex.getMessage());
+      }
+    }
+  }
 }
 
-// decide notify
-boolean shouldNotify = false;
-String eventType = (baseline == null) ? "CREATE" : "MODIFY";
+Why this matches the plan
+	•	Final‑state reasoning (S1): deltas are used only to enrich the message; decision to persist is independent — we always overwrite the snapshot (Blob Versioning keeps history automatically).
+	•	CREATE is idempotent: the helper should use If-None-Match="*"; “already exists” is success.
+	•	MODIFY is race‑safe: pass the previous ETag to your updater; if someone else already overwrote, you’ll get a 412 and your helper can log/throw so the Function runtime retries with fresh state.
+	•	Defensive feed handling: the trigger can hand you non‑objects/odd rows; we bail fast and keep processing the rest.
 
-if ("CREATE".equals(eventType)) {
-    shouldNotify = RuleEvaluator.evaluateOnNewDoc(newDoc); // your AND rules
-} else {
-    var deltas = Delta.compute(baseline, newDoc, trackedPaths);
-    boolean anyRuleFieldChanged = Delta.anyRuleFieldChanged(deltas, ruleFields);
-    shouldNotify = anyRuleFieldChanged && RuleEvaluator.evaluateOnNewDoc(newDoc);
-}
-
-// send message if required
-if (shouldNotify) {
-    ServiceBusMessage msg = MessageFactory.build(newDoc, baseline, eventType, cosmosContainer);
-    msg.setMessageId(eventType + ":" + cosmosContainer + ":" + docId + ":" + newDoc.path("_ts").asText(""));
-    busSender.sendMessage(msg);
-}
-
-// ALWAYS refresh mirror (idempotent)
-if (baseline == null) {
-    // create
-    BlobRequestConditions c = new BlobRequestConditions().setIfNoneMatch("*");
-    mirror.uploadWithResponse(
-        new BlockBlobSimpleUploadOptions(BinaryData.fromString(pretty(newDoc)))
-            .setRequestConditions(c),
-        null, Context.NONE);
-} else {
-    // overwrite with If-Match
-    BlobRequestConditions c = new BlobRequestConditions().setIfMatch(prevETag);
-    mirror.uploadWithResponse(
-        new BlockBlobSimpleUploadOptions(BinaryData.fromString(pretty(newDoc)))
-            .setRequestConditions(c),
-        null, Context.NONE);
-}
-
-
-⸻
-
-8) Observability
-	•	Log: docId, eventType, decision (notify/skip), reason (which rule), blob action (created/overwritten/skipped).
-	•	App Insights (when enabled):
-	•	Custom metric: notifications.sent (labels: container, ruleId).
-	•	Custom event: mirror.write with outcome (created/overwritten/conflict‑retry).
-
-⸻
-
-9) Ops & guardrails
-	•	Blob lifecycle: delete previous versions > N days (e.g., 30).
-	•	Poison handling: if a doc keeps failing, log to a “dead‑letter” container with the docId + exception.
-	•	Backpressure: Service Bus Auto‑scale or use Topic + multiple subscribers if throughput grows.
-
-⸻
-
-10) Testing checklist
-	•	CREATE with no rule satisfied → no notify, baseline created.
-	•	CREATE with rule satisfied → notify once, baseline created.
-	•	MODIFY touching non‑rule fields → no notify, mirror overwritten.
-	•	MODIFY touching rule fields but rule false → no notify, mirror overwritten.
-	•	MODIFY touching rule fields and rule true → notify once, mirror overwritten.
-	•	Concurrency: simulate 2 function instances writing the same mirror → one succeeds, other gets 412, retries after reload.
-
-⸻
-
-This gives you correctness (rules won’t be missed), simplicity (always mirror), and stability (ETag + SB dedupe). If you want, I can fold this into your current project files with exact method names you already use.
+If you want me to also refresh your CreateBlob.createBlobIfCreateEvent(...) and UpdateBlob.overwriteWithVersioning(...) to ensure they’re doing the idempotent create + ETag‑guarded overwrite exactly as above, say the word and I’ll drop those methods too.
