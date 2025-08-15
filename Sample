@@ -1,172 +1,285 @@
-Got it — here’s a cleaned‑up, defensive “S1-style” function that matches what we agreed:
-	•	Parse the Cosmos DB change feed safely (treat payload as List<String>).
-	•	For each item: parse → extract id → load current blob snapshot (baseline or latest) → compute deltas (only if not CREATE) → optionally decide whether to notify (hook provided) → always persist the snapshot (overwrite id.json; blob versioning will keep history) after you send.
-	•	Concurrency: pass the previous ETag to the updater; if it changed, we surface a clear log and let the platform retry.
-	•	Lots of guardrails and logs.
+Absolutely — here’s a production‑grade ErrorWriter updated to store only newDoc (no raw/change‑feed copy), with strong comments, safe logging, tags for easy querying, and defensive size‑limits. It never throws (so it won’t crash your invocation).
 
-package com.neo.notification.function;
+⸻
 
+ErrorWriter (store only newDoc)
+
+package com.neo.notification.blob;
+
+import com.azure.core.util.Context;
 import com.azure.storage.blob.BlobContainerClient;
-import com.fasterxml.jackson.databind.JsonNode;
+import com.azure.storage.blob.models.BlobHttpHeaders;
+import com.azure.storage.blob.specialized.BlockBlobClient;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.microsoft.azure.functions.ExecutionContext;
-import com.microsoft.azure.functions.annotation.CosmosDBTrigger;
-import com.microsoft.azure.functions.annotation.FunctionName;
 
+import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.List;
+import java.time.OffsetDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.Map;
 import java.util.logging.Logger;
 
 /**
- * Processes Cosmos DB change feed rows for one logical container.
+ * Writes error records to a dedicated Blob container.
+ * - Stores ONLY the parsed new document ("newDoc") for debugging/replay.
+ * - Adds compact envelope metadata (when, function, invocation, container, docId).
+ * - Attaches Blob Index Tags for quick portal queries (status/reason/eventType/container/docId/date).
+ * - Never throws: logs any failure to write the error record and returns.
  *
- * Flow per document:
- *  1) Parse the row defensively (JSON object expected).
- *  2) Extract id.
- *  3) Read current snapshot from Blob (baseline for first time, otherwise latest).
- *  4) If MODIFY, compute deltas of tracked fields (for your message payload).
- *  5) Send message (not shown here; plug your Service Bus sender).
- *  6) Persist snapshot:
- *       - CREATE  -> create id.json if absent (idempotent)
- *       - MODIFY  -> overwrite id.json; Blob Versioning keeps the history
- *
- * Notes:
- *  - This class assumes you already have helpers:
- *      BlobClientProvider.container(...),
- *      GetBlob.getCurrentBlob(...),
- *      TrackedChangeHandler.processChanges(...),
- *      CreateBlob.createBlobIfCreateEvent(...),
- *      UpdateBlob.overwriteWithVersioning(...)
- *  - We treat every exception per-document so one bad row doesn’t block the batch.
+ * Query examples (Portal -> "Find blobs by tags"):
+ *   status = 'New'
+ *   container = 'Policy' AND reason = 'DataError'
+ *   docId = 'abc123' AND date = '2025-07-30'
  */
-public class NeoNotificationTriggerFunction {
+public final class ErrorWriter {
 
-  private static final ObjectMapper MAPPER = new ObjectMapper();
+    // Jackson ObjectMapper is thread-safe after configuration
+    private static final ObjectMapper M = new ObjectMapper();
 
-  private static final String CONFIG_CONTAINER_NAME =
-      System.getenv("Blob_ContainerName_Config");
-  private static final String DATA_CONTAINER_NAME =
-      System.getenv("Blob_ContainerName_Data");
+    // hard cap for stored JSON to protect costs & UX (bytes after pretty-print)
+    private static final int MAX_BYTES = 256 * 1024; // 256 KB
 
-  // Safe singletons for clients
-  private static final BlobContainerClient CONFIG_CONTAINER =
-      BlobClientProvider.container(CONFIG_CONTAINER_NAME);
-  private static final BlobContainerClient DATA_CONTAINER =
-      BlobClientProvider.container(DATA_CONTAINER_NAME);
+    private ErrorWriter() {}
 
-  @FunctionName("NeoCosmosChangeFeedTrigger")
-  public void run(
-      @CosmosDBTrigger(
-          name = "docs",
-          databaseName = "%DatabaseName_1%",
-          containerName = "%ContainerNameToTrack_1%",
-          leaseContainerName = "%LeaseContainer_1%",
-          leaseDatabaseName = "%DatabaseName_1%",
-          createLeaseContainerIfNotExists = true,
-          connection = "CosmosDBConnection")
-      List<String> documents,
-      final ExecutionContext context) {
+    /**
+     * Write an error blob. This method NEVER throws.
+     *
+     * @param errorsContainer  Blob container client for the errors container.
+     * @param cosmosContainer  Logical Cosmos container name (used in path & tags).
+     * @param docIdOrNull      Document id if known (null/blank allowed).
+     * @param reasonCode       Short code like "DataError.BadJson", "Infra.BlobWriteFail".
+     * @param message          Human-friendly summary.
+     * @param eventType        "CREATE", "MODIFY", or "UNKNOWN".
+     * @param newDocNode       Parsed document (ObjectNode). May be null (e.g., parse failure).
+     * @param etagAtRead       ETag you saw when reading snapshot (optional).
+     * @param invocationId     ExecutionContext.getInvocationId().
+     * @param functionName     Function name for traceability.
+     * @param log              Logger.
+     */
+    public static void writeError(BlobContainerClient errorsContainer,
+                                  String cosmosContainer,
+                                  String docIdOrNull,
+                                  String reasonCode,
+                                  String message,
+                                  String eventType,
+                                  ObjectNode newDocNode,
+                                  String etagAtRead,
+                                  String invocationId,
+                                  String functionName,
+                                  Logger log) {
+        try {
+            final String docId = (docIdOrNull == null || docIdOrNull.isBlank()) ? "none" : docIdOrNull;
+            final String tsIso = OffsetDateTime.now().format(DateTimeFormatter.ISO_INSTANT);
+            final String tsForName = tsIso.replace(":", "-"); // filename safe
 
-    final Logger log = context.getLogger();
+            // errors/<container>/<yyyy>/<MM>/<dd>/<docId>/<timestamp>-<reason>.json
+            final String blobPath = String.format(
+                    "%s/%s/%s/%s/%s/%s-%s.json",
+                    safe(cosmosContainer),
+                    tsIso.substring(0, 4), tsIso.substring(5, 7), tsIso.substring(8, 10),
+                    safe(docId),
+                    tsForName, safe(reasonCode)
+            );
 
-    if (documents == null || documents.isEmpty()) {
-      log.info("Change feed batch is empty; nothing to do.");
-      return;
+            // Build the envelope JSON with ONLY newDoc (if available)
+            final ObjectNode root = M.createObjectNode();
+            root.put("whenUtc", tsIso);
+            root.put("function", nullToEmpty(functionName));
+            root.put("invocationId", nullToEmpty(invocationId));
+            root.put("cosmosContainer", nullToEmpty(cosmosContainer));
+            root.put("docId", docIdOrNull);
+            root.put("eventType", eventType == null ? "UNKNOWN" : eventType);
+            root.put("reasonCode", nullToEmpty(reasonCode));
+            root.put("message", nullToEmpty(message));
+            if (etagAtRead != null) root.put("etagAtRead", etagAtRead);
+
+            // Attach ONLY newDoc (pretty-printed, with size guard)
+            if (newDocNode != null && !newDocNode.isEmpty()) {
+                byte[] pretty = M.writerWithDefaultPrettyPrinter().writeValueAsBytes(newDocNode);
+                if (pretty.length <= MAX_BYTES) {
+                    // store as nested JSON
+                    root.set("newDoc", newDocNode);
+                } else {
+                    // too big: store a truncated string, still pretty
+                    String truncated = new String(pretty, StandardCharsets.UTF_8);
+                    truncated = truncated.substring(0, Math.min(truncated.length(), MAX_BYTES)) + "...[truncated]";
+                    root.put("newDocTruncated", truncated);
+                    root.put("newDocSizeBytes", pretty.length);
+                }
+            } else {
+                root.putObject("newDoc").put("note", "null or empty");
+            }
+
+            // Serialize final payload
+            byte[] payload = M.writerWithDefaultPrettyPrinter().writeValueAsBytes(root);
+
+            // Upload (overwrite OK; names include timestamp so collisions are unlikely)
+            BlockBlobClient blob = errorsContainer.getBlobClient(blobPath).getBlockBlobClient();
+            blob.upload(new ByteArrayInputStream(payload), payload.length, true);
+            blob.setHttpHeaders(new BlobHttpHeaders().setContentType("application/json; charset=utf-8"));
+
+            // Blob Index Tags for fast search
+            blob.setTags(Map.of(
+                    "status", "New",                              // lifecycle state of this error
+                    "reason", shortTag(reasonCode),               // DataError / Infra / Rules
+                    "eventType", eventType == null ? "UNKNOWN" : eventType,
+                    "container", safe(cosmosContainer),
+                    "docId", safe(docId),
+                    "date", tsIso.substring(0, 10),               // yyyy-mm-dd
+                    "function", nullToEmpty(functionName),
+                    "retryCount", "0"
+            ), Context.NONE);
+
+            log.info("Wrote error blob: errors/" + blobPath);
+
+        } catch (Exception ex) {
+            // Never throw: this path must not fail the main pipeline
+            log.severe("Failed to write error blob: " + ex.getMessage());
+        }
     }
 
-    // Load tracked fields from config (your existing helper)
-    final String cosmosContainerName = System.getenv("ContainerNameToTrack_1");
-    List<String> fieldsToTrack = NeoGetTrackedFieldsFromBlob.getTrackedFields(
-        CONFIG_CONTAINER, cosmosContainerName, log);
-    if (fieldsToTrack == null) fieldsToTrack = List.of();
-
-    log.info("Batch size=" + documents.size() + ", trackedFields=" + fieldsToTrack.size());
-
-    for (int i = 0; i < documents.size(); i++) {
-      final int idx = i;
-      try {
-        // ---- 1) Parse defensively
-        String raw = documents.get(i);
-        if (raw == null || raw.isBlank()) {
-          log.warning("Doc[" + idx + "] is null/blank; skipping.");
-          continue;
-        }
-
-        JsonNode node = MAPPER.readTree(raw);
-        if (node == null || !node.isObject()) {
-          log.warning("Doc[" + idx + "] is not a JSON object; skipping. Raw len=" + raw.length());
-          continue;
-        }
-        ObjectNode newDoc = (ObjectNode) node;
-
-        // ---- 2) Extract id (null-safe)
-        String id = newDoc.path("id").asText(null);
-        if (id == null || id.isBlank()) {
-          log.warning("Doc[" + idx + "] missing 'id'; skipping.");
-          continue;
-        }
-
-        // ---- 3) Load current snapshot from Blob
-        ResultWrapperForBlob current = GetBlob.getCurrentBlob(
-            DATA_CONTAINER, cosmosContainerName, id, log);
-
-        boolean isCreate = current.isCreate();
-        ObjectNode baseline = current.json(); // may be null only for CREATE
-        String previousETag = current.eTag(); // may be null on first create
-
-        // ---- 4) Compute deltas when MODIFY (tracked fields only)
-        List<ChangeInfo> deltas = new ArrayList<>();
-        if (!isCreate && !fieldsToTrack.isEmpty()) {
-          deltas = TrackedChangeHandler.processChanges(
-              cosmosContainerName, newDoc, DATA_CONTAINER, fieldsToTrack, baseline, log);
-        }
-
-        // ---- 5) Build/send your message (CREATE vs MODIFY)
-        String eventType = isCreate ? "CREATE" : "MODIFY";
-        if (isCreate || !deltas.isEmpty()) {
-          // TODO: call your Service Bus sender here
-          // busSender.send(MessageFactory.build(newDoc, baseline, eventType, cosmosContainerName, deltas));
-          log.info("Doc[" + idx + "] id=" + id + " sending eventType=" + eventType
-              + " (deltas=" + deltas.size() + ")");
-        } else {
-          log.info("Doc[" + idx + "] id=" + id + " has no tracked changes; no message.");
-        }
-
-        // ---- 6) Persist snapshot ALWAYS (after send)
-        if (isCreate) {
-          // idempotent create (If-None-Match="*")
-          CreateBlob.createBlobIfCreateEvent(DATA_CONTAINER, cosmosContainerName, id, newDoc, log);
-        } else {
-          // optimistic overwrite using previous ETag (avoid lost update)
-          UpdateBlob.overwriteWithVersioning(
-              DATA_CONTAINER, cosmosContainerName, id, newDoc, previousETag, log);
-        }
-
-      } catch (com.fasterxml.jackson.core.JsonProcessingException jp) {
-        log.severe("Doc[" + idx + "] JSON parse error: " + jp.getMessage());
-        // continue next doc
-      } catch (IllegalStateException ise) {
-        // e.g., your helpers can throw on unexpected states
-        log.severe("Doc[" + idx + "] invalid state: " + ise.getMessage());
-      } catch (RuntimeException re) {
-        // Blob/Cosmos transient issues bubble up as runtime in your helpers
-        log.severe("Doc[" + idx + "] runtime error: " + re.getMessage());
-        // Let the platform retry the whole batch if you prefer:
-        // throw re;
-        // For now, continue next doc so one bad row doesn't block the batch.
-      } catch (Exception ex) {
-        log.severe("Doc[" + idx + "] unexpected error: " + ex.getMessage());
-      }
+    // ---- helpers ----
+    private static String shortTag(String reason) {
+        if (reason == null) return "Unknown";
+        int i = reason.indexOf('.');
+        return (i > 0) ? reason.substring(0, i) : reason;
     }
-  }
+    private static String nullToEmpty(String s) { return s == null ? "" : s; }
+    private static String safe(String s) {
+        if (s == null) return "none";
+        // Avoid path/tag troublemakers (keep simple)
+        return s.replace("/", "_").replace("\\", "_").trim();
+    }
 }
 
-Why this matches the plan
-	•	Final‑state reasoning (S1): deltas are used only to enrich the message; decision to persist is independent — we always overwrite the snapshot (Blob Versioning keeps history automatically).
-	•	CREATE is idempotent: the helper should use If-None-Match="*"; “already exists” is success.
-	•	MODIFY is race‑safe: pass the previous ETag to your updater; if someone else already overwrote, you’ll get a 412 and your helper can log/throw so the Function runtime retries with fresh state.
-	•	Defensive feed handling: the trigger can hand you non‑objects/odd rows; we bail fast and keep processing the rest.
 
-If you want me to also refresh your CreateBlob.createBlobIfCreateEvent(...) and UpdateBlob.overwriteWithVersioning(...) to ensure they’re doing the idempotent create + ETag‑guarded overwrite exactly as above, say the word and I’ll drop those methods too.
+⸻
+
+How to call it (drop‑in snippets)
+
+Assume you already have:
+
+final BlobContainerClient ERRORS_CONTAINER =
+    BlobClientProvider.container(System.getenv("Blob_ContainerName_Errors"));
+final String functionName = "NeoCosmosChangeFeedTrigger";
+final String invocationId = context.getInvocationId();
+
+
+
+1) Bad JSON (parse failure → no newDoc)
+
+catch (com.fasterxml.jackson.core.JsonProcessingException jpe) {
+    ErrorWriter.writeError(
+        ERRORS_CONTAINER,
+        cosmosContainerName,
+        /*docId*/ null,
+        "DataError.BadJson",
+        jpe.getOriginalMessage(),
+        "UNKNOWN",
+        /*newDoc*/ null,     // we couldn't parse it
+        /*etagAtRead*/ null,
+        invocationId,
+        functionName,
+        log
+    );
+    // skip this item; continue with the rest
+}
+
+2) Missing id (parsed but no id)
+
+if (docId == null || docId.isBlank()) {
+    ErrorWriter.writeError(
+        ERRORS_CONTAINER,
+        cosmosContainerName,
+        null,
+        "DataError.MissingId",
+        "Change feed item missing 'id'.",
+        "UNKNOWN",
+        newDoc,          // include the parsed doc so you can inspect it later
+        null,
+        invocationId,
+        functionName,
+        log
+    );
+    continue;
+}
+
+3) Service Bus send failed (transient infra; you will rethrow to retry)
+
+try {
+    // busSender.sendMessage(msg);
+} catch (Exception sbEx) {
+    ErrorWriter.writeError(
+        ERRORS_CONTAINER,
+        cosmosContainerName,
+        docId,
+        "Infra.ServiceBusSendFail",
+        sbEx.getMessage(),
+        isCreate ? "CREATE" : "MODIFY",
+        newDoc,
+        current.eTag(),                   // if you read a baseline, pass its ETag; else null
+        invocationId,
+        functionName,
+        log
+    );
+    throw sbEx; // let Functions retry the whole batch
+}
+
+4) Blob snapshot write failed (transient infra; rethrow to retry)
+
+try {
+    if (isCreate) {
+        CreateBlob.createBlobIfCreateEvent(DATA_CONTAINER, cosmosContainerName, docId, newDoc, log);
+    } else {
+        UpdateBlob.overwriteWithVersioning(DATA_CONTAINER, cosmosContainerName, docId, newDoc, current.eTag(), log);
+    }
+} catch (RuntimeException storageEx) {
+    ErrorWriter.writeError(
+        ERRORS_CONTAINER,
+        cosmosContainerName,
+        docId,
+        "Infra.BlobWriteFail",
+        storageEx.getMessage(),
+        isCreate ? "CREATE" : "MODIFY",
+        newDoc,
+        current.eTag(),
+        invocationId,
+        functionName,
+        log
+    );
+    throw storageEx; // retry invocation
+}
+
+5) Rule evaluation failure (data/config issue; don’t kill the batch)
+
+try {
+    boolean shouldNotify = BusinessRules.evaluate(cosmosContainerName, newDoc);
+    // ...
+} catch (Exception rulesEx) {
+    ErrorWriter.writeError(
+        ERRORS_CONTAINER,
+        cosmosContainerName,
+        docId,
+        "Rules.EvaluationError",
+        rulesEx.getMessage(),
+        isCreate ? "CREATE" : "MODIFY",
+        newDoc,
+        current.eTag(),
+        invocationId,
+        functionName,
+        log
+    );
+    // continue (don’t throw) so lease advances
+}
+
+
+⸻
+
+Notes / Best Practices
+	•	Never throw from ErrorWriter — it’s a last‑resort safety net.
+	•	Keep error blobs small (capped at 256 KB here). Adjust MAX_BYTES as you wish.
+	•	All error blobs start with tag status=New; if you later add a replay job, you can flip to Resolved or Dead.
+	•	Use lifecycle rules on the errors container (e.g., delete after 30 days).
+
+If you want, I can also add a tiny helper to query your errors by tags from code for quick checks.
