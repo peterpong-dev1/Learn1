@@ -1,285 +1,133 @@
-Absolutely — here’s a production‑grade ErrorWriter updated to store only newDoc (no raw/change‑feed copy), with strong comments, safe logging, tags for easy querying, and defensive size‑limits. It never throws (so it won’t crash your invocation).
-
-⸻
-
-ErrorWriter (store only newDoc)
-
-package com.neo.notification.blob;
-
-import com.azure.core.util.Context;
-import com.azure.storage.blob.BlobContainerClient;
-import com.azure.storage.blob.models.BlobHttpHeaders;
-import com.azure.storage.blob.specialized.BlockBlobClient;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-
-import java.io.ByteArrayInputStream;
-import java.nio.charset.StandardCharsets;
-import java.time.OffsetDateTime;
-import java.time.format.DateTimeFormatter;
-import java.util.Map;
-import java.util.logging.Logger;
-
-/**
- * Writes error records to a dedicated Blob container.
- * - Stores ONLY the parsed new document ("newDoc") for debugging/replay.
- * - Adds compact envelope metadata (when, function, invocation, container, docId).
- * - Attaches Blob Index Tags for quick portal queries (status/reason/eventType/container/docId/date).
- * - Never throws: logs any failure to write the error record and returns.
- *
- * Query examples (Portal -> "Find blobs by tags"):
- *   status = 'New'
- *   container = 'Policy' AND reason = 'DataError'
- *   docId = 'abc123' AND date = '2025-07-30'
- */
-public final class ErrorWriter {
-
-    // Jackson ObjectMapper is thread-safe after configuration
-    private static final ObjectMapper M = new ObjectMapper();
-
-    // hard cap for stored JSON to protect costs & UX (bytes after pretty-print)
-    private static final int MAX_BYTES = 256 * 1024; // 256 KB
-
-    private ErrorWriter() {}
-
-    /**
-     * Write an error blob. This method NEVER throws.
-     *
-     * @param errorsContainer  Blob container client for the errors container.
-     * @param cosmosContainer  Logical Cosmos container name (used in path & tags).
-     * @param docIdOrNull      Document id if known (null/blank allowed).
-     * @param reasonCode       Short code like "DataError.BadJson", "Infra.BlobWriteFail".
-     * @param message          Human-friendly summary.
-     * @param eventType        "CREATE", "MODIFY", or "UNKNOWN".
-     * @param newDocNode       Parsed document (ObjectNode). May be null (e.g., parse failure).
-     * @param etagAtRead       ETag you saw when reading snapshot (optional).
-     * @param invocationId     ExecutionContext.getInvocationId().
-     * @param functionName     Function name for traceability.
-     * @param log              Logger.
-     */
-    public static void writeError(BlobContainerClient errorsContainer,
-                                  String cosmosContainer,
-                                  String docIdOrNull,
-                                  String reasonCode,
-                                  String message,
-                                  String eventType,
-                                  ObjectNode newDocNode,
-                                  String etagAtRead,
-                                  String invocationId,
-                                  String functionName,
-                                  Logger log) {
-        try {
-            final String docId = (docIdOrNull == null || docIdOrNull.isBlank()) ? "none" : docIdOrNull;
-            final String tsIso = OffsetDateTime.now().format(DateTimeFormatter.ISO_INSTANT);
-            final String tsForName = tsIso.replace(":", "-"); // filename safe
-
-            // errors/<container>/<yyyy>/<MM>/<dd>/<docId>/<timestamp>-<reason>.json
-            final String blobPath = String.format(
-                    "%s/%s/%s/%s/%s/%s-%s.json",
-                    safe(cosmosContainer),
-                    tsIso.substring(0, 4), tsIso.substring(5, 7), tsIso.substring(8, 10),
-                    safe(docId),
-                    tsForName, safe(reasonCode)
-            );
-
-            // Build the envelope JSON with ONLY newDoc (if available)
-            final ObjectNode root = M.createObjectNode();
-            root.put("whenUtc", tsIso);
-            root.put("function", nullToEmpty(functionName));
-            root.put("invocationId", nullToEmpty(invocationId));
-            root.put("cosmosContainer", nullToEmpty(cosmosContainer));
-            root.put("docId", docIdOrNull);
-            root.put("eventType", eventType == null ? "UNKNOWN" : eventType);
-            root.put("reasonCode", nullToEmpty(reasonCode));
-            root.put("message", nullToEmpty(message));
-            if (etagAtRead != null) root.put("etagAtRead", etagAtRead);
-
-            // Attach ONLY newDoc (pretty-printed, with size guard)
-            if (newDocNode != null && !newDocNode.isEmpty()) {
-                byte[] pretty = M.writerWithDefaultPrettyPrinter().writeValueAsBytes(newDocNode);
-                if (pretty.length <= MAX_BYTES) {
-                    // store as nested JSON
-                    root.set("newDoc", newDocNode);
-                } else {
-                    // too big: store a truncated string, still pretty
-                    String truncated = new String(pretty, StandardCharsets.UTF_8);
-                    truncated = truncated.substring(0, Math.min(truncated.length(), MAX_BYTES)) + "...[truncated]";
-                    root.put("newDocTruncated", truncated);
-                    root.put("newDocSizeBytes", pretty.length);
-                }
-            } else {
-                root.putObject("newDoc").put("note", "null or empty");
-            }
-
-            // Serialize final payload
-            byte[] payload = M.writerWithDefaultPrettyPrinter().writeValueAsBytes(root);
-
-            // Upload (overwrite OK; names include timestamp so collisions are unlikely)
-            BlockBlobClient blob = errorsContainer.getBlobClient(blobPath).getBlockBlobClient();
-            blob.upload(new ByteArrayInputStream(payload), payload.length, true);
-            blob.setHttpHeaders(new BlobHttpHeaders().setContentType("application/json; charset=utf-8"));
-
-            // Blob Index Tags for fast search
-            blob.setTags(Map.of(
-                    "status", "New",                              // lifecycle state of this error
-                    "reason", shortTag(reasonCode),               // DataError / Infra / Rules
-                    "eventType", eventType == null ? "UNKNOWN" : eventType,
-                    "container", safe(cosmosContainer),
-                    "docId", safe(docId),
-                    "date", tsIso.substring(0, 10),               // yyyy-mm-dd
-                    "function", nullToEmpty(functionName),
-                    "retryCount", "0"
-            ), Context.NONE);
-
-            log.info("Wrote error blob: errors/" + blobPath);
-
-        } catch (Exception ex) {
-            // Never throw: this path must not fail the main pipeline
-            log.severe("Failed to write error blob: " + ex.getMessage());
-        }
+{
+  "version": "1.0",
+  "container": "appInfoProgressManagement",
+  "events": [
+    {
+      "id": "appInfoProgressManagement_application_submitted",
+      "name": "Application Submitted",
+      "when": ["insert", "update"],
+      "conditions": {
+        "logic": "AND",
+        "rules": [
+          { "op": "eq", "field": "applicationStatus", "value": "1" }
+        ]
+      }
+    },
+    {
+      "id": "appInfoProgressManagement_application_amended",
+      "name": "Application Amended",
+      "when": ["update"],
+      "conditions": {
+        "logic": "AND",
+        "rules": [
+          { "op": "becameNotNull", "field": "applicationAmendmentDate" }
+        ]
+      }
+    },
+    {
+      "id": "appInfoProgressManagement_application_cancelled",
+      "name": "Application Cancelled",
+      "when": ["update"],
+      "conditions": {
+        "logic": "OR",
+        "rules": [
+          { "op": "becameNotNull", "field": "applicationCancelDate" },
+          { "op": "changedTo", "field": "applicationStatus", "value": "9" }
+        ]
+      }
+    },
+    {
+      "id": "appInfoProgressManagement_status_updated",
+      "name": "Status Updated",
+      "when": ["update"],
+      "conditions": {
+        "logic": "AND",
+        "rules": [
+          { "op": "changed", "field": "applicationStatus" }
+        ]
+      }
+    },
+    {
+      "id": "appInfoProgressManagement_payment_received",
+      "name": "Payment Received",
+      "when": ["update"],
+      "conditions": {
+        "logic": "OR",
+        "rules": [
+          { "op": "changedTo", "field": "newBusinessDepositStatus", "value": "2" },
+          { "op": "becameNotNull", "field": "firstReceiptDate" }
+        ]
+      }
+    },
+    {
+      "id": "appInfoProgressManagement_deficiency_notification_sent",
+      "name": "Deficiency Notification Sent",
+      "when": ["update"],
+      "conditions": {
+        "logic": "OR",
+        "rules": [
+          { "op": "becameNotNull", "field": "errorCode" },
+          { "op": "becameNotNull", "field": "deficiencyNotificationSentDate" }
+        ]
+      }
+    },
+    {
+      "id": "appInfoProgressManagement_deficiency_resolved",
+      "name": "Deficiency Resolved",
+      "when": ["update"],
+      "conditions": {
+        "logic": "AND",
+        "rules": [
+          { "op": "becameNotNull", "field": "deficiencyResolutionDate" }
+        ]
+      }
+    },
+    {
+      "id": "appInfoProgressManagement_decision_notification_sent",
+      "name": "Decision Notification Sent",
+      "when": ["update"],
+      "conditions": {
+        "logic": "OR",
+        "rules": [
+          { "op": "becameNotNull", "field": "decisionNotificationSentDate" },
+          { "op": "becameNotNull", "field": "decisionNotificationDetails" }
+        ]
+      }
+    },
+    {
+      "id": "appInfoProgressManagement_policy_issued",
+      "name": "Policy Issued",
+      "when": ["update"],
+      "conditions": {
+        "logic": "OR",
+        "rules": [
+          { "op": "becameNotNull", "field": "issueDate" },
+          { "op": "becameNotNull", "field": "policyId" }
+        ]
+      }
+    },
+    {
+      "id": "appInfoProgressManagement_policy_pending",
+      "name": "Policy Pending",
+      "when": ["update"],
+      "conditions": {
+        "logic": "OR",
+        "rules": [
+          { "op": "becameNotNull", "field": "pendingStatus" },
+          { "op": "becameNotNull", "field": "issuePendingDate" }
+        ]
+      }
+    },
+    {
+      "id": "appInfoProgressManagement_policy_cancelled",
+      "name": "Policy Cancelled",
+      "when": ["update"],
+      "conditions": {
+        "logic": "AND",
+        "rules": [
+          { "op": "becameNotNull", "field": "issueCancelDate" }
+        ]
+      }
     }
-
-    // ---- helpers ----
-    private static String shortTag(String reason) {
-        if (reason == null) return "Unknown";
-        int i = reason.indexOf('.');
-        return (i > 0) ? reason.substring(0, i) : reason;
-    }
-    private static String nullToEmpty(String s) { return s == null ? "" : s; }
-    private static String safe(String s) {
-        if (s == null) return "none";
-        // Avoid path/tag troublemakers (keep simple)
-        return s.replace("/", "_").replace("\\", "_").trim();
-    }
+  ]
 }
-
-
-⸻
-
-How to call it (drop‑in snippets)
-
-Assume you already have:
-
-final BlobContainerClient ERRORS_CONTAINER =
-    BlobClientProvider.container(System.getenv("Blob_ContainerName_Errors"));
-final String functionName = "NeoCosmosChangeFeedTrigger";
-final String invocationId = context.getInvocationId();
-
-
-
-1) Bad JSON (parse failure → no newDoc)
-
-catch (com.fasterxml.jackson.core.JsonProcessingException jpe) {
-    ErrorWriter.writeError(
-        ERRORS_CONTAINER,
-        cosmosContainerName,
-        /*docId*/ null,
-        "DataError.BadJson",
-        jpe.getOriginalMessage(),
-        "UNKNOWN",
-        /*newDoc*/ null,     // we couldn't parse it
-        /*etagAtRead*/ null,
-        invocationId,
-        functionName,
-        log
-    );
-    // skip this item; continue with the rest
-}
-
-2) Missing id (parsed but no id)
-
-if (docId == null || docId.isBlank()) {
-    ErrorWriter.writeError(
-        ERRORS_CONTAINER,
-        cosmosContainerName,
-        null,
-        "DataError.MissingId",
-        "Change feed item missing 'id'.",
-        "UNKNOWN",
-        newDoc,          // include the parsed doc so you can inspect it later
-        null,
-        invocationId,
-        functionName,
-        log
-    );
-    continue;
-}
-
-3) Service Bus send failed (transient infra; you will rethrow to retry)
-
-try {
-    // busSender.sendMessage(msg);
-} catch (Exception sbEx) {
-    ErrorWriter.writeError(
-        ERRORS_CONTAINER,
-        cosmosContainerName,
-        docId,
-        "Infra.ServiceBusSendFail",
-        sbEx.getMessage(),
-        isCreate ? "CREATE" : "MODIFY",
-        newDoc,
-        current.eTag(),                   // if you read a baseline, pass its ETag; else null
-        invocationId,
-        functionName,
-        log
-    );
-    throw sbEx; // let Functions retry the whole batch
-}
-
-4) Blob snapshot write failed (transient infra; rethrow to retry)
-
-try {
-    if (isCreate) {
-        CreateBlob.createBlobIfCreateEvent(DATA_CONTAINER, cosmosContainerName, docId, newDoc, log);
-    } else {
-        UpdateBlob.overwriteWithVersioning(DATA_CONTAINER, cosmosContainerName, docId, newDoc, current.eTag(), log);
-    }
-} catch (RuntimeException storageEx) {
-    ErrorWriter.writeError(
-        ERRORS_CONTAINER,
-        cosmosContainerName,
-        docId,
-        "Infra.BlobWriteFail",
-        storageEx.getMessage(),
-        isCreate ? "CREATE" : "MODIFY",
-        newDoc,
-        current.eTag(),
-        invocationId,
-        functionName,
-        log
-    );
-    throw storageEx; // retry invocation
-}
-
-5) Rule evaluation failure (data/config issue; don’t kill the batch)
-
-try {
-    boolean shouldNotify = BusinessRules.evaluate(cosmosContainerName, newDoc);
-    // ...
-} catch (Exception rulesEx) {
-    ErrorWriter.writeError(
-        ERRORS_CONTAINER,
-        cosmosContainerName,
-        docId,
-        "Rules.EvaluationError",
-        rulesEx.getMessage(),
-        isCreate ? "CREATE" : "MODIFY",
-        newDoc,
-        current.eTag(),
-        invocationId,
-        functionName,
-        log
-    );
-    // continue (don’t throw) so lease advances
-}
-
-
-⸻
-
-Notes / Best Practices
-	•	Never throw from ErrorWriter — it’s a last‑resort safety net.
-	•	Keep error blobs small (capped at 256 KB here). Adjust MAX_BYTES as you wish.
-	•	All error blobs start with tag status=New; if you later add a replay job, you can flip to Resolved or Dead.
-	•	Use lifecycle rules on the errors container (e.g., delete after 30 days).
-
-If you want, I can also add a tiny helper to query your errors by tags from code for quick checks.
