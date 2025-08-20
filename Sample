@@ -1,239 +1,265 @@
-Awesome—let’s lock this down with one model file and a small loader, then show exactly how to call it from your Function. No caching, thread‑safe, plenty of comments/Javadoc, and defensive error handling.
+Awesome—now that you’ve got:
+	•	EventConfig (single-file model) loading ✅
+	•	Your Function already parsing newDoc / fetching the previous snapshot (currentJsonFromBlob) ✅
+	•	A list of tracked fields + your existing delta logic ✅
+
+…here’s the next step: a tiny, production-friendly rule evaluator you can drop in and call from your function to fire events based on your JSON config.
+
+I kept it small, thread‑safe (stateless), null-safe, and dependency-free (only Jackson which you already use).
 
 ⸻
 
-1) One-file model: EventConfig.java
+1) Rule evaluation utility
 
-package com.neo.notification.config;
+Create RuleEngine.java:
 
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+package com.neo.notification.rules;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 /**
- * In-memory representation of your event rules JSON.
+ * Stateless evaluator for EventConfig rules.
  *
- * JSON shape this maps to (shortened):
- * {
- *   "version": "1.0",
- *   "container": "appInfoProgressManagement",
- *   "events": [
- *     {
- *       "id": "appInfoProgressManagement_application_submitted",
- *       "name": "Application Submitted",
- *       "when": ["insert","update"],
- *       "conditions": {
- *         "logic": "AND",
- *         "rules": [
- *           { "op": "eq", "field": "applicationStatus", "value": "1" }
- *         ]
- *       }
- *     }
- *   ]
- * }
+ * Supported ops:
+ *  - "eq"            : field equals value (string compare on .asText())
+ *  - "changed"       : field value changed between old and new
+ *  - "changedTo"     : field value changed to the supplied value
+ *  - "becameNotNull" : field was null/missing/empty and is now non-empty
  *
- * Notes:
- * - Public fields keep it simple; Jackson fills them directly.
- * - @JsonIgnoreProperties keeps the parser tolerant to extra fields.
+ * "when": ["insert","update"] decides applicability by isCreate flag.
+ *
+ * All comparisons are null-safe and treat missing node == null.
  */
-@JsonIgnoreProperties(ignoreUnknown = true)
-public final class EventConfig {
-    /** Version string from the JSON. */
-    public String version;
+public final class RuleEngine {
 
-    /** Cosmos container these rules apply to. */
-    public String container;
+    private RuleEngine() {}
 
-    /** The event rules. Never null after successful load. */
-    public List<Event> events;
+    /** Evaluate one event’s rules against the docs. Returns true if the event should fire. */
+    public static boolean evaluateEvent(
+            EventConfig.Event event,
+            boolean isCreate,
+            ObjectNode newDoc,
+            ObjectNode oldDocOrNull) {
 
-    /** One event definition. */
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    public static final class Event {
-        /** Unique, stable id like "appInfoProgressManagement_application_submitted". */
-        public String id;
+        // 1) Gate on when
+        boolean wantsInsert = event.when != null && event.when.stream()
+                .anyMatch(s -> "insert".equalsIgnoreCase(s));
+        boolean wantsUpdate = event.when != null && event.when.stream()
+                .anyMatch(s -> "update".equalsIgnoreCase(s));
 
-        /** Human-readable name. */
-        public String name;
+        if (isCreate && !wantsInsert) return false;
+        if (!isCreate && !wantsUpdate) return false;
 
-        /** When to evaluate: "insert", "update" (one or both). */
-        public List<String> when;
+        // 2) Evaluate rules
+        List<Boolean> results = new ArrayList<>();
+        if (event.conditions != null && event.conditions.rules != null) {
+            for (EventConfig.Rule r : event.conditions.rules) {
+                results.add(evalRule(r, newDoc, oldDocOrNull));
+            }
+        }
 
-        /** Conditions to satisfy for this event. */
-        public ConditionGroup conditions;
+        // 3) Combine by logic
+        String logic = (event.conditions == null || event.conditions.logic == null)
+                ? "AND" : event.conditions.logic.toUpperCase();
+
+        if (results.isEmpty()) return true; // no rules means always true
+
+        if ("AND".equals(logic)) {
+            return results.stream().allMatch(Boolean::booleanValue);
+        } else if ("OR".equals(logic)) {
+            return results.stream().anyMatch(Boolean::booleanValue);
+        } else {
+            // unknown logic -> be conservative
+            return false;
+        }
     }
 
-    /** A group of rules with AND/OR logic. */
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    public static final class ConditionGroup {
-        /** "AND" or "OR". Defaults handled by loader if missing. */
-        public String logic;
-        /** List of rules; empty lists are treated as "no conditions". */
-        public List<Rule> rules;
+    private static boolean evalRule(EventConfig.Rule r, ObjectNode newDoc, ObjectNode oldDocOrNull) {
+        String op = safe(r.op);
+        String field = safe(r.field);
+        String value = r.value; // may be null
+
+        JsonNode newVal = get(newDoc, field);
+        JsonNode oldVal = oldDocOrNull == null ? null : get(oldDocOrNull, field);
+
+        switch (op) {
+            case "eq":
+                return equalsText(newVal, value);
+            case "changed":
+                return !equalsText(newVal, text(oldVal));
+            case "changedTo":
+                return !equalsText(newVal, text(oldVal)) && equalsText(newVal, value);
+            case "becameNotNull":
+                return isEmpty(oldVal) && !isEmpty(newVal);
+            default:
+                // Unknown op -> do not match
+                return false;
+        }
     }
 
-    /** Single condition like eq/changed/changedTo/becameNotNull. */
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    public static final class Rule {
-        /** Operation: "eq" | "changed" | "changedTo" | "becameNotNull". */
-        public String op;
-        /** Field path in your document (e.g., "applicationStatus"). */
-        public String field;
-        /** Optional value (required for eq/changedTo). */
-        public String value;
+    // ----- helpers -----
+
+    private static JsonNode get(ObjectNode obj, String simpleField) {
+        if (obj == null || simpleField == null || simpleField.isBlank()) return null;
+        // NOTE: simple top-level fields. If you need dotted paths, split here.
+        return obj.get(simpleField);
+    }
+
+    private static String text(JsonNode n) {
+        return n == null || n.isNull() ? null : n.asText(null);
+    }
+
+    private static boolean equalsText(JsonNode a, String b) {
+        String ta = text(a);
+        return Objects.equals(ta, b);
+    }
+
+    private static boolean isEmpty(JsonNode n) {
+        if (n == null || n.isNull()) return true;
+        if (n.isTextual()) return n.asText().isBlank();
+        // treat “missing”/empty arrays/objects as empty if you need later
+        return false;
+    }
+
+    private static String safe(String s) {
+        return s == null ? "" : s.trim();
     }
 }
 
+This expects your single-file model (EventConfig.java) to be in com.neo.notification.rules (or adjust package imports). It references EventConfig.Event, EventConfig.Rule, and EventConfig.Conditions—the nested classes from the single-file model I gave earlier.
 
 ⸻
 
-2) Loader: EventConfigLoader.java
+2) Calling it from your Function
 
-package com.neo.notification.config;
+Below is the minimal glue to load the config once per invocation, then evaluate for each document in the batch, and collect/maybe send the events that matched.
+
+Drop this near the bottom of your function (after you already computed newDoc, currentJsonFromBlob, isCreate, etc.). You already have those variables in your screenshots:
+
+// --- Load rules for this container (you already loaded the tracked-fields; do the same for events)
+EventConfig rules;
+try {
+    rules = EventConfigLoader.loadFromBlob(
+            CONFIG_CONTAINER,                  // your config container client
+            cosmosDbContainerName,             // "appInfoProgressManagement"
+            context.getLogger());
+} catch (Exception ex) {
+    // Already writing ErrorWriter in your code; keep that and move on
+    ErrorWriter.writeError(ERROR_CONTAINER,
+            cosmosDbContainerName, "", "LoadEventsFromConfigError",
+            "Failed to load EventConfig: " + ex.getMessage(),
+            "UNKNOWN", null, "", context.getInvocationId(), context.getFunctionName(), context.getLogger());
+    throw new RuntimeException("CUSTOM ERROR: cannot load EventConfig", ex);
+}
+
+if (rules == null || rules.events == null || rules.events.isEmpty()) {
+    ErrorWriter.writeError(ERROR_CONTAINER,
+            cosmosDbContainerName, "", "ConfigEmpty",
+            "No events configured for container " + cosmosDbContainerName,
+            "UNKNOWN", null, "", context.getInvocationId(), context.getFunctionName(), context.getLogger());
+    // you can choose to proceed with only baseline update, or just return
+    // return;
+}
+
+// ----- Decide events to fire for THIS document -----
+List<EventConfig.Event> fired = new ArrayList<>();
+for (EventConfig.Event evt : rules.events) {
+    boolean match = RuleEngine.evaluateEvent(evt, isCreate, newDoc, currentJsonFromBlob);
+    if (match) {
+        fired.add(evt);
+    }
+}
+
+// Example: log or send one message per fired event
+for (EventConfig.Event evt : fired) {
+    // Build your message here
+    // TODO: call your bus sender here
+    context.getLogger().info("Firing event: " + evt.id + " (" + evt.name + ") for id=" + id);
+}
+
+This plugs directly into your existing flow (right where you currently decide whether to send notifications). You can still keep your tracked field “delta” logic if you want a second filter (e.g., don’t send if none of the tracked fields changed on updates).
+
+⸻
+
+3) Tiny loader to read this config from Blob
+
+You already have a “get config from blob” utility for tracked fields. Here’s a twin loader for event rules (single file per container). Put it next to your other loader:
+
+package com.neo.notification.rules;
 
 import com.azure.storage.blob.BlobContainerClient;
-import com.azure.storage.blob.specialized.BlobInputStream;
-import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.azure.storage.blob.specialized.BlockBlobClient;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
-import java.util.List;
-import java.util.Objects;
 import java.util.logging.Logger;
 
-/**
- * Loads the event-rules JSON from Azure Blob Storage (or from a raw String).
- * Stateless & thread-safe; ObjectMapper is thread-safe after configuration.
- */
+/** Reads /{containerName}/events.json (your single config file) from the CONFIG container. */
 public final class EventConfigLoader {
-    private static final ObjectMapper MAPPER = new ObjectMapper()
-            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+    private static final ObjectMapper M = new ObjectMapper();
 
     private EventConfigLoader() {}
 
-    /**
-     * Load config from a blob (e.g., "<container>_events.json").
-     *
-     * @param configContainer Blob container that holds your config files.
-     * @param blobName        The blob name to read.
-     * @param log             Logger (never null).
-     * @return a fully-populated EventConfig, or null if missing/invalid.
-     */
     public static EventConfig loadFromBlob(BlobContainerClient configContainer,
-                                           String blobName,
-                                           Logger log) {
-        Objects.requireNonNull(configContainer, "configContainer");
-        Objects.requireNonNull(blobName, "blobName");
-        Objects.requireNonNull(log, "log");
+                                           String cosmosContainerName,
+                                           Logger log) throws Exception {
+        String path = cosmosContainerName + "/events.json"; // adjust if your layout differs
+        BlockBlobClient blob = configContainer.getBlobClient(path).getBlockBlobClient();
 
-        try {
-            var blobClient = configContainer.getBlobClient(blobName);
-            if (!blobClient.exists()) {
-                log.severe("Config blob not found: " + blobName);
-                return null;
-            }
-
-            try (BlobInputStream in = blobClient.openInputStream();
-                 ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-                in.transferTo(out);
-                String json = out.toString(StandardCharsets.UTF_8);
-                return loadFromString(json, log);
-            }
-        } catch (Exception e) {
-            log.severe("Failed to read config blob '" + blobName + "': " + e.getMessage());
+        if (!blob.exists()) {
+            log.warning("Event rules blob not found: " + path);
             return null;
         }
-    }
 
-    /**
-     * Load config from a JSON string (handy for tests or local overrides).
-     *
-     * @param json The JSON document.
-     * @param log  Logger (never null).
-     * @return a validated EventConfig, or null if invalid.
-     */
-    public static EventConfig loadFromString(String json, Logger log) {
-        try {
-            EventConfig cfg = MAPPER.readValue(json, EventConfig.class);
-            // Minimal, non-intrusive checks (you asked for simple validation).
-            if (cfg == null || cfg.container == null || cfg.container.isBlank()) {
-                log.severe("Config missing required 'container'.");
-                return null;
-            }
-            if (cfg.events == null || cfg.events.isEmpty()) {
-                log.severe("Config has no events.");
-                return null;
-            }
-            // Gentle normalization (does not mutate the source JSON on disk).
-            for (EventConfig.Event e : cfg.events) {
-                if (e.conditions != null) {
-                    if (e.conditions.logic == null || e.conditions.logic.isBlank()) {
-                        e.conditions.logic = "AND";
-                    }
-                    if (e.conditions.rules == null) {
-                        e.conditions.rules = List.of();
-                    }
-                }
-            }
-            return cfg;
-        } catch (Exception e) {
-            log.severe("Failed to parse config JSON: " + e.getMessage());
-            return null;
-        }
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        blob.download(out);
+        String json = out.toString(StandardCharsets.UTF_8);
+
+        return M.readValue(json, EventConfig.class);
     }
 }
 
+	•	If you store the file as a single global events.json instead of under the container name, just change path accordingly.
 
 ⸻
 
-3) Call it from your Function
+4) Where exactly to call it in your Function
 
-Below is a minimal, drop‑in snippet for your NeoNotificationTriggerFunction.java.
-(Replace only the “read config” part—rest of your pipeline stays as you have it.)
+From your screenshots, you have something like:
 
-// imports you likely already have:
-import com.azure.storage.blob.BlobContainerClient;
-import com.azure.storage.blob.BlobServiceClientBuilder;
-import com.neo.notification.config.EventConfig;
-import com.neo.notification.config.EventConfigLoader;
+// STEP 1: newDoc (ObjectNode) + id
+// STEP 2: currentJsonFromBlob (baseline) + isCreate
+// STEP 3: (optional) compute tracked-field deltas
 
-// --- somewhere near your static initialization (re-using what you already set up) ---
-private static final String CONFIG_CONTAINER_NAME =
-        System.getenv("Blob_ContainerName_Config"); // you already use this name
-private static final BlobContainerClient CONFIG_CONTAINER =
-        new BlobServiceClientBuilder()
-            .connectionString(System.getenv("AzureWebJobsStorage"))
-            .buildClient()
-            .getBlobContainerClient(CONFIG_CONTAINER_NAME);
-
-// --- inside your run(...) method, before you evaluate anything ---
-final Logger log = context.getLogger();
-
-String cosmosDbContainerName = System.getenv("ContainerNameToTrack_1");
-if (cosmosDbContainerName == null || cosmosDbContainerName.isBlank()) {
-    log.severe("CUSTOM ERROR: env 'ContainerNameToTrack_1' is missing/blank.");
-    return; // nothing we can do
+// NEW STEP 4: Evaluate rule-based events
+List<EventConfig.Event> fired = new ArrayList<>();
+for (EventConfig.Event evt : rules.events) {
+    if (RuleEngine.evaluateEvent(evt, isCreate, newDoc, currentJsonFromBlob)) {
+        fired.add(evt);
+    }
 }
 
-// Convention: one rules file per Cosmos container, e.g. "appInfoProgressManagement_events.json"
-String rulesBlobName = cosmosDbContainerName + "_events.json";
-
-// Load the event rules (no caching as per your request)
-EventConfig rules = EventConfigLoader.loadFromBlob(CONFIG_CONTAINER, rulesBlobName, log);
-if (rules == null) {
-    log.severe("No event rules loaded; aborting this invocation.");
-    return;
+// STEP 5: If any fired, send N messages (or one message with multi-ids)
+for (EventConfig.Event evt : fired) {
+    // busSender.send(MessageFactory.build(... evt.id, evt.name, id, ...));
 }
 
-log.info("Loaded " + rules.events.size() + " event rule(s) for container: " + rules.container);
+	•	Keep your blob overwrite (persist latest snapshot) after you’re done evaluating/sending, just like you already do.
 
-// …now pass `rules` to your evaluator/notification logic as you already planned.
+⸻
 
-Why this meets your asks
-	•	Thread‑safe: classes are stateless; one ObjectMapper configured once; no shared mutable state.
-	•	No caching: the loader reads fresh from Blob every invocation.
-	•	Error handling: clear severe logs and safe null returns; your function can decide to abort early (as shown).
-	•	Javadoc & comments included.
-	•	Simple schema: one file with inner classes; easy to extend later without touching multiple files.
+Notes & gotchas
+	•	Thread safety: All classes above are stateless; one static ObjectMapper inside your existing loaders is fine.
+	•	Null-safety: The evaluator treats missing nodes as null. becameNotNull = went from null/missing/"" to non-empty text.
+	•	Dotted paths: If you’ll need nested fields later, adjust get(newDoc, "a.b.c") to split on . and walk down.
+	•	Case/typing: I used .asText() for comparisons to avoid numeric vs string surprises. If you need strict numeric compare, add another op (e.g., "eqNumber").
 
-If you want me to also drop in a tiny evaluator stub (to iterate events and check when/conditions) I can add that next, but I kept this focused on reading the config cleanly, just like you asked.
+⸻
+
+If you paste these three pieces (RuleEngine, EventConfigLoader, and the calling snippet), your function will start firing events exactly as defined in your JSON config—no caching, simple control flow, and easy to extend with new ops later.
