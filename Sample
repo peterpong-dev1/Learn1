@@ -1,265 +1,230 @@
-Awesome—now that you’ve got:
-	•	EventConfig (single-file model) loading ✅
-	•	Your Function already parsing newDoc / fetching the previous snapshot (currentJsonFromBlob) ✅
-	•	A list of tracked fields + your existing delta logic ✅
-
-…here’s the next step: a tiny, production-friendly rule evaluator you can drop in and call from your function to fire events based on your JSON config.
-
-I kept it small, thread‑safe (stateless), null-safe, and dependency-free (only Jackson which you already use).
+Awesome—here’s a delta‑driven drop‑in you can paste in.
+It reuses the List<ChangeInfo> you already compute, so rules like changed, changedTo, becameNotNull, etc. are decided from deltas (and it still handles CREATE where no deltas exist).
 
 ⸻
 
-1) Rule evaluation utility
-
-Create RuleEngine.java:
+1) Rule engine that uses deltas
 
 package com.neo.notification.rules;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.neo.notification.change.ChangeInfo;
+import com.neo.notification.config.EventConfig;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Objects;
+import java.util.*;
 
 /**
- * Stateless evaluator for EventConfig rules.
- *
- * Supported ops:
- *  - "eq"            : field equals value (string compare on .asText())
- *  - "changed"       : field value changed between old and new
- *  - "changedTo"     : field value changed to the supplied value
- *  - "becameNotNull" : field was null/missing/empty and is now non-empty
- *
- * "when": ["insert","update"] decides applicability by isCreate flag.
- *
- * All comparisons are null-safe and treat missing node == null.
+ * Evaluates EventConfig rules using already-computed tracked-field deltas.
+ * Thread-safe & stateless.
  */
-public final class RuleEngine {
+public final class RuleEngineDelta {
 
-    private RuleEngine() {}
+    private RuleEngineDelta() {}
 
-    /** Evaluate one event’s rules against the docs. Returns true if the event should fire. */
-    public static boolean evaluateEvent(
-            EventConfig.Event event,
-            boolean isCreate,
-            ObjectNode newDoc,
-            ObjectNode oldDocOrNull) {
+    /**
+     * Return true if the event should fire for this document.
+     *
+     * @param evt        event spec (AND/OR + rules)
+     * @param isCreate   true when document is newly created
+     * @param newDoc     current version from change feed
+     * @param baseline   previous snapshot (may be null on create)
+     * @param deltas     tracked-field changes for this doc (empty on create)
+     */
+    public static boolean evaluate(EventConfig.Event evt,
+                                   boolean isCreate,
+                                   ObjectNode newDoc,
+                                   ObjectNode baseline,
+                                   List<ChangeInfo> deltas) {
 
-        // 1) Gate on when
-        boolean wantsInsert = event.when != null && event.when.stream()
-                .anyMatch(s -> "insert".equalsIgnoreCase(s));
-        boolean wantsUpdate = event.when != null && event.when.stream()
-                .anyMatch(s -> "update".equalsIgnoreCase(s));
+        // Fast path: build an index "fieldPath -> last ChangeInfo for that field"
+        Map<String, ChangeInfo> idx = indexByFieldPath(deltas);
 
-        if (isCreate && !wantsInsert) return false;
-        if (!isCreate && !wantsUpdate) return false;
+        boolean hasAny = false;
+        boolean allOk = true;
 
-        // 2) Evaluate rules
-        List<Boolean> results = new ArrayList<>();
-        if (event.conditions != null && event.conditions.rules != null) {
-            for (EventConfig.Rule r : event.conditions.rules) {
-                results.add(evalRule(r, newDoc, oldDocOrNull));
-            }
+        for (EventConfig.Rule r : evt.conditions.rules) {
+            boolean hit = evalRule(r, isCreate, newDoc, baseline, idx);
+            hasAny |= hit;
+            allOk  &= hit;
+            if (evt.conditions.isOr() && hit)    return true;   // OR short‑circuit
+            if (evt.conditions.isAnd() && !hit)  return false;  // AND short‑circuit
         }
 
-        // 3) Combine by logic
-        String logic = (event.conditions == null || event.conditions.logic == null)
-                ? "AND" : event.conditions.logic.toUpperCase();
+        // If there were no rules, treat as "no match"
+        if (evt.conditions.rules == null || evt.conditions.rules.isEmpty()) return false;
 
-        if (results.isEmpty()) return true; // no rules means always true
-
-        if ("AND".equals(logic)) {
-            return results.stream().allMatch(Boolean::booleanValue);
-        } else if ("OR".equals(logic)) {
-            return results.stream().anyMatch(Boolean::booleanValue);
-        } else {
-            // unknown logic -> be conservative
-            return false;
-        }
+        return evt.conditions.isAnd() ? allOk : hasAny;
     }
 
-    private static boolean evalRule(EventConfig.Rule r, ObjectNode newDoc, ObjectNode oldDocOrNull) {
-        String op = safe(r.op);
-        String field = safe(r.field);
-        String value = r.value; // may be null
+    private static boolean evalRule(EventConfig.Rule r,
+                                    boolean isCreate,
+                                    ObjectNode newDoc,
+                                    ObjectNode baseline,
+                                    Map<String, ChangeInfo> idx) {
 
-        JsonNode newVal = get(newDoc, field);
-        JsonNode oldVal = oldDocOrNull == null ? null : get(oldDocOrNull, field);
+        final String op   = safe(r.op);
+        final String path = safe(r.field);
 
         switch (op) {
-            case "eq":
-                return equalsText(newVal, value);
             case "changed":
-                return !equalsText(newVal, text(oldVal));
+                // any change on this field
+                return changed(idx.get(path));
+
             case "changedTo":
-                return !equalsText(newVal, text(oldVal)) && equalsText(newVal, value);
+                // changed and new value equals r.value
+                return changedTo(idx.get(path), r.value);
+
             case "becameNotNull":
-                return isEmpty(oldVal) && !isEmpty(newVal);
+                // changed from missing/null to present (CREATE also OK if present)
+                return becameNotNull(isCreate, path, newDoc, baseline, idx.get(path));
+
+            case "becameNull":
+                // changed from present to missing/null
+                return becameNull(isCreate, path, newDoc, baseline, idx.get(path));
+
+            case "eq":
+                // compare current value only
+                return equalsNow(path, newDoc, r.value);
+
+            case "ne":
+                return !equalsNow(path, newDoc, r.value);
+
             default:
-                // Unknown op -> do not match
+                // unknown op => do not match
                 return false;
         }
     }
 
-    // ----- helpers -----
+    // ---------- delta-based predicates ----------
 
-    private static JsonNode get(ObjectNode obj, String simpleField) {
-        if (obj == null || simpleField == null || simpleField.isBlank()) return null;
-        // NOTE: simple top-level fields. If you need dotted paths, split here.
-        return obj.get(simpleField);
+    private static boolean changed(ChangeInfo c) {
+        return c != null; // your ChangeInfo exists only when field changed (ADDED/REMOVED/MODIFIED)
     }
 
-    private static String text(JsonNode n) {
-        return n == null || n.isNull() ? null : n.asText(null);
+    private static boolean changedTo(ChangeInfo c, String expected) {
+        if (c == null) return false;
+        JsonNode nv = c.getNewValue();
+        return nv != null && expected != null && expected.equals(nv.asText());
     }
 
-    private static boolean equalsText(JsonNode a, String b) {
-        String ta = text(a);
-        return Objects.equals(ta, b);
-    }
-
-    private static boolean isEmpty(JsonNode n) {
-        if (n == null || n.isNull()) return true;
-        if (n.isTextual()) return n.asText().isBlank();
-        // treat “missing”/empty arrays/objects as empty if you need later
-        return false;
-    }
-
-    private static String safe(String s) {
-        return s == null ? "" : s.trim();
-    }
-}
-
-This expects your single-file model (EventConfig.java) to be in com.neo.notification.rules (or adjust package imports). It references EventConfig.Event, EventConfig.Rule, and EventConfig.Conditions—the nested classes from the single-file model I gave earlier.
-
-⸻
-
-2) Calling it from your Function
-
-Below is the minimal glue to load the config once per invocation, then evaluate for each document in the batch, and collect/maybe send the events that matched.
-
-Drop this near the bottom of your function (after you already computed newDoc, currentJsonFromBlob, isCreate, etc.). You already have those variables in your screenshots:
-
-// --- Load rules for this container (you already loaded the tracked-fields; do the same for events)
-EventConfig rules;
-try {
-    rules = EventConfigLoader.loadFromBlob(
-            CONFIG_CONTAINER,                  // your config container client
-            cosmosDbContainerName,             // "appInfoProgressManagement"
-            context.getLogger());
-} catch (Exception ex) {
-    // Already writing ErrorWriter in your code; keep that and move on
-    ErrorWriter.writeError(ERROR_CONTAINER,
-            cosmosDbContainerName, "", "LoadEventsFromConfigError",
-            "Failed to load EventConfig: " + ex.getMessage(),
-            "UNKNOWN", null, "", context.getInvocationId(), context.getFunctionName(), context.getLogger());
-    throw new RuntimeException("CUSTOM ERROR: cannot load EventConfig", ex);
-}
-
-if (rules == null || rules.events == null || rules.events.isEmpty()) {
-    ErrorWriter.writeError(ERROR_CONTAINER,
-            cosmosDbContainerName, "", "ConfigEmpty",
-            "No events configured for container " + cosmosDbContainerName,
-            "UNKNOWN", null, "", context.getInvocationId(), context.getFunctionName(), context.getLogger());
-    // you can choose to proceed with only baseline update, or just return
-    // return;
-}
-
-// ----- Decide events to fire for THIS document -----
-List<EventConfig.Event> fired = new ArrayList<>();
-for (EventConfig.Event evt : rules.events) {
-    boolean match = RuleEngine.evaluateEvent(evt, isCreate, newDoc, currentJsonFromBlob);
-    if (match) {
-        fired.add(evt);
-    }
-}
-
-// Example: log or send one message per fired event
-for (EventConfig.Event evt : fired) {
-    // Build your message here
-    // TODO: call your bus sender here
-    context.getLogger().info("Firing event: " + evt.id + " (" + evt.name + ") for id=" + id);
-}
-
-This plugs directly into your existing flow (right where you currently decide whether to send notifications). You can still keep your tracked field “delta” logic if you want a second filter (e.g., don’t send if none of the tracked fields changed on updates).
-
-⸻
-
-3) Tiny loader to read this config from Blob
-
-You already have a “get config from blob” utility for tracked fields. Here’s a twin loader for event rules (single file per container). Put it next to your other loader:
-
-package com.neo.notification.rules;
-
-import com.azure.storage.blob.BlobContainerClient;
-import com.azure.storage.blob.specialized.BlockBlobClient;
-import com.fasterxml.jackson.databind.ObjectMapper;
-
-import java.io.ByteArrayOutputStream;
-import java.nio.charset.StandardCharsets;
-import java.util.logging.Logger;
-
-/** Reads /{containerName}/events.json (your single config file) from the CONFIG container. */
-public final class EventConfigLoader {
-    private static final ObjectMapper M = new ObjectMapper();
-
-    private EventConfigLoader() {}
-
-    public static EventConfig loadFromBlob(BlobContainerClient configContainer,
-                                           String cosmosContainerName,
-                                           Logger log) throws Exception {
-        String path = cosmosContainerName + "/events.json"; // adjust if your layout differs
-        BlockBlobClient blob = configContainer.getBlobClient(path).getBlockBlobClient();
-
-        if (!blob.exists()) {
-            log.warning("Event rules blob not found: " + path);
-            return null;
+    private static boolean becameNotNull(boolean isCreate, String path,
+                                         ObjectNode newDoc, ObjectNode baseline, ChangeInfo c) {
+        if (isCreate) {
+            // treat as becameNotNull if present now
+            return present(newDoc.at(jsonPointer(path)));
         }
+        if (c == null) return false;
+        // ADDED or MODIFIED-from-null to something
+        return present(c.getNewValue()) && !present(c.getOldValue());
+    }
 
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        blob.download(out);
-        String json = out.toString(StandardCharsets.UTF_8);
+    private static boolean becameNull(boolean isCreate, String path,
+                                      ObjectNode newDoc, ObjectNode baseline, ChangeInfo c) {
+        if (isCreate) return false; // on create we don't consider "becameNull"
+        if (c == null) return false;
+        // REMOVED or MODIFIED-to-null
+        return !present(c.getNewValue()) && present(c.getOldValue());
+    }
 
-        return M.readValue(json, EventConfig.class);
+    // ---------- current-value predicates ----------
+
+    private static boolean equalsNow(String path, ObjectNode doc, String expected) {
+        JsonNode v = doc.at(jsonPointer(path));
+        if (!present(v)) return expected == null || expected.isBlank();
+        return expected != null && expected.equals(v.asText());
+    }
+
+    // ---------- helpers ----------
+
+    private static String safe(String s) { return s == null ? "" : s.trim(); }
+
+    private static boolean present(JsonNode n) {
+        return n != null && !n.isNull() && !(n.isTextual() && n.asText().isBlank());
+    }
+
+    /** Convert dotted path ("a.b[0].c") to a JSON Pointer. Simple support for [idx]. */
+    private static String jsonPointer(String dotted) {
+        if (dotted == null || dotted.isBlank()) return "";
+        String[] parts = dotted.split("\\.");
+        StringBuilder p = new StringBuilder();
+        for (String part : parts) {
+            int arr = part.indexOf('[');
+            if (arr < 0) {
+                p.append('/').append(part);
+            } else {
+                String name = part.substring(0, arr);
+                p.append('/').append(name);
+                String rest = part.substring(arr);
+                // handle one level like [0][1]...
+                int i = 0;
+                while (i < rest.length()) {
+                    int l = rest.indexOf('[', i);
+                    int r = rest.indexOf(']', l + 1);
+                    if (l < 0 || r < 0) break;
+                    String idx = rest.substring(l + 1, r);
+                    p.append('/').append(idx);
+                    i = r + 1;
+                }
+            }
+        }
+        return p.toString();
+    }
+
+    private static Map<String, ChangeInfo> indexByFieldPath(List<ChangeInfo> deltas) {
+        if (deltas == null || deltas.isEmpty()) return Collections.emptyMap();
+        Map<String, ChangeInfo> m = new HashMap<>(deltas.size() * 2);
+        for (ChangeInfo c : deltas) {
+            if (c != null && c.getFieldPath() != null) {
+                m.put(c.getFieldPath(), c); // last wins; good enough for tracked fields
+            }
+        }
+        return m;
     }
 }
 
-	•	If you store the file as a single global events.json instead of under the container name, just change path accordingly.
+Assumptions
+• Your ChangeInfo has getFieldPath(), getOldValue(), getNewValue(), and an enum describing kind—exactly like your screenshot.
+• Your EventConfig is the single‑file model we aligned on earlier (events[] with conditions.logic and rules[] containing op, field, value).
 
 ⸻
 
-4) Where exactly to call it in your Function
+2) How to call it from your function (replace your current decision block)
 
-From your screenshots, you have something like:
+You already compute:
 
-// STEP 1: newDoc (ObjectNode) + id
-// STEP 2: currentJsonFromBlob (baseline) + isCreate
-// STEP 3: (optional) compute tracked-field deltas
+ObjectNode newDoc;                // from change feed
+ObjectNode currentJsonFromBlob;   // baseline snapshot (may be null on create)
+boolean isCreate;                 // from your GetBlob wrapper
+List<ChangeInfo> deltas;          // from TrackedChangeHandler.processChanges(...)
+EventConfig rules;                // loaded once per invocation from CONFIG blob
 
-// NEW STEP 4: Evaluate rule-based events
+Replace your current “shouldNotify”/message decision with:
+
+// Evaluate events using DELTAS
 List<EventConfig.Event> fired = new ArrayList<>();
 for (EventConfig.Event evt : rules.events) {
-    if (RuleEngine.evaluateEvent(evt, isCreate, newDoc, currentJsonFromBlob)) {
+    if (RuleEngineDelta.evaluate(evt, isCreate, newDoc, currentJsonFromBlob, deltas)) {
         fired.add(evt);
     }
 }
 
-// STEP 5: If any fired, send N messages (or one message with multi-ids)
+// Send one message per fired event (or aggregate—your choice)
 for (EventConfig.Event evt : fired) {
-    // busSender.send(MessageFactory.build(... evt.id, evt.name, id, ...));
+    String eventType = isCreate ? "CREATE" : "MODIFY";
+    // TODO: build & send your message (include evt.id / evt.name)
+    // busSender.send(MessageFactory.build(newDoc, currentJsonFromBlob, eventType, cosmosContainerName, evt.id));
+    context.getLogger().info("Firing event: " + evt.id + " (" + evt.name + ")");
 }
 
-	•	Keep your blob overwrite (persist latest snapshot) after you’re done evaluating/sending, just like you already do.
+Keep your blob persistence step (create/overwrite snapshot) exactly where it is after sending.
 
 ⸻
 
-Notes & gotchas
-	•	Thread safety: All classes above are stateless; one static ObjectMapper inside your existing loaders is fine.
-	•	Null-safety: The evaluator treats missing nodes as null. becameNotNull = went from null/missing/"" to non-empty text.
-	•	Dotted paths: If you’ll need nested fields later, adjust get(newDoc, "a.b.c") to split on . and walk down.
-	•	Case/typing: I used .asText() for comparisons to avoid numeric vs string surprises. If you need strict numeric compare, add another op (e.g., "eqNumber").
+Why this is better
+	•	Single pass over the deltas; no repeated JSON tree walks.
+	•	Handles both CREATE (no deltas) and MODIFY (deltas present).
+	•	Fully stateless & thread‑safe (no shared mutable state).
+	•	Works with your existing ChangeInfo class and tracked‑fields pipeline.
 
-⸻
-
-If you paste these three pieces (RuleEngine, EventConfigLoader, and the calling snippet), your function will start firing events exactly as defined in your JSON config—no caching, simple control flow, and easy to extend with new ops later.
+If you want, I can also add support for a rule like op: "anyChanged" (fires if any of the tracked fields appeared in deltas)—but the above already covers your listed ops.
