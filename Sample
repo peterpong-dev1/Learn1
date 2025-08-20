@@ -1,133 +1,114 @@
-{
-  "version": "1.0",
-  "container": "appInfoProgressManagement",
-  "events": [
-    {
-      "id": "appInfoProgressManagement_application_submitted",
-      "name": "Application Submitted",
-      "when": ["insert", "update"],
-      "conditions": {
-        "logic": "AND",
-        "rules": [
-          { "op": "eq", "field": "applicationStatus", "value": "1" }
-        ]
-      }
-    },
-    {
-      "id": "appInfoProgressManagement_application_amended",
-      "name": "Application Amended",
-      "when": ["update"],
-      "conditions": {
-        "logic": "AND",
-        "rules": [
-          { "op": "becameNotNull", "field": "applicationAmendmentDate" }
-        ]
-      }
-    },
-    {
-      "id": "appInfoProgressManagement_application_cancelled",
-      "name": "Application Cancelled",
-      "when": ["update"],
-      "conditions": {
-        "logic": "OR",
-        "rules": [
-          { "op": "becameNotNull", "field": "applicationCancelDate" },
-          { "op": "changedTo", "field": "applicationStatus", "value": "9" }
-        ]
-      }
-    },
-    {
-      "id": "appInfoProgressManagement_status_updated",
-      "name": "Status Updated",
-      "when": ["update"],
-      "conditions": {
-        "logic": "AND",
-        "rules": [
-          { "op": "changed", "field": "applicationStatus" }
-        ]
-      }
-    },
-    {
-      "id": "appInfoProgressManagement_payment_received",
-      "name": "Payment Received",
-      "when": ["update"],
-      "conditions": {
-        "logic": "OR",
-        "rules": [
-          { "op": "changedTo", "field": "newBusinessDepositStatus", "value": "2" },
-          { "op": "becameNotNull", "field": "firstReceiptDate" }
-        ]
-      }
-    },
-    {
-      "id": "appInfoProgressManagement_deficiency_notification_sent",
-      "name": "Deficiency Notification Sent",
-      "when": ["update"],
-      "conditions": {
-        "logic": "OR",
-        "rules": [
-          { "op": "becameNotNull", "field": "errorCode" },
-          { "op": "becameNotNull", "field": "deficiencyNotificationSentDate" }
-        ]
-      }
-    },
-    {
-      "id": "appInfoProgressManagement_deficiency_resolved",
-      "name": "Deficiency Resolved",
-      "when": ["update"],
-      "conditions": {
-        "logic": "AND",
-        "rules": [
-          { "op": "becameNotNull", "field": "deficiencyResolutionDate" }
-        ]
-      }
-    },
-    {
-      "id": "appInfoProgressManagement_decision_notification_sent",
-      "name": "Decision Notification Sent",
-      "when": ["update"],
-      "conditions": {
-        "logic": "OR",
-        "rules": [
-          { "op": "becameNotNull", "field": "decisionNotificationSentDate" },
-          { "op": "becameNotNull", "field": "decisionNotificationDetails" }
-        ]
-      }
-    },
-    {
-      "id": "appInfoProgressManagement_policy_issued",
-      "name": "Policy Issued",
-      "when": ["update"],
-      "conditions": {
-        "logic": "OR",
-        "rules": [
-          { "op": "becameNotNull", "field": "issueDate" },
-          { "op": "becameNotNull", "field": "policyId" }
-        ]
-      }
-    },
-    {
-      "id": "appInfoProgressManagement_policy_pending",
-      "name": "Policy Pending",
-      "when": ["update"],
-      "conditions": {
-        "logic": "OR",
-        "rules": [
-          { "op": "becameNotNull", "field": "pendingStatus" },
-          { "op": "becameNotNull", "field": "issuePendingDate" }
-        ]
-      }
-    },
-    {
-      "id": "appInfoProgressManagement_policy_cancelled",
-      "name": "Policy Cancelled",
-      "when": ["update"],
-      "conditions": {
-        "logic": "AND",
-        "rules": [
-          { "op": "becameNotNull", "field": "issueCancelDate" }
-        ]
-      }
+package com.neo.notification.rules;
+
+import java.util.List;
+
+/** Root config object for one container */
+public class EventConfig {
+    public String version;
+    public String container;
+    public List<EventRule> events;
+}
+
+/** One event definition */
+class EventRule {
+    public String id;
+    public String name;
+    public List<String> when;           // ["insert", "update"]
+    public ConditionGroup conditions;
+}
+
+/** Condition group with logic (AND/OR) and rules */
+class ConditionGroup {
+    public String logic;                // AND / OR
+    public List<ConditionRule> rules;
+}
+
+/** Individual rule */
+class ConditionRule {
+    public String op;                   // eq, changed, changedTo, becameNotNull
+    public String field;
+    public String value;                // optional (only for eq / changedTo)
+}
+
+package com.neo.notification.rules;
+
+import com.azure.storage.blob.BlobContainerClient;
+import com.azure.storage.blob.specialized.BlobClientBase;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import java.nio.charset.StandardCharsets;
+import java.util.logging.Logger;
+
+/**
+ * Loads event rules JSON from Blob Storage into Java POJOs.
+ * Thread-safe and production-grade: exceptions bubble up to fail fast.
+ */
+public final class EventConfigLoader {
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    private final BlobContainerClient configContainer;
+    private final String rulesBlobPath;
+
+    public EventConfigLoader(BlobContainerClient configContainer, String rulesBlobPath) {
+        this.configContainer = configContainer;
+        this.rulesBlobPath = rulesBlobPath;
     }
-  ]
+
+    /**
+     * Loads and parses the config file from blob storage.
+     *
+     * @param log Logger for diagnostics
+     * @return parsed {@link EventConfig}
+     */
+    public EventConfig load(Logger log) {
+        try {
+            BlobClientBase blob = configContainer.getBlobClient(rulesBlobPath);
+            if (!blob.exists()) {
+                throw new RuntimeException("Rules blob not found: " + rulesBlobPath);
+            }
+
+            byte[] bytes = blob.downloadContent().toBytes();
+            String json = new String(bytes, StandardCharsets.UTF_8);
+
+            EventConfig cfg = MAPPER.readValue(json, EventConfig.class);
+
+            log.info("Loaded config for container=" + cfg.container +
+                     ", version=" + cfg.version +
+                     ", events=" + (cfg.events == null ? 0 : cfg.events.size()));
+
+            return cfg;
+
+        } catch (Exception ex) {
+            String msg = "Failed to load/parse rules from blob " + rulesBlobPath + ": " + ex.getMessage();
+            log.severe(msg);
+            throw new RuntimeException(msg, ex);
+        }
+    }
+}
+
+@FunctionName("CosmosChangeHandler")
+public void run(
+    @CosmosDBTrigger(
+        name = "docs",
+        databaseName = "%CosmosDatabase%",
+        containerName = "%CosmosContainer%",
+        leaseContainerName = "%LeaseContainer%",
+        connection = "CosmosDBConnection")
+    List<String> documents,
+    final ExecutionContext context) {
+
+    Logger log = context.getLogger();
+
+    BlobContainerClient configContainer = new BlobServiceClientBuilder()
+        .connectionString(System.getenv("ConfigStorageConnection"))
+        .buildClient()
+        .getBlobContainerClient(System.getenv("ConfigBlobContainer"));
+
+    EventConfigLoader loader =
+        new EventConfigLoader(configContainer, "rules/appInfoProgressManagement.json");
+
+    EventConfig config = loader.load(log);
+
+    log.info("Processing " + documents.size() + 
+             " docs with rules=" + config.events.size());
 }
