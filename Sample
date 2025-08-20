@@ -1,114 +1,239 @@
-package com.neo.notification.rules;
+Awesome—let’s lock this down with one model file and a small loader, then show exactly how to call it from your Function. No caching, thread‑safe, plenty of comments/Javadoc, and defensive error handling.
 
+⸻
+
+1) One-file model: EventConfig.java
+
+package com.neo.notification.config;
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import java.util.List;
 
-/** Root config object for one container */
-public class EventConfig {
+/**
+ * In-memory representation of your event rules JSON.
+ *
+ * JSON shape this maps to (shortened):
+ * {
+ *   "version": "1.0",
+ *   "container": "appInfoProgressManagement",
+ *   "events": [
+ *     {
+ *       "id": "appInfoProgressManagement_application_submitted",
+ *       "name": "Application Submitted",
+ *       "when": ["insert","update"],
+ *       "conditions": {
+ *         "logic": "AND",
+ *         "rules": [
+ *           { "op": "eq", "field": "applicationStatus", "value": "1" }
+ *         ]
+ *       }
+ *     }
+ *   ]
+ * }
+ *
+ * Notes:
+ * - Public fields keep it simple; Jackson fills them directly.
+ * - @JsonIgnoreProperties keeps the parser tolerant to extra fields.
+ */
+@JsonIgnoreProperties(ignoreUnknown = true)
+public final class EventConfig {
+    /** Version string from the JSON. */
     public String version;
+
+    /** Cosmos container these rules apply to. */
     public String container;
-    public List<EventRule> events;
+
+    /** The event rules. Never null after successful load. */
+    public List<Event> events;
+
+    /** One event definition. */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static final class Event {
+        /** Unique, stable id like "appInfoProgressManagement_application_submitted". */
+        public String id;
+
+        /** Human-readable name. */
+        public String name;
+
+        /** When to evaluate: "insert", "update" (one or both). */
+        public List<String> when;
+
+        /** Conditions to satisfy for this event. */
+        public ConditionGroup conditions;
+    }
+
+    /** A group of rules with AND/OR logic. */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static final class ConditionGroup {
+        /** "AND" or "OR". Defaults handled by loader if missing. */
+        public String logic;
+        /** List of rules; empty lists are treated as "no conditions". */
+        public List<Rule> rules;
+    }
+
+    /** Single condition like eq/changed/changedTo/becameNotNull. */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static final class Rule {
+        /** Operation: "eq" | "changed" | "changedTo" | "becameNotNull". */
+        public String op;
+        /** Field path in your document (e.g., "applicationStatus"). */
+        public String field;
+        /** Optional value (required for eq/changedTo). */
+        public String value;
+    }
 }
 
-/** One event definition */
-class EventRule {
-    public String id;
-    public String name;
-    public List<String> when;           // ["insert", "update"]
-    public ConditionGroup conditions;
-}
 
-/** Condition group with logic (AND/OR) and rules */
-class ConditionGroup {
-    public String logic;                // AND / OR
-    public List<ConditionRule> rules;
-}
+⸻
 
-/** Individual rule */
-class ConditionRule {
-    public String op;                   // eq, changed, changedTo, becameNotNull
-    public String field;
-    public String value;                // optional (only for eq / changedTo)
-}
+2) Loader: EventConfigLoader.java
 
-package com.neo.notification.rules;
+package com.neo.notification.config;
 
 import com.azure.storage.blob.BlobContainerClient;
-import com.azure.storage.blob.specialized.BlobClientBase;
+import com.azure.storage.blob.specialized.BlobInputStream;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.Objects;
 import java.util.logging.Logger;
 
 /**
- * Loads event rules JSON from Blob Storage into Java POJOs.
- * Thread-safe and production-grade: exceptions bubble up to fail fast.
+ * Loads the event-rules JSON from Azure Blob Storage (or from a raw String).
+ * Stateless & thread-safe; ObjectMapper is thread-safe after configuration.
  */
 public final class EventConfigLoader {
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = new ObjectMapper()
+            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
-    private final BlobContainerClient configContainer;
-    private final String rulesBlobPath;
+    private EventConfigLoader() {}
 
-    public EventConfigLoader(BlobContainerClient configContainer, String rulesBlobPath) {
-        this.configContainer = configContainer;
-        this.rulesBlobPath = rulesBlobPath;
+    /**
+     * Load config from a blob (e.g., "<container>_events.json").
+     *
+     * @param configContainer Blob container that holds your config files.
+     * @param blobName        The blob name to read.
+     * @param log             Logger (never null).
+     * @return a fully-populated EventConfig, or null if missing/invalid.
+     */
+    public static EventConfig loadFromBlob(BlobContainerClient configContainer,
+                                           String blobName,
+                                           Logger log) {
+        Objects.requireNonNull(configContainer, "configContainer");
+        Objects.requireNonNull(blobName, "blobName");
+        Objects.requireNonNull(log, "log");
+
+        try {
+            var blobClient = configContainer.getBlobClient(blobName);
+            if (!blobClient.exists()) {
+                log.severe("Config blob not found: " + blobName);
+                return null;
+            }
+
+            try (BlobInputStream in = blobClient.openInputStream();
+                 ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+                in.transferTo(out);
+                String json = out.toString(StandardCharsets.UTF_8);
+                return loadFromString(json, log);
+            }
+        } catch (Exception e) {
+            log.severe("Failed to read config blob '" + blobName + "': " + e.getMessage());
+            return null;
+        }
     }
 
     /**
-     * Loads and parses the config file from blob storage.
+     * Load config from a JSON string (handy for tests or local overrides).
      *
-     * @param log Logger for diagnostics
-     * @return parsed {@link EventConfig}
+     * @param json The JSON document.
+     * @param log  Logger (never null).
+     * @return a validated EventConfig, or null if invalid.
      */
-    public EventConfig load(Logger log) {
+    public static EventConfig loadFromString(String json, Logger log) {
         try {
-            BlobClientBase blob = configContainer.getBlobClient(rulesBlobPath);
-            if (!blob.exists()) {
-                throw new RuntimeException("Rules blob not found: " + rulesBlobPath);
-            }
-
-            byte[] bytes = blob.downloadContent().toBytes();
-            String json = new String(bytes, StandardCharsets.UTF_8);
-
             EventConfig cfg = MAPPER.readValue(json, EventConfig.class);
-
-            log.info("Loaded config for container=" + cfg.container +
-                     ", version=" + cfg.version +
-                     ", events=" + (cfg.events == null ? 0 : cfg.events.size()));
-
+            // Minimal, non-intrusive checks (you asked for simple validation).
+            if (cfg == null || cfg.container == null || cfg.container.isBlank()) {
+                log.severe("Config missing required 'container'.");
+                return null;
+            }
+            if (cfg.events == null || cfg.events.isEmpty()) {
+                log.severe("Config has no events.");
+                return null;
+            }
+            // Gentle normalization (does not mutate the source JSON on disk).
+            for (EventConfig.Event e : cfg.events) {
+                if (e.conditions != null) {
+                    if (e.conditions.logic == null || e.conditions.logic.isBlank()) {
+                        e.conditions.logic = "AND";
+                    }
+                    if (e.conditions.rules == null) {
+                        e.conditions.rules = List.of();
+                    }
+                }
+            }
             return cfg;
-
-        } catch (Exception ex) {
-            String msg = "Failed to load/parse rules from blob " + rulesBlobPath + ": " + ex.getMessage();
-            log.severe(msg);
-            throw new RuntimeException(msg, ex);
+        } catch (Exception e) {
+            log.severe("Failed to parse config JSON: " + e.getMessage());
+            return null;
         }
     }
 }
 
-@FunctionName("CosmosChangeHandler")
-public void run(
-    @CosmosDBTrigger(
-        name = "docs",
-        databaseName = "%CosmosDatabase%",
-        containerName = "%CosmosContainer%",
-        leaseContainerName = "%LeaseContainer%",
-        connection = "CosmosDBConnection")
-    List<String> documents,
-    final ExecutionContext context) {
 
-    Logger log = context.getLogger();
+⸻
 
-    BlobContainerClient configContainer = new BlobServiceClientBuilder()
-        .connectionString(System.getenv("ConfigStorageConnection"))
-        .buildClient()
-        .getBlobContainerClient(System.getenv("ConfigBlobContainer"));
+3) Call it from your Function
 
-    EventConfigLoader loader =
-        new EventConfigLoader(configContainer, "rules/appInfoProgressManagement.json");
+Below is a minimal, drop‑in snippet for your NeoNotificationTriggerFunction.java.
+(Replace only the “read config” part—rest of your pipeline stays as you have it.)
 
-    EventConfig config = loader.load(log);
+// imports you likely already have:
+import com.azure.storage.blob.BlobContainerClient;
+import com.azure.storage.blob.BlobServiceClientBuilder;
+import com.neo.notification.config.EventConfig;
+import com.neo.notification.config.EventConfigLoader;
 
-    log.info("Processing " + documents.size() + 
-             " docs with rules=" + config.events.size());
+// --- somewhere near your static initialization (re-using what you already set up) ---
+private static final String CONFIG_CONTAINER_NAME =
+        System.getenv("Blob_ContainerName_Config"); // you already use this name
+private static final BlobContainerClient CONFIG_CONTAINER =
+        new BlobServiceClientBuilder()
+            .connectionString(System.getenv("AzureWebJobsStorage"))
+            .buildClient()
+            .getBlobContainerClient(CONFIG_CONTAINER_NAME);
+
+// --- inside your run(...) method, before you evaluate anything ---
+final Logger log = context.getLogger();
+
+String cosmosDbContainerName = System.getenv("ContainerNameToTrack_1");
+if (cosmosDbContainerName == null || cosmosDbContainerName.isBlank()) {
+    log.severe("CUSTOM ERROR: env 'ContainerNameToTrack_1' is missing/blank.");
+    return; // nothing we can do
 }
+
+// Convention: one rules file per Cosmos container, e.g. "appInfoProgressManagement_events.json"
+String rulesBlobName = cosmosDbContainerName + "_events.json";
+
+// Load the event rules (no caching as per your request)
+EventConfig rules = EventConfigLoader.loadFromBlob(CONFIG_CONTAINER, rulesBlobName, log);
+if (rules == null) {
+    log.severe("No event rules loaded; aborting this invocation.");
+    return;
+}
+
+log.info("Loaded " + rules.events.size() + " event rule(s) for container: " + rules.container);
+
+// …now pass `rules` to your evaluator/notification logic as you already planned.
+
+Why this meets your asks
+	•	Thread‑safe: classes are stateless; one ObjectMapper configured once; no shared mutable state.
+	•	No caching: the loader reads fresh from Blob every invocation.
+	•	Error handling: clear severe logs and safe null returns; your function can decide to abort early (as shown).
+	•	Javadoc & comments included.
+	•	Simple schema: one file with inner classes; easy to extend later without touching multiple files.
+
+If you want me to also drop in a tiny evaluator stub (to iterate events and check when/conditions) I can add that next, but I kept this focused on reading the config cleanly, just like you asked.
