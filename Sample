@@ -1,230 +1,131 @@
-Awesome—here’s a delta‑driven drop‑in you can paste in.
-It reuses the List<ChangeInfo> you already compute, so rules like changed, changedTo, becameNotNull, etc. are decided from deltas (and it still handles CREATE where no deltas exist).
+Got it — here’s a drop‑in way to handle date fields so you don’t get false positives like "2025-08-20T00:00:00Z" vs "2025-08-20".
 
-⸻
-
-1) Rule engine that uses deltas
-
-package com.neo.notification.rules;
+1) Add these helpers (thread‑safe; only java.time)
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.neo.notification.change.ChangeInfo;
-import com.neo.notification.config.EventConfig;
 
-import java.util.*;
+import java.time.*;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
+import java.util.Set;
 
-/**
- * Evaluates EventConfig rules using already-computed tracked-field deltas.
- * Thread-safe & stateless.
- */
-public final class RuleEngineDelta {
+private static final Set<String> DATE_FIELDS = Set.of(
+        // put any date-like field names here (lowercase)
+        "issuedate", "issuependingdate", "applicationamendmentdate",
+        "applicationcanceldate", "deficiencynotificationsentdate",
+        "deficiencyresolutiondate", "decisionnotificationsentdate"
+);
 
-    private RuleEngineDelta() {}
+// ---- public surface you’ll call from evalRule ----
+private static boolean changedDate(JsonNode oldVal, JsonNode newVal) {
+    // If either side missing -> treat as "not a date change" here; other ops (becameNotNull/becameNull) handle presence.
+    if (oldVal == null || oldVal.isNull() || newVal == null || newVal.isNull()) return false;
 
-    /**
-     * Return true if the event should fire for this document.
-     *
-     * @param evt        event spec (AND/OR + rules)
-     * @param isCreate   true when document is newly created
-     * @param newDoc     current version from change feed
-     * @param baseline   previous snapshot (may be null on create)
-     * @param deltas     tracked-field changes for this doc (empty on create)
-     */
-    public static boolean evaluate(EventConfig.Event evt,
-                                   boolean isCreate,
-                                   ObjectNode newDoc,
-                                   ObjectNode baseline,
-                                   List<ChangeInfo> deltas) {
+    LocalDate d1 = normalizeToLocalDate(oldVal.asText());
+    LocalDate d2 = normalizeToLocalDate(newVal.asText());
+    if (d1 != null && d2 != null) return !d1.equals(d2);
 
-        // Fast path: build an index "fieldPath -> last ChangeInfo for that field"
-        Map<String, ChangeInfo> idx = indexByFieldPath(deltas);
-
-        boolean hasAny = false;
-        boolean allOk = true;
-
-        for (EventConfig.Rule r : evt.conditions.rules) {
-            boolean hit = evalRule(r, isCreate, newDoc, baseline, idx);
-            hasAny |= hit;
-            allOk  &= hit;
-            if (evt.conditions.isOr() && hit)    return true;   // OR short‑circuit
-            if (evt.conditions.isAnd() && !hit)  return false;  // AND short‑circuit
-        }
-
-        // If there were no rules, treat as "no match"
-        if (evt.conditions.rules == null || evt.conditions.rules.isEmpty()) return false;
-
-        return evt.conditions.isAnd() ? allOk : hasAny;
-    }
-
-    private static boolean evalRule(EventConfig.Rule r,
-                                    boolean isCreate,
-                                    ObjectNode newDoc,
-                                    ObjectNode baseline,
-                                    Map<String, ChangeInfo> idx) {
-
-        final String op   = safe(r.op);
-        final String path = safe(r.field);
-
-        switch (op) {
-            case "changed":
-                // any change on this field
-                return changed(idx.get(path));
-
-            case "changedTo":
-                // changed and new value equals r.value
-                return changedTo(idx.get(path), r.value);
-
-            case "becameNotNull":
-                // changed from missing/null to present (CREATE also OK if present)
-                return becameNotNull(isCreate, path, newDoc, baseline, idx.get(path));
-
-            case "becameNull":
-                // changed from present to missing/null
-                return becameNull(isCreate, path, newDoc, baseline, idx.get(path));
-
-            case "eq":
-                // compare current value only
-                return equalsNow(path, newDoc, r.value);
-
-            case "ne":
-                return !equalsNow(path, newDoc, r.value);
-
-            default:
-                // unknown op => do not match
-                return false;
-        }
-    }
-
-    // ---------- delta-based predicates ----------
-
-    private static boolean changed(ChangeInfo c) {
-        return c != null; // your ChangeInfo exists only when field changed (ADDED/REMOVED/MODIFIED)
-    }
-
-    private static boolean changedTo(ChangeInfo c, String expected) {
-        if (c == null) return false;
-        JsonNode nv = c.getNewValue();
-        return nv != null && expected != null && expected.equals(nv.asText());
-    }
-
-    private static boolean becameNotNull(boolean isCreate, String path,
-                                         ObjectNode newDoc, ObjectNode baseline, ChangeInfo c) {
-        if (isCreate) {
-            // treat as becameNotNull if present now
-            return present(newDoc.at(jsonPointer(path)));
-        }
-        if (c == null) return false;
-        // ADDED or MODIFIED-from-null to something
-        return present(c.getNewValue()) && !present(c.getOldValue());
-    }
-
-    private static boolean becameNull(boolean isCreate, String path,
-                                      ObjectNode newDoc, ObjectNode baseline, ChangeInfo c) {
-        if (isCreate) return false; // on create we don't consider "becameNull"
-        if (c == null) return false;
-        // REMOVED or MODIFIED-to-null
-        return !present(c.getNewValue()) && present(c.getOldValue());
-    }
-
-    // ---------- current-value predicates ----------
-
-    private static boolean equalsNow(String path, ObjectNode doc, String expected) {
-        JsonNode v = doc.at(jsonPointer(path));
-        if (!present(v)) return expected == null || expected.isBlank();
-        return expected != null && expected.equals(v.asText());
-    }
-
-    // ---------- helpers ----------
-
-    private static String safe(String s) { return s == null ? "" : s.trim(); }
-
-    private static boolean present(JsonNode n) {
-        return n != null && !n.isNull() && !(n.isTextual() && n.asText().isBlank());
-    }
-
-    /** Convert dotted path ("a.b[0].c") to a JSON Pointer. Simple support for [idx]. */
-    private static String jsonPointer(String dotted) {
-        if (dotted == null || dotted.isBlank()) return "";
-        String[] parts = dotted.split("\\.");
-        StringBuilder p = new StringBuilder();
-        for (String part : parts) {
-            int arr = part.indexOf('[');
-            if (arr < 0) {
-                p.append('/').append(part);
-            } else {
-                String name = part.substring(0, arr);
-                p.append('/').append(name);
-                String rest = part.substring(arr);
-                // handle one level like [0][1]...
-                int i = 0;
-                while (i < rest.length()) {
-                    int l = rest.indexOf('[', i);
-                    int r = rest.indexOf(']', l + 1);
-                    if (l < 0 || r < 0) break;
-                    String idx = rest.substring(l + 1, r);
-                    p.append('/').append(idx);
-                    i = r + 1;
-                }
-            }
-        }
-        return p.toString();
-    }
-
-    private static Map<String, ChangeInfo> indexByFieldPath(List<ChangeInfo> deltas) {
-        if (deltas == null || deltas.isEmpty()) return Collections.emptyMap();
-        Map<String, ChangeInfo> m = new HashMap<>(deltas.size() * 2);
-        for (ChangeInfo c : deltas) {
-            if (c != null && c.getFieldPath() != null) {
-                m.put(c.getFieldPath(), c); // last wins; good enough for tracked fields
-            }
-        }
-        return m;
-    }
+    // Fallback: plain trimmed string compare to avoid NPEs
+    return !safe(oldVal.asText()).equals(safe(newVal.asText()));
 }
 
-Assumptions
-• Your ChangeInfo has getFieldPath(), getOldValue(), getNewValue(), and an enum describing kind—exactly like your screenshot.
-• Your EventConfig is the single‑file model we aligned on earlier (events[] with conditions.logic and rules[] containing op, field, value).
+private static boolean equalsDate(JsonNode curVal, String expectedText) {
+    if (curVal == null || curVal.isNull()) return expectedText == null;
+    LocalDate a = normalizeToLocalDate(curVal.asText());
+    LocalDate b = normalizeToLocalDate(expectedText);
+    if (a != null && b != null) return a.equals(b);
+    return safe(curVal.asText()).equals(safe(expectedText));
+}
+
+private static boolean isDateField(String fieldName) {
+    return fieldName != null && DATE_FIELDS.contains(fieldName.toLowerCase());
+}
+
+// ---- parsing/normalization helpers ----
+
+/** Try hard to normalize many date-ish strings to LocalDate (no time-zone). Null if cannot parse. */
+private static LocalDate normalizeToLocalDate(String s) {
+    if (s == null) return null;
+    s = s.trim();
+    if (s.isEmpty()) return null;
+
+    // 1) common “date only”
+    if (tryParse(() -> LocalDate.parse(s, DateTimeFormatter.ISO_LOCAL_DATE)) != null) {
+        return LocalDate.parse(s, DateTimeFormatter.ISO_LOCAL_DATE);
+    }
+
+    // 2) full ISO instant/offset/datetime -> take the date part in UTC
+    Instant instant = tryParse(() -> Instant.parse(s));                 // e.g., 2025-08-20T00:00:00Z
+    if (instant != null) return instant.atOffset(ZoneOffset.UTC).toLocalDate();
+
+    OffsetDateTime odt = tryParse(() -> OffsetDateTime.parse(s));       // e.g., 2025-08-20T09:00:00+09:00
+    if (odt != null) return odt.toLocalDate();
+
+    LocalDateTime ldt = tryParse(() -> LocalDateTime.parse(s));         // e.g., 2025-08-20T00:00:00
+    if (ldt != null) return ldt.toLocalDate();
+
+    // 3) compact “yyyyMMdd”
+    if (s.matches("\\d{8}")) {
+        return LocalDate.parse(s, DateTimeFormatter.ofPattern("uuuuMMdd"));
+    }
+
+    // 4) epoch millis/seconds
+    if (s.matches("\\d{10,13}")) {
+        long v = Long.parseLong(s);
+        Instant ep = (s.length() > 10) ? Instant.ofEpochMilli(v) : Instant.ofEpochSecond(v);
+        return ep.atOffset(ZoneOffset.UTC).toLocalDate();
+    }
+
+    // 5) last resort: if string contains an ISO-like prefix, use first 10 chars “yyyy-MM-dd”
+    if (s.length() >= 10 && s.charAt(4) == '-' && s.charAt(7) == '-') {
+        return tryParse(() -> LocalDate.parse(s.substring(0, 10), DateTimeFormatter.ISO_LOCAL_DATE));
+    }
+
+    return null; // couldn’t normalize
+}
+
+@FunctionalInterface private interface ThrowingSupplier<T> { T get() throws Exception; }
+private static <T> T tryParse(ThrowingSupplier<T> sup) {
+    try { return sup.get(); } catch (DateTimeParseException | RuntimeException ignore) { return null; }
+}
+
+private static String safe(String s) { return s == null ? "" : s.trim(); }
+
+2) Plug into your rule evaluation
+
+In your evalRule(...) switch where you handle ops like "changed", "changedTo", "eq", etc., add:
+
+switch (op) {
+    case "changed":
+        if (isDateField(r.field)) {
+            return changedDate(oldVal, newVal);
+        }
+        return changed(isCreate, r.field, newDoc, baseline, idx.get(r.field));
+
+    case "changedTo":
+        if (isDateField(r.field)) {
+            return equalsDate(newVal, r.value);
+        }
+        return equalsNow(r.field, newDoc, r.value); // your existing string/number compare
+
+    case "eq":
+        if (isDateField(r.field)) {
+            return equalsDate(currentValueOf(r.field, newDoc), r.value);
+        }
+        return equalsNow(r.field, newDoc, r.value);
+
+    // ... other ops unchanged (becameNotNull, becameNull, etc.)
+}
+
+Where:
+	•	oldVal / newVal are what you already derive from your ChangeInfo or from (baseline,newDoc).
+	•	currentValueOf(...) and equalsNow(...) are your existing helpers (or use newDoc.at(pointer) then compare).
+
+3) Tell the code which fields are dates
+
+Update DATE_FIELDS with the names you consider date-like (case-insensitive). You can later move this list into your config if you prefer.
 
 ⸻
 
-2) How to call it from your function (replace your current decision block)
-
-You already compute:
-
-ObjectNode newDoc;                // from change feed
-ObjectNode currentJsonFromBlob;   // baseline snapshot (may be null on create)
-boolean isCreate;                 // from your GetBlob wrapper
-List<ChangeInfo> deltas;          // from TrackedChangeHandler.processChanges(...)
-EventConfig rules;                // loaded once per invocation from CONFIG blob
-
-Replace your current “shouldNotify”/message decision with:
-
-// Evaluate events using DELTAS
-List<EventConfig.Event> fired = new ArrayList<>();
-for (EventConfig.Event evt : rules.events) {
-    if (RuleEngineDelta.evaluate(evt, isCreate, newDoc, currentJsonFromBlob, deltas)) {
-        fired.add(evt);
-    }
-}
-
-// Send one message per fired event (or aggregate—your choice)
-for (EventConfig.Event evt : fired) {
-    String eventType = isCreate ? "CREATE" : "MODIFY";
-    // TODO: build & send your message (include evt.id / evt.name)
-    // busSender.send(MessageFactory.build(newDoc, currentJsonFromBlob, eventType, cosmosContainerName, evt.id));
-    context.getLogger().info("Firing event: " + evt.id + " (" + evt.name + ")");
-}
-
-Keep your blob persistence step (create/overwrite snapshot) exactly where it is after sending.
-
-⸻
-
-Why this is better
-	•	Single pass over the deltas; no repeated JSON tree walks.
-	•	Handles both CREATE (no deltas) and MODIFY (deltas present).
-	•	Fully stateless & thread‑safe (no shared mutable state).
-	•	Works with your existing ChangeInfo class and tracked‑fields pipeline.
-
-If you want, I can also add support for a rule like op: "anyChanged" (fires if any of the tracked fields appeared in deltas)—but the above already covers your listed ops.
+This keeps everything thread‑safe, requires no external libs, and only changes behavior for fields listed in DATE_FIELDS. All other rules continue to use your existing comparisons.
