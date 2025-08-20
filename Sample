@@ -1,131 +1,43 @@
-Got it — here’s a drop‑in way to handle date fields so you don’t get false positives like "2025-08-20T00:00:00Z" vs "2025-08-20".
+[1] Data Sources (On‑prem / ADF upserts)
+        │
+        ▼
+[2] Azure Cosmos DB (Transactional containers)
+        │   (any insert/update)
+        ▼
+[3] Change Feed  ──► [3a] Lease Container (checkpoints)
+        │
+        ▼
+[4] Azure Function (Cosmos DB trigger; one method per container)
+        │
+        ├─(A) Load Config for this container
+        │       - Blob: /config/<container>/events.json  (rules)
+        │       - Blob: /config/<container>/tracked.json (field list)
+        │
+        ├─(B) Read current Baseline Snapshot from Blob (if any)
+        │       - Blob: /data/<container>/<docId>.json   (versioned)
+        │
+        ├─(C) Decide CREATE vs MODIFY
+        │       - No baseline → CREATE
+        │       - Has baseline → MODIFY
+        │
+        ├─(D) Compute Changes (delta) for tracked fields
+        │       - From baseline vs newDoc
+        │
+        ├─(E) Evaluate Events (rules) against:
+        │       - CREATE: only events with "when: insert" (use eq/exists checks)
+        │       - MODIFY: events with "when: update" (use changed/becameNotNull/eq)
+        │
+        ├─(F) For each matched event → Build message payload
+        │       - include: container, docId, eventId, changed fields, newDoc slices
+        │
+        ├─(G) Send to Service Bus (Queue/Topic)
+        │
+        ├─(H) Post‑Send snapshot management in Blob
+        │       - CREATE: create baseline (idempotent; If‑None‑Match)
+        │       - MODIFY: overwrite id.json (blob versioning keeps history)
+        │
+        └─(I) Error path (never throw away)
+                - Write error record to /errors/<container>/<date>/<docId>-*.json
+                - Include reason, docId, function invocation id, raw input (truncated)
 
-1) Add these helpers (thread‑safe; only java.time)
-
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-
-import java.time.*;
-import java.time.format.DateTimeFormatter;
-import java.time.format.DateTimeParseException;
-import java.util.Set;
-
-private static final Set<String> DATE_FIELDS = Set.of(
-        // put any date-like field names here (lowercase)
-        "issuedate", "issuependingdate", "applicationamendmentdate",
-        "applicationcanceldate", "deficiencynotificationsentdate",
-        "deficiencyresolutiondate", "decisionnotificationsentdate"
-);
-
-// ---- public surface you’ll call from evalRule ----
-private static boolean changedDate(JsonNode oldVal, JsonNode newVal) {
-    // If either side missing -> treat as "not a date change" here; other ops (becameNotNull/becameNull) handle presence.
-    if (oldVal == null || oldVal.isNull() || newVal == null || newVal.isNull()) return false;
-
-    LocalDate d1 = normalizeToLocalDate(oldVal.asText());
-    LocalDate d2 = normalizeToLocalDate(newVal.asText());
-    if (d1 != null && d2 != null) return !d1.equals(d2);
-
-    // Fallback: plain trimmed string compare to avoid NPEs
-    return !safe(oldVal.asText()).equals(safe(newVal.asText()));
-}
-
-private static boolean equalsDate(JsonNode curVal, String expectedText) {
-    if (curVal == null || curVal.isNull()) return expectedText == null;
-    LocalDate a = normalizeToLocalDate(curVal.asText());
-    LocalDate b = normalizeToLocalDate(expectedText);
-    if (a != null && b != null) return a.equals(b);
-    return safe(curVal.asText()).equals(safe(expectedText));
-}
-
-private static boolean isDateField(String fieldName) {
-    return fieldName != null && DATE_FIELDS.contains(fieldName.toLowerCase());
-}
-
-// ---- parsing/normalization helpers ----
-
-/** Try hard to normalize many date-ish strings to LocalDate (no time-zone). Null if cannot parse. */
-private static LocalDate normalizeToLocalDate(String s) {
-    if (s == null) return null;
-    s = s.trim();
-    if (s.isEmpty()) return null;
-
-    // 1) common “date only”
-    if (tryParse(() -> LocalDate.parse(s, DateTimeFormatter.ISO_LOCAL_DATE)) != null) {
-        return LocalDate.parse(s, DateTimeFormatter.ISO_LOCAL_DATE);
-    }
-
-    // 2) full ISO instant/offset/datetime -> take the date part in UTC
-    Instant instant = tryParse(() -> Instant.parse(s));                 // e.g., 2025-08-20T00:00:00Z
-    if (instant != null) return instant.atOffset(ZoneOffset.UTC).toLocalDate();
-
-    OffsetDateTime odt = tryParse(() -> OffsetDateTime.parse(s));       // e.g., 2025-08-20T09:00:00+09:00
-    if (odt != null) return odt.toLocalDate();
-
-    LocalDateTime ldt = tryParse(() -> LocalDateTime.parse(s));         // e.g., 2025-08-20T00:00:00
-    if (ldt != null) return ldt.toLocalDate();
-
-    // 3) compact “yyyyMMdd”
-    if (s.matches("\\d{8}")) {
-        return LocalDate.parse(s, DateTimeFormatter.ofPattern("uuuuMMdd"));
-    }
-
-    // 4) epoch millis/seconds
-    if (s.matches("\\d{10,13}")) {
-        long v = Long.parseLong(s);
-        Instant ep = (s.length() > 10) ? Instant.ofEpochMilli(v) : Instant.ofEpochSecond(v);
-        return ep.atOffset(ZoneOffset.UTC).toLocalDate();
-    }
-
-    // 5) last resort: if string contains an ISO-like prefix, use first 10 chars “yyyy-MM-dd”
-    if (s.length() >= 10 && s.charAt(4) == '-' && s.charAt(7) == '-') {
-        return tryParse(() -> LocalDate.parse(s.substring(0, 10), DateTimeFormatter.ISO_LOCAL_DATE));
-    }
-
-    return null; // couldn’t normalize
-}
-
-@FunctionalInterface private interface ThrowingSupplier<T> { T get() throws Exception; }
-private static <T> T tryParse(ThrowingSupplier<T> sup) {
-    try { return sup.get(); } catch (DateTimeParseException | RuntimeException ignore) { return null; }
-}
-
-private static String safe(String s) { return s == null ? "" : s.trim(); }
-
-2) Plug into your rule evaluation
-
-In your evalRule(...) switch where you handle ops like "changed", "changedTo", "eq", etc., add:
-
-switch (op) {
-    case "changed":
-        if (isDateField(r.field)) {
-            return changedDate(oldVal, newVal);
-        }
-        return changed(isCreate, r.field, newDoc, baseline, idx.get(r.field));
-
-    case "changedTo":
-        if (isDateField(r.field)) {
-            return equalsDate(newVal, r.value);
-        }
-        return equalsNow(r.field, newDoc, r.value); // your existing string/number compare
-
-    case "eq":
-        if (isDateField(r.field)) {
-            return equalsDate(currentValueOf(r.field, newDoc), r.value);
-        }
-        return equalsNow(r.field, newDoc, r.value);
-
-    // ... other ops unchanged (becameNotNull, becameNull, etc.)
-}
-
-Where:
-	•	oldVal / newVal are what you already derive from your ChangeInfo or from (baseline,newDoc).
-	•	currentValueOf(...) and equalsNow(...) are your existing helpers (or use newDoc.at(pointer) then compare).
-
-3) Tell the code which fields are dates
-
-Update DATE_FIELDS with the names you consider date-like (case-insensitive). You can later move this list into your config if you prefer.
-
-⸻
-
-This keeps everything thread‑safe, requires no external libs, and only changes behavior for fields listed in DATE_FIELDS. All other rules continue to use your existing comparisons.
+                (Function completes)
