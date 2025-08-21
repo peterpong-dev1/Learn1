@@ -1,43 +1,125 @@
-[1] Data Sources (On‑prem / ADF upserts)
-        │
-        ▼
-[2] Azure Cosmos DB (Transactional containers)
-        │   (any insert/update)
-        ▼
-[3] Change Feed  ──► [3a] Lease Container (checkpoints)
-        │
-        ▼
-[4] Azure Function (Cosmos DB trigger; one method per container)
-        │
-        ├─(A) Load Config for this container
-        │       - Blob: /config/<container>/events.json  (rules)
-        │       - Blob: /config/<container>/tracked.json (field list)
-        │
-        ├─(B) Read current Baseline Snapshot from Blob (if any)
-        │       - Blob: /data/<container>/<docId>.json   (versioned)
-        │
-        ├─(C) Decide CREATE vs MODIFY
-        │       - No baseline → CREATE
-        │       - Has baseline → MODIFY
-        │
-        ├─(D) Compute Changes (delta) for tracked fields
-        │       - From baseline vs newDoc
-        │
-        ├─(E) Evaluate Events (rules) against:
-        │       - CREATE: only events with "when: insert" (use eq/exists checks)
-        │       - MODIFY: events with "when: update" (use changed/becameNotNull/eq)
-        │
-        ├─(F) For each matched event → Build message payload
-        │       - include: container, docId, eventId, changed fields, newDoc slices
-        │
-        ├─(G) Send to Service Bus (Queue/Topic)
-        │
-        ├─(H) Post‑Send snapshot management in Blob
-        │       - CREATE: create baseline (idempotent; If‑None‑Match)
-        │       - MODIFY: overwrite id.json (blob versioning keeps history)
-        │
-        └─(I) Error path (never throw away)
-                - Write error record to /errors/<container>/<date>/<docId>-*.json
-                - Include reason, docId, function invocation id, raw input (truncated)
+Great—here’s the smallest set of changes to add when (“insert” vs “update”) to what you already have.
 
-                (Function completes)
+⸻
+
+1) EventConfig.java
+
+Make sure your Event has a when list and add two helpers.
+
+// imports near the top
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import java.util.List;
+
+public final class EventConfig {
+  public List<Event> events;
+
+  @JsonIgnoreProperties(ignoreUnknown = true)
+  public static final class Event {
+    public String id;
+    public String name;
+
+    /** Allowed moments to evaluate: "insert", "update" (one or both). */
+    public List<String> when;
+
+    public ConditionGroup conditions;
+
+    // ---- tiny helpers ----
+    @JsonIgnore public boolean allowInsert() {
+      return when != null && when.contains("insert");
+    }
+    @JsonIgnore public boolean allowUpdate() {
+      return when != null && when.contains("update");
+    }
+  }
+
+  @JsonIgnoreProperties(ignoreUnknown = true)
+  public static final class ConditionGroup {
+    public String logic;     // "AND" | "OR"
+    public List<Rule> rules;
+    public boolean isAnd() { return "AND".equalsIgnoreCase(logic); }
+    public boolean isOr()  { return "OR".equalsIgnoreCase(logic);  }
+  }
+
+  @JsonIgnoreProperties(ignoreUnknown = true)
+  public static final class Rule {
+    public String op;     // "changed" | "changedTo" | "becameNotNull" | "becameNull" | "eq" | "ne"
+    public String field;  // dotted path
+    public String value;  // optional for eq/changedTo
+  }
+}
+
+✔️ If you already have these classes, just add the when field and the two helper methods.
+
+⸻
+
+2) EventProcessing.evaluate(…)
+
+Add the early guard right at the top of your existing method.
+
+public static boolean evaluate(EventConfig.Event evt,
+                               boolean isCreate,
+                               ObjectNode newDoc,
+                               ObjectNode baseline,
+                               List<ChangeInfo> deltas) {
+
+  // --- NEW: honor the event's "when" filter ---
+  if (isCreate && !evt.allowInsert()) return false; // not allowed on insert
+  if (!isCreate && !evt.allowUpdate()) return false; // not allowed on update
+  // --------------------------------------------
+
+  // (keep the rest exactly as you have it)
+  Map<String, ChangeInfo> idx = indexByFieldPath(deltas);
+
+  boolean hasAny = false;
+  boolean allOk = true;
+
+  for (EventConfig.Rule r : evt.conditions.rules) {
+    boolean hit = evalRule(r, isCreate, newDoc, baseline, idx);
+    hasAny |= hit;
+    allOk  &= hit;
+
+    if (evt.conditions.isOr()  && hit)  return true;   // OR short‑circuit
+    if (evt.conditions.isAnd() && !hit) return false;  // AND short‑circuit
+  }
+
+  if (evt.conditions.rules == null || evt.conditions.rules.isEmpty()) return false;
+  return evt.conditions.isAnd() ? allOk : hasAny;
+}
+
+Nothing else in evalRule(...) or your delta helpers needs to change.
+
+⸻
+
+3) Your Function loop (call site)
+
+You’re likely already doing this; just confirm you pass isCreate:
+
+List<EventConfig.Event> fired = new ArrayList<>();
+for (EventConfig.Event evt : rules.events) {
+  if (EventProcessing.evaluate(evt, isCreate, newDoc, currentJsonFromBlob, deltas)) {
+    fired.add(evt);
+  }
+}
+
+
+⸻
+
+Optional default (only if you want it)
+
+If some events omit when, you can default them to both insert+update once, when loading:
+
+for (EventConfig.Event e : cfg.events) {
+  if (e.when == null || e.when.isEmpty()) {
+    e.when = java.util.Arrays.asList("insert","update");
+  }
+}
+
+(Place that in your config loader after deserialization.)
+
+⸻
+
+That’s it. With these tiny changes:
+	•	You still decide create vs update by blob presence (isCreate).
+	•	Each event declares when it’s allowed to fire.
+	•	Rule evaluation and deltas work exactly as before.
