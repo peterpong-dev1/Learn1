@@ -1,125 +1,285 @@
-Great—here’s the smallest set of changes to add when (“insert” vs “update”) to what you already have.
+Awesome — let’s move from plan → code. Below is everything you asked for to cover steps 2–5 (schema, factory, sender singleton, and a sendMessage helper), plus a tiny call‑site snippet you can drop into your function loop.
 
 ⸻
 
-1) EventConfig.java
+1) App settings (dev: local.settings.json, prod: Function App → Configuration)
 
-Make sure your Event has a when list and add two helpers.
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "java",
+    "ServiceBusConnection": "<Endpoint=sb://...;SharedAccessKeyName=send;SharedAccessKey=...>",
+    "ServiceBusEntity": "neo-events-queue",
+    "ServiceBusUseSessions": "false",          // true if you create a session-enabled entity
+    "DefaultTtlMinutes": "1440"                // optional per-message TTL; omit to skip
+  }
+}
 
-// imports near the top
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-import com.fasterxml.jackson.annotation.JsonIgnore;
+
+⸻
+
+2) Message schema (small, explicit, versioned)
+
+package com.neo.notification.bus;
+
+import com.fasterxml.jackson.annotation.JsonInclude;
+import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
-public final class EventConfig {
-  public List<Event> events;
+@JsonInclude(JsonInclude.Include.NON_NULL)
+public final class EventMessage {
+    public String schemaVersion = "1.0";
+    public String messageId;          // set by factory (UUID)
+    public String correlationId;      // your composite id
+    public String when;               // "insert" | "update"
+    public Event event;
+    public Context context;
 
-  @JsonIgnoreProperties(ignoreUnknown = true)
-  public static final class Event {
-    public String id;
-    public String name;
-
-    /** Allowed moments to evaluate: "insert", "update" (one or both). */
-    public List<String> when;
-
-    public ConditionGroup conditions;
-
-    // ---- tiny helpers ----
-    @JsonIgnore public boolean allowInsert() {
-      return when != null && when.contains("insert");
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static final class Event {
+        public String container;
+        public String docId;
+        public String eventId;        // from your config
+        public String eventName;      // from your config
+        public List<Change> changes;  // tracked changes only
     }
-    @JsonIgnore public boolean allowUpdate() {
-      return when != null && when.contains("update");
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static final class Change {
+        public String field;
+        public String kind;           // ADDED | REMOVED | MODIFIED
+        public Object oldValue;
+        public Object newValue;
     }
-  }
 
-  @JsonIgnoreProperties(ignoreUnknown = true)
-  public static final class ConditionGroup {
-    public String logic;     // "AND" | "OR"
-    public List<Rule> rules;
-    public boolean isAnd() { return "AND".equalsIgnoreCase(logic); }
-    public boolean isOr()  { return "OR".equalsIgnoreCase(logic);  }
-  }
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static final class Context {
+        public String etag;
+        public Long lsn;
+        public String readAtUtc;
+        public Map<String, String> tags; // free‑form (container, functionName, etc.)
+    }
 
-  @JsonIgnoreProperties(ignoreUnknown = true)
-  public static final class Rule {
-    public String op;     // "changed" | "changedTo" | "becameNotNull" | "becameNull" | "eq" | "ne"
-    public String field;  // dotted path
-    public String value;  // optional for eq/changedTo
-  }
-}
-
-✔️ If you already have these classes, just add the when field and the two helper methods.
-
-⸻
-
-2) EventProcessing.evaluate(…)
-
-Add the early guard right at the top of your existing method.
-
-public static boolean evaluate(EventConfig.Event evt,
-                               boolean isCreate,
-                               ObjectNode newDoc,
-                               ObjectNode baseline,
-                               List<ChangeInfo> deltas) {
-
-  // --- NEW: honor the event's "when" filter ---
-  if (isCreate && !evt.allowInsert()) return false; // not allowed on insert
-  if (!isCreate && !evt.allowUpdate()) return false; // not allowed on update
-  // --------------------------------------------
-
-  // (keep the rest exactly as you have it)
-  Map<String, ChangeInfo> idx = indexByFieldPath(deltas);
-
-  boolean hasAny = false;
-  boolean allOk = true;
-
-  for (EventConfig.Rule r : evt.conditions.rules) {
-    boolean hit = evalRule(r, isCreate, newDoc, baseline, idx);
-    hasAny |= hit;
-    allOk  &= hit;
-
-    if (evt.conditions.isOr()  && hit)  return true;   // OR short‑circuit
-    if (evt.conditions.isAnd() && !hit) return false;  // AND short‑circuit
-  }
-
-  if (evt.conditions.rules == null || evt.conditions.rules.isEmpty()) return false;
-  return evt.conditions.isAnd() ? allOk : hasAny;
-}
-
-Nothing else in evalRule(...) or your delta helpers needs to change.
-
-⸻
-
-3) Your Function loop (call site)
-
-You’re likely already doing this; just confirm you pass isCreate:
-
-List<EventConfig.Event> fired = new ArrayList<>();
-for (EventConfig.Event evt : rules.events) {
-  if (EventProcessing.evaluate(evt, isCreate, newDoc, currentJsonFromBlob, deltas)) {
-    fired.add(evt);
-  }
+    public static EventMessage newEmpty() {
+        EventMessage m = new EventMessage();
+        m.messageId = UUID.randomUUID().toString();
+        return m;
+    }
 }
 
 
 ⸻
 
-Optional default (only if you want it)
+3) Factory to build the JSON payload
 
-If some events omit when, you can default them to both insert+update once, when loading:
+package com.neo.notification.bus;
 
-for (EventConfig.Event e : cfg.events) {
-  if (e.when == null || e.when.isEmpty()) {
-    e.when = java.util.Arrays.asList("insert","update");
-  }
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.neo.notification.change.ChangeInfo;
+import com.neo.notification.config.EventConfig;
+
+import java.time.OffsetDateTime;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+public final class MessageFactory {
+    private static final ObjectMapper M = new ObjectMapper();
+
+    private MessageFactory() {}
+
+    public static EventMessage build(EventConfig.Event evt,
+                                     String when,                    // "insert" or "update"
+                                     String container,
+                                     String docId,
+                                     ObjectNode newDoc,
+                                     String etag,
+                                     Long lsnOrNull,
+                                     String correlationId,
+                                     List<ChangeInfo> deltas,
+                                     Map<String,String> extraTags) {
+
+        EventMessage m = EventMessage.newEmpty();
+        m.correlationId = correlationId;
+        m.when = when;
+
+        // event section
+        EventMessage.Event e = new EventMessage.Event();
+        e.container = container;
+        e.docId = docId;
+        e.eventId = evt.id;
+        e.eventName = evt.name;
+        e.changes = (deltas == null) ? null : deltas.stream().map(d -> {
+            EventMessage.Change c = new EventMessage.Change();
+            c.field = d.getFieldPath();
+            c.kind = d.getKind().name();
+            c.oldValue = nodeToScalar(d.getOldValue());
+            c.newValue = nodeToScalar(d.getNewValue());
+            return c;
+        }).collect(Collectors.toList());
+        m.event = e;
+
+        // context
+        EventMessage.Context ctx = new EventMessage.Context();
+        ctx.etag = etag;
+        ctx.lsn  = lsnOrNull;
+        ctx.readAtUtc = OffsetDateTime.now().toString();
+        ctx.tags = extraTags;
+        m.context = ctx;
+
+        return m;
+    }
+
+    private static Object nodeToScalar(com.fasterxml.jackson.databind.JsonNode n) {
+        if (n == null || n.isNull()) return null;
+        if (n.isTextual()) return n.asText();
+        if (n.isNumber())  return n.numberValue();
+        if (n.isBoolean()) return n.booleanValue();
+        // fall back to compact JSON for objects/arrays
+        try { return M.writeValueAsString(n); } catch (Exception ignore) { return n.toString(); }
+    }
 }
 
-(Place that in your config loader after deserialization.)
 
 ⸻
 
-That’s it. With these tiny changes:
-	•	You still decide create vs update by blob presence (isCreate).
-	•	Each event declares when it’s allowed to fire.
-	•	Rule evaluation and deltas work exactly as before.
+4) Service Bus sender (thread‑safe singleton) + send helper
+
+package com.neo.notification.bus;
+
+import com.azure.core.util.BinaryData;
+import com.azure.messaging.servicebus.*;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import java.time.Duration;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Logger;
+
+public final class ServiceBusSenderProvider {
+    private static final AtomicReference<ServiceBusSenderClient> SENDER = new AtomicReference<>();
+    private static final Object LOCK = new Object();
+    private static final ObjectMapper M = new ObjectMapper();
+
+    private ServiceBusSenderProvider() {}
+
+    public static ServiceBusSenderClient get() {
+        ServiceBusSenderClient existing = SENDER.get();
+        if (existing != null) return existing;
+
+        synchronized (LOCK) {
+            existing = SENDER.get();
+            if (existing != null) return existing;
+
+            String conn = env("ServiceBusConnection");
+            String entity = env("ServiceBusEntity");
+
+            ServiceBusClientBuilder b = new ServiceBusClientBuilder()
+                    .connectionString(conn);
+
+            // Decide queue or topic automatically
+            ServiceBusSenderClient sender;
+            try {
+                sender = b.sender()
+                         .queueName(entity)
+                         .buildClient();
+            } catch (Exception ignore) {
+                sender = b.sender()
+                         .topicName(entity)
+                         .buildClient();
+            }
+            SENDER.set(sender);
+            return sender;
+        }
+    }
+
+    public static void send(EventMessage payload,
+                            Map<String,String> appProps,
+                            String sessionIdOrNull,
+                            Logger log) {
+        try {
+            byte[] json = M.writeValueAsBytes(payload);
+            ServiceBusMessage msg = new ServiceBusMessage(BinaryData.fromBytes(json));
+            msg.setMessageId(payload.messageId);
+            msg.setCorrelationId(payload.correlationId);
+            msg.setContentType("application/json");
+
+            if (sessionIdOrNull != null && Boolean.parseBoolean(env("ServiceBusUseSessions"))) {
+                msg.setSessionId(sessionIdOrNull);
+            }
+            if (appProps != null) {
+                appProps.forEach((k,v) -> { if (v != null) msg.getApplicationProperties().put(k, v); });
+            }
+            String ttlMin = System.getenv("DefaultTtlMinutes");
+            if (ttlMin != null && !ttlMin.isBlank()) {
+                msg.setTimeToLive(Duration.ofMinutes(Long.parseLong(ttlMin)));
+            }
+
+            get().sendMessage(msg);
+            log.info("ServiceBus SENT: eventId=" + payload.event.eventId +
+                     " docId=" + payload.event.docId +
+                     " messageId=" + payload.messageId);
+        } catch (Exception ex) {
+            log.severe("ServiceBus SEND FAILED: " + ex.getMessage());
+            throw new RuntimeException("ServiceBus send failed", ex);
+        }
+    }
+
+    private static String env(String k) {
+        String v = System.getenv(k);
+        if (v == null || v.isBlank()) throw new IllegalStateException("Missing app setting: " + k);
+        return v;
+    }
+}
+
+
+⸻
+
+5) Minimal call‑site (inside your Function after you’ve computed eventsFired)
+
+// for each fired event, build and send one message
+for (EventConfig.Event evt : eventsFired) {
+    String when = isCreate ? "insert" : "update";
+    String corrId = docId + "|" + evt.id + "|" + when + "|" + context.getInvocationId();
+
+    EventMessage payload = MessageFactory.build(
+            evt,
+            when,
+            cosmosDbContainerName,
+            docId,
+            newDoc,
+            previousETag,           // you already have it
+            null,                   // lsn if you have it; else null
+            corrId,
+            deltas,                 // your tracked-field deltas (empty on CREATE is fine)
+            Map.of("function", context.getFunctionName())
+    );
+
+    // headers for filtering / analytics
+    Map<String,String> headers = Map.of(
+            "container", cosmosDbContainerName,
+            "eventId",   evt.id,
+            "docId",     docId,
+            "when",      when
+    );
+
+    // If you enabled sessions and want per-doc ordering, pass docId; else null
+    String sessionId = Boolean.parseBoolean(System.getenv("ServiceBusUseSessions")) ? docId : null;
+
+    ServiceBusSenderProvider.send(payload, headers, sessionId, context.getLogger());
+}
+
+
+⸻
+
+Notes
+	•	Thread‑safety: the sender is a lazy, double‑checked singleton; safe across invocations.
+	•	Error handling: send() logs and throws so the Functions runtime will retry; you can also hook your existing ErrorWriter in the catch if you want to persist the failed payload.
+	•	Schema stability: versioned via schemaVersion. If you add fields later, bump to "1.1" and keep old fields for backward compatibility.
+	•	Small messages: the changes list carries only the tracked deltas you already computed.
+
+If you want me to tailor the EventMessage to your exact downstream API contract (field names, casing, etc.), just paste that contract and I’ll align the code.
