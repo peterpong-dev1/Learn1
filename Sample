@@ -1,293 +1,70 @@
-Absolutely—you can treat Service Bus just like your Blob clients: create one sender once, reuse it across all invocations, and do not open/close per message. Closing isn’t required per run; the SDK keeps one HTTP/AMQP connection and the Functions host tears it down on process shutdown. If you still want an explicit close, expose a closeAll() you can call from a shutdown hook or a maintenance path.
+Short answer: yes—having a few Function classes, each with its own static clients, is okay. But you’ll do even better (fewer sockets/threads) if you share the heavy clients across the app.
 
-Below is a tight, production‑ready setup that:
-	•	Reuses a single sender (thread‑safe).
-	•	Gives you one call from your Function: MessageBus.sendEvent(...).
-	•	Centralizes error handling (writes your ErrorWriter blob and rethrows so Functions retries).
-	•	Builds a compact JSON payload (no schemaVersion) with event id/name, when, deltas, and context.
+What’s safe vs. heavy
+	•	Blob
+	•	BlobServiceClient = heavy (connection pool, threads).
+	•	BlobContainerClient = light wrapper.
+Best: create one BlobServiceClient per storage account, and from it create as many BlobContainerClients as you need.
+	•	Service Bus
+	•	ServiceBusClient (builder root) = heavy.
+	•	ServiceBusSenderClient = relatively light per entity (queue/topic).
+Best: create one ServiceBusClient per namespace, then one sender per queue/topic you use.
 
-1) Reusable sender (singleton cache)
+Multiple Function classes on the same host instance will share the JVM. If each class has its own static heavy client, you’ll have duplicates. It still works, but wastes resources. On scale‑out (multiple host instances), each instance will have its own set anyway—that’s normal.
 
-package com.neo.notification.bus;
+Simple shared-client holder (recommended)
 
-import com.azure.messaging.servicebus.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
+Put this in a small SharedClients class and use it from all Functions:
 
-/** Thread-safe factory/cache for Service Bus senders (queues). */
-public final class ServiceBusClientHolder {
-    private static final String CONNECTION = System.getenv("ServiceBusConnection");
-    private static final ConcurrentMap<String, ServiceBusSenderClient> SENDERS = new ConcurrentHashMap<>();
-
-    private ServiceBusClientHolder() {}
-
-    /** Get (or create once) a sender for the given queue. */
-    public static ServiceBusSenderClient senderForQueue(String queueName) {
-        if (queueName == null || queueName.isBlank()) {
-            throw new IllegalStateException("Missing app setting ServiceBusEntity (queue name).");
-        }
-        return SENDERS.computeIfAbsent(queueName, q ->
-            new ServiceBusClientBuilder()
-                .connectionString(CONNECTION)
-                .sender()
-                .queueName(q)
-                .buildClient()
-        );
-    }
-
-    /** Optional: call if you ever want to close explicitly. */
-    public static void closeAll() {
-        SENDERS.values().forEach(c -> { try { c.close(); } catch (Exception ignored) {} });
-        SENDERS.clear();
-    }
-}
-
-2) Message factory (builds the JSON & ServiceBusMessage)
-
-package com.neo.notification.bus;
-
-import com.azure.core.util.BinaryData;
-import com.azure.messaging.servicebus.ServiceBusMessage;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-
-import java.time.OffsetDateTime;
-import java.util.*;
-import java.util.stream.Collectors;
-
-/** Builds a compact, consistent message payload for Service Bus. */
-public final class MessageFactory {
-    private static final ObjectMapper M = new ObjectMapper();
-
-    private MessageFactory() {}
-
-    /**
-     * Build a ServiceBusMessage with a compact JSON body.
-     * Body fields:
-     *  - correlationId, messageId, createdAtUtc
-     *  - container, docId, eventId, eventName, when
-     *  - deltas: [{field, kind, old, new}]
-     *  - context: free-form (e.g., _etag, _lsn)
-     */
-    public static ServiceBusMessage buildBodyAndEnvelope(
-            String correlationId,
-            String messageId,
-            String container,
-            String docId,
-            String eventId,
-            String eventName,
-            String when,                            // "insert" | "update"
-            List<ChangeInfo> deltas,                // your existing ChangeInfo list
-            Map<String, Object> context,
-            String sessionIdOrNull                  // set only if your queue requires sessions
-    ) throws Exception {
-
-        ObjectNode root = M.createObjectNode();
-        root.put("correlationId", correlationId);
-        root.put("messageId", messageId);
-        root.put("createdAtUtc", OffsetDateTime.now().toString());
-        root.put("container", container);
-        root.put("docId", docId);
-        root.put("eventId", eventId);
-        root.put("eventName", eventName);
-        root.put("when", when);
-
-        // Convert deltas to small JSON objects
-        var small = (deltas == null ? List.<Map<String,Object>>of() :
-            deltas.stream().map(MessageFactory::toSmall).collect(Collectors.toList()));
-        root.set("deltas", M.valueToTree(small));
-
-        if (context != null && !context.isEmpty()) {
-            root.set("context", M.valueToTree(context));
-        }
-
-        byte[] payload = M.writeValueAsBytes(root);
-
-        ServiceBusMessage msg = new ServiceBusMessage(BinaryData.fromBytes(payload))
-                .setMessageId(messageId)
-                .setContentType("application/json")
-                .setCorrelationId(correlationId);
-
-        // helpful headers for filtering/metrics
-        msg.getApplicationProperties().put("container", container);
-        msg.getApplicationProperties().put("eventId", eventId);
-        msg.getApplicationProperties().put("docId", docId);
-        msg.getApplicationProperties().put("when", when);
-
-        if (sessionIdOrNull != null && !sessionIdOrNull.isBlank()) {
-            msg.setSessionId(sessionIdOrNull);
-        }
-        return msg;
-    }
-
-    private static Map<String,Object> toSmall(ChangeInfo c) {
-        Map<String,Object> m = new LinkedHashMap<>();
-        m.put("field", c.getFieldPath());
-        m.put("kind",  c.getKind().name()); // ADDED|REMOVED|MODIFIED
-        m.put("old",   c.getOldValue() == null ? null : c.getOldValue().asText());
-        m.put("new",   c.getNewValue() == null ? null : c.getNewValue().asText());
-        return m;
-    }
-
-    /** Minimal view of your existing ChangeInfo, adapt if your getters differ. */
-    public interface ChangeInfo {
-        String getFieldPath();
-        com.fasterxml.jackson.databind.JsonNode getOldValue();
-        com.fasterxml.jackson.databind.JsonNode getNewValue();
-        Kind getKind();
-        enum Kind { ADDED, REMOVED, MODIFIED }
-    }
-}
-
-3) Single call from your Function
-
-package com.neo.notification.bus;
+package com.neo.notification.shared;
 
 import com.azure.messaging.servicebus.*;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.neo.notification.util.ErrorWriter;
+import com.azure.storage.blob.*;
 
-import java.util.*;
-import java.util.logging.Logger;
-import java.util.UUID;
+public final class SharedClients {
+  private static final String SB_CONN = System.getenv("ServiceBusConnection");
+  private static final String STORAGE_CONN = System.getenv("Blob_Connection");
 
-/**
- * One public method to send an event message.
- * Handles: id generation, headers, sessions (optional), error logging, and retries via Functions.
- */
-public final class MessageBus {
-    private MessageBus() {}
+  // Heavy, shared once per process
+  public static final ServiceBusClientBuilder SB =
+      new ServiceBusClientBuilder().connectionString(SB_CONN);
 
-    /**
-     * Send one event to a Service Bus **queue**.
-     *
-     * @param container         Cosmos container name (for headers)
-     * @param docId             Document id
-     * @param eventId           Stable id from your config (e.g., "appInfo..._application_cancelled")
-     * @param eventName         Human label
-     * @param when              "insert" or "update"
-     * @param deltas            List of tracked-field changes
-     * @param context           Extra diagnostics (e.g., _etag, _lsn, readAtUtc)
-     * @param sessionIdOrNull   Set ONLY if your queue is session-enabled; else pass null
-     * @param newDoc            New document (for ErrorWriter on failure)
-     * @param errorContainer    Blob container for error logs
-     * @param log               Function logger
-     */
-    public static void sendEvent(
-            String container,
-            String docId,
-            String eventId,
-            String eventName,
-            String when,
-            List<MessageFactory.ChangeInfo> deltas,
-            Map<String,Object> context,
-            String sessionIdOrNull,
-            ObjectNode newDoc,
-            com.azure.storage.blob.BlobContainerClient errorContainer,
-            Logger log) {
+  public static final BlobServiceClient BLOB =
+      new BlobServiceClientBuilder().connectionString(STORAGE_CONN).buildClient();
 
-        String queue = System.getenv("ServiceBusEntity"); // queue name
-        String correlationId = docId + "|" + eventId + "|" + when;
-        String messageId = UUID.randomUUID().toString();
+  private SharedClients() {}
 
-        try {
-            // Build payload
-            ServiceBusMessage msg = MessageFactory.buildBodyAndEnvelope(
-                    correlationId, messageId,
-                    container, docId,
-                    eventId, eventName, when,
-                    deltas, context, sessionIdOrNull);
+  /** Per-entity sender; call per queue/topic you need (lightweight). */
+  public static ServiceBusSenderClient senderForQueue(String queueName) {
+    return SB.sender().queueName(queueName).buildClient();
+  }
 
-            // Reused sender (thread-safe)
-            ServiceBusSenderClient sender = ServiceBusClientHolder.senderForQueue(queue);
-
-            // Send
-            sender.sendMessage(msg);
-
-            log.info("SB SENT: queue=" + queue +
-                    " msgId=" + messageId +
-                    " corrId=" + correlationId +
-                    " docId=" + docId +
-                    " event=" + eventId +
-                    " when=" + when);
-
-        } catch (Exception ex) {
-            // Centralized error path - write the prepared context + doc for diagnostics
-            ErrorWriter.writeError(
-                errorContainer,
-                container,
-                docId,
-                "ServiceBusSendError",
-                "Failed to send to Service Bus: " + ex.getMessage(),
-                when.equals("insert") ? "CREATE" : "MODIFY",
-                newDoc,
-                (context == null) ? "" : String.valueOf(context.getOrDefault("_etag", "")),
-                // if you have invocation id/name at call site, pass them instead of blanks
-                "", "", log
-            );
-            // Surface to Functions so built-in retry kicks in
-            throw new RuntimeException("Service Bus send failed", ex);
-        }
-    }
-}
-
-4) How your Function calls it (single line per fired event)
-
-Where you currently build events and have eventsFired:
-
-// Example context you already have around this point
-String when = isCreate ? "insert" : "update";
-Map<String,Object> ctx = new LinkedHashMap<>();
-ctx.put("_etag", previousETag);
-ctx.put("readAtUtc", java.time.OffsetDateTime.now().toString());
-// if you capture _lsn or others, add them here
-
-// Optional sessions: ONLY pass docId if your queue is session-enabled; else pass null
-String sessionId = Boolean.parseBoolean(System.getenv("ServiceBusUseSessions")) ? docId : null;
-
-// For each matched event, send one message
-for (EventConfig.Event evt : eventsFired) {
-    MessageBus.sendEvent(
-        cosmosDbContainerName,     // container
-        id,                        // docId
-        evt.id,                    // eventId
-        evt.name,                  // eventName
-        when,                      // "insert" | "update"
-        deltas,                    // your tracked field changes (empty on insert is OK)
-        ctx,                       // context map
-        sessionId,                 // null if sessions disabled or queue not session-enabled
-        newDoc,                    // for ErrorWriter on failure
-        ERROR_CONTAINER,           // your BlobContainerClient for errors
-        context.getLogger()        // function logger
-    );
-}
-
-Do I need to close the sender?
-	•	No, not per message/invocation. Reuse the cached sender. The Functions host will close sockets on shutdown.
-	•	If you insist on explicit closing, call ServiceBusClientHolder.closeAll() from a shutdown hook. It’s optional.
-
-Sample message body produced
-
-{
-  "correlationId": "400278d8-...|appInfoProgressManagement_application_cancelled|update",
-  "messageId": "3c0a1e21-0d7c-4a2b-9f0a-0ef0c8acb7d9",
-  "createdAtUtc": "2025-08-22T13:05:00Z",
-  "container": "appInfoProgressManagement",
-  "docId": "400278d8-8ecc-c41a-f27e-eea22b26dcaf",
-  "eventId": "appInfoProgressManagement_application_cancelled",
-  "eventName": "Application Cancelled",
-  "when": "update",
-  "deltas": [
-    { "field": "applicationCancelDate", "kind": "ADDED", "old": null, "new": "2025-08-22" },
-    { "field": "applicationStatus",     "kind": "MODIFIED", "old": "1", "new": "9" }
-  ],
-  "context": {
-    "_etag": "0x8DDE0CCCFD4F8F13",
-    "readAtUtc": "2025-08-22T13:05:00Z"
+  public static BlobContainerClient container(String containerName) {
+    return BLOB.getBlobContainerClient(containerName);
   }
 }
 
+In each Function class
 
-⸻
+// static finals: light wrappers from the shared heavy clients
+private static final BlobContainerClient CONFIG_CONTAINER =
+    SharedClients.container(System.getenv("Blob_ContainerName_Config"));
+private static final BlobContainerClient DATA_CONTAINER =
+    SharedClients.container(System.getenv("Blob_ContainerName_Data"));
+private static final BlobContainerClient ERROR_CONTAINER =
+    SharedClients.container(System.getenv("Blob_ContainerName_Error"));
 
-If you paste these three classes, you can delete the busy code from your Function and keep only the one‑liner call inside your loop. It will reuse a single sender, be thread‑safe, and push all error handling and payload shaping out of your Function body.
+private static final ServiceBusSenderClient SB_SENDER =
+    SharedClients.senderForQueue(System.getenv("ServiceBusEntity"));
+
+That pattern gives you:
+	•	One Storage connection pool and one Service Bus connection pool per host process.
+	•	As many container clients and sender clients as you need, cheaply.
+	•	No need to manually close them; Functions host will recycle the process. (If you want, add a shutdown hook to close SB_SENDER, but it’s optional.)
+
+When is “too many” a concern?
+	•	Dozens of senders on the same queue/topic: still fine.
+	•	Hundreds of heavy clients per host: avoid that (use the shared holder).
+	•	If you’re under tight memory or connection limits, this shared pattern keeps footprint small.
+
+So: copying the class and creating static clients in each will work. For a cleaner, production‑friendly setup, centralize the heavy clients as shown and reuse them from all your Function classes.
