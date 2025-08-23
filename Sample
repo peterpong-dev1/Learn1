@@ -1,98 +1,503 @@
+Great—let’s lock this down for Unpaid Contract. I’ll give you:
+	1.	a clean events.json for the unpaidContractInquiry container (with scheduling baked in),
+	2.	a tracked-fields.json, and
+	3.	the minimal, production‑ready code changes to honor that schedule when sending to Service Bus (thread‑safe, with error handling + JavaDocs).
+
+⸻
+
+1) events.json (unpaidContractInquiry)
+
+Format is exactly the one we’ve been using (id/name/when/conditions).
+New: optional "schedule" block. If "schedule" is absent → send immediately.
+
 {
   "version": "1.0",
-  "container": "transactionProgress",
+  "container": "unpaidContractInquiry",
   "events": [
     {
-      "id": "transactionProgress_request_submitted",
-      "name": "Transaction Request Submitted",
+      "id": "unpaidContractInquiry_extracted",
+      "name": "Unpaid Contract Extraction",
       "when": ["insert", "update"],
       "conditions": {
         "logic": "OR",
         "rules": [
-          { "op": "becameNotNull", "field": "transferRequestStatusRegistrationDate" },
-          { "op": "changedTo",     "field": "transferRequestStatus", "value": "01" }
+          { "op": "becameNotNull", "field": "policyId" },
+          { "op": "becameNotNull", "field": "lapseDate" },
+          { "op": "becameNotNull", "field": "terminationDate" }
         ]
+      },
+      "schedule": {
+        "type": "cron",                // monthly “around 10th” (see note)
+        "cron": "0 30 09 10 * *",      // minute hour day-of-month month day-of-week (seconds optional)
+        "tz": "Asia/Tokyo",
+        "note": "Run near the 10th (NeoNet monthly update). If this is truly system-wide, prefer a Timer-trigger job instead of change feed."
       }
     },
     {
-      "id": "transactionProgress_request_amended",
-      "name": "Transaction Request Amended",
-      "when": ["update"],
-      "conditions": {
-        "logic": "AND",
-        "rules": [
-          { "op": "becameNotNull", "field": "transferRequestStatusUpdateDate" }
-        ]
-      }
-    },
-    {
-      "id": "transactionProgress_request_cancelled",
-      "name": "Transaction Request Cancelled",
-      "when": ["update"],
-      "conditions": {
-        "logic": "AND",
-        "rules": [
-          { "op": "changedTo", "field": "transferRequestStatus", "value": "99" }
-        ]
-      }
-    },
-    {
-      "id": "transactionProgress_status_updated",
-      "name": "Status Updated",
-      "when": ["update"],
-      "conditions": {
-        "logic": "AND",
-        "rules": [
-          { "op": "changed", "field": "transferRequestStatus" }
-        ]
-      }
-    },
-    {
-      "id": "transactionProgress_deficiency_detected",
-      "name": "Deficiency Notification Sent",
-      "when": ["update"],
+      "id": "unpaidContractInquiry_unpaid_notice",
+      "name": "Create Unpaid Notice",
+      "when": ["insert", "update"],
       "conditions": {
         "logic": "OR",
         "rules": [
-          { "op": "changedTo",     "field": "inadequacy",     "value": "true" },
-          { "op": "becameNotNull", "field": "inadequacyContents" },
-          { "op": "changedTo",     "field": "FUBI_STATUS",    "value": "01" }
+          { "op": "becameNotNull", "field": "policyId" },
+          { "op": "becameNotNull", "field": "lapseDate" },
+          { "op": "becameNotNull", "field": "terminationDate" }
         ]
+      },
+      "schedule": { "type": "immediate" }   // same day as extraction
+    },
+    {
+      "id": "unpaidContractInquiry_dunning_notice",
+      "name": "Create Dunning Notice",
+      "when": ["update"],
+      "conditions": {
+        "logic": "AND",
+        "rules": [
+          { "op": "eq", "field": "unpaidStatus", "value": "UNPAID" },
+          { "op": "becameNotNull", "field": "lastNoticeDate" }
+        ]
+      },
+      "schedule": {
+        "type": "afterDaysFromField",
+        "field": "lastNoticeDate",
+        "days": 6,
+        "time": "09:00",
+        "tz": "Asia/Tokyo",
+        "note": "Send N days after the last notice if still unpaid."
       }
     },
     {
-      "id": "transactionProgress_deficiency_resolved",
-      "name": "Deficiency Resolved",
+      "id": "unpaidContractInquiry_final_notice",
+      "name": "Create Final Notice",
       "when": ["update"],
+      "conditions": {
+        "logic": "AND",
+        "rules": [
+          { "op": "eq", "field": "unpaidStatus", "value": "UNPAID" },
+          { "op": "becameNotNull", "field": "finalNoticeDueDate" }
+        ]
+      },
+      "schedule": {
+        "type": "atField",
+        "field": "finalNoticeDueDate",
+        "time": "09:00",
+        "tz": "Asia/Tokyo"
+      }
+    },
+    {
+      "id": "unpaidContractInquiry_lapse_notice",
+      "name": "Create Lapse Notice",
+      "when": ["insert", "update"],
       "conditions": {
         "logic": "OR",
         "rules": [
-          { "op": "changedTo", "field": "inadequacy",  "value": "false" },
-          { "op": "changedTo", "field": "FUBI_STATUS", "value": "00" }
+          { "op": "becameNotNull", "field": "lapseDate" },
+          { "op": "changed", "field": "lapseDate" }
         ]
-      }
-    },
-    {
-      "id": "transactionProgress_decision_made",
-      "name": "Decision Notification Sent",
-      "when": ["update"],
-      "conditions": {
-        "logic": "AND",
-        "rules": [
-          { "op": "changedTo", "field": "transferRequestStatus", "value": "10" }
-        ]
-      }
-    },
-    {
-      "id": "transactionProgress_completed",
-      "name": "Transaction Completed",
-      "when": ["update"],
-      "conditions": {
-        "logic": "AND",
-        "rules": [
-          { "op": "becameNotNull", "field": "lastProcessingDate" }
-        ]
+      },
+      "schedule": {
+        "type": "atField",
+        "field": "lapseDate",
+        "time": "09:00",
+        "tz": "Asia/Tokyo"
       }
     }
   ]
 }
+
+Notes
+	•	Column F (trigger condition) is encoded under conditions.rules (using the ops we already support: eq|ne|changed|changedTo|becameNotNull|becameNull).
+	•	Column G (trigger timing) drives the new "schedule" object:
+	•	immediate → enqueue now.
+	•	atField → enqueue at the date in that field (+ optional time, tz).
+	•	afterDaysFromField → enqueue days after a date field.
+	•	cron → for monthly “around 10th”. If that’s truly a global batch day, a Timer trigger is the cleanest place; but I included cron here to keep it all in one config if you want Service Bus scheduled deliveries.
+
+⸻
+
+2) tracked-fields.json
+
+Include every field referenced by rules or scheduling.
+
+{
+  "version": "1.0",
+  "container": "unpaidContractInquiry",
+  "fields": [
+    "policyId",
+    "lapseDate",
+    "terminationDate",
+    "unpaidStatus",
+    "lastNoticeDate",
+    "finalNoticeDueDate"
+  ]
+}
+
+
+⸻
+
+3) Code changes to support schedule
+
+Below is only what’s new/changed. Everything else in your pipeline stays as is.
+
+3.1 EventConfig.java — add schedule to Event
+
+package com.neo.notification.config;
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import java.util.List;
+
+/** POJO for your event rules JSON. */
+@JsonIgnoreProperties(ignoreUnknown = true)
+public final class EventConfig {
+  public String version;
+  public String container;
+  public List<Event> events;
+
+  @JsonIgnoreProperties(ignoreUnknown = true)
+  public static final class Event {
+    public String id;
+    public String name;
+    public List<String> when;           // ["insert"] | ["update"] | ["insert","update"]
+    public ConditionGroup conditions;   // same as before
+    public Schedule schedule;           // NEW (optional)
+    public boolean allowInsert() { return when != null && when.stream().anyMatch("insert"::equalsIgnoreCase); }
+    public boolean allowUpdate() { return when != null && when.stream().anyMatch("update"::equalsIgnoreCase); }
+  }
+
+  @JsonIgnoreProperties(ignoreUnknown = true)
+  public static final class ConditionGroup {
+    public String logic;                // "AND" | "OR"
+    public List<Rule> rules;
+    public boolean isAnd() { return "AND".equalsIgnoreCase(logic); }
+    public boolean isOr()  { return "OR".equalsIgnoreCase(logic); }
+  }
+
+  @JsonIgnoreProperties(ignoreUnknown = true)
+  public static final class Rule {
+    public String op;       // eq | ne | changed | changedTo | becameNotNull | becameNull
+    public String field;
+    public String value;    // optional for eq/changedTo
+  }
+
+  /** NEW: optional schedule per event. */
+  @JsonIgnoreProperties(ignoreUnknown = true)
+  public static final class Schedule {
+    public String type;     // "immediate" | "atField" | "afterDaysFromField" | "cron"
+    public String field;    // for atField / afterDaysFromField
+    public Integer days;    // for afterDaysFromField
+    public String time;     // "HH:mm" optional
+    public String tz;       // e.g. "Asia/Tokyo" (optional)
+    public String cron;     // for "cron" (supports day-of-month patterns below)
+    public String note;     // ignored by code; for humans
+  }
+}
+
+3.2 SchedulePlanner.java — compute enqueue time
+
+package com.neo.notification.sendtobus;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.neo.notification.config.EventConfig;
+
+import java.time.*;
+import java.time.format.DateTimeFormatter;
+import java.util.logging.Logger;
+
+/**
+ * Computes when a message should be enqueued based on EventConfig.Schedule.
+ * If it returns null, caller should send immediately.
+ */
+public final class SchedulePlanner {
+  private SchedulePlanner() {}
+
+  /**
+   * @param evt       EventConfig.Event (read its optional schedule)
+   * @param newDoc    the current document
+   * @param defaultTz fallback zone (e.g., ZoneId.of("Asia/Tokyo"))
+   * @param log       logger
+   * @return          desired enqueue time in UTC, or null for "now"
+   */
+  public static OffsetDateTime compute(EventConfig.Event evt,
+                                       ObjectNode newDoc,
+                                       ZoneId defaultTz,
+                                       Logger log) {
+    if (evt == null || evt.schedule == null || evt.schedule.type == null) return null;
+
+    final String type = evt.schedule.type.trim().toLowerCase();
+    final ZoneId zone = safeZone(evt.schedule.tz, defaultTz);
+
+    try {
+      switch (type) {
+        case "immediate":
+          return null;
+
+        case "atfield": {
+          LocalDate d = readLocalDate(newDoc, evt.schedule.field);
+          if (d == null) return null;
+          LocalTime t = parseTimeOrDefault(evt.schedule.time, LocalTime.of(9, 0));
+          ZonedDateTime zdt = ZonedDateTime.of(d, t, zone);
+          return zdt.toOffsetDateTime();
+        }
+
+        case "afterdaysfromfield": {
+          LocalDate base = readLocalDate(newDoc, evt.schedule.field);
+          if (base == null) return null;
+          int days = evt.schedule.days == null ? 0 : evt.schedule.days;
+          LocalTime t = parseTimeOrDefault(evt.schedule.time, LocalTime.of(9, 0));
+          ZonedDateTime zdt = ZonedDateTime.of(base.plusDays(days), t, zone);
+          return zdt.toOffsetDateTime();
+        }
+
+        case "cron": {
+          // Minimal support for "m H DOM * *" (seconds optional). Example: "0 30 09 10 * *"
+          CronParts p = CronParts.parse(evt.schedule.cron);
+          if (p == null || p.dayOfMonth == null || p.hour == null || p.minute == null) return null;
+
+          ZonedDateTime now = ZonedDateTime.now(zone);
+          ZonedDateTime candidate = nextDayOfMonth(now, p.dayOfMonth, p.hour, p.minute);
+          return candidate.toOffsetDateTime();
+        }
+
+        default:
+          return null;
+      }
+    } catch (Exception ex) {
+      log.warning("SchedulePlanner error for event=" + evt.id + ": " + ex.getMessage());
+      return null;
+    }
+  }
+
+  // ----- helpers -----
+
+  private static ZoneId safeZone(String tz, ZoneId fallback) {
+    try { return (tz == null || tz.isBlank()) ? fallback : ZoneId.of(tz); }
+    catch (Exception ignore) { return fallback; }
+  }
+
+  /** Reads a date string from doc at '/field' or 'field' (ISO-8601 or yyyy-MM-dd). */
+  private static LocalDate readLocalDate(ObjectNode doc, String field) {
+    if (doc == null || field == null || field.isBlank()) return null;
+    JsonNode n = doc.path(field);
+    if (n.isMissingNode() || n.isNull()) return null;
+    String s = n.asText(null);
+    if (s == null || s.isBlank()) return null;
+    try { return LocalDate.parse(s); }
+    catch (Exception ignore) {}
+    try { return OffsetDateTime.parse(s).toLocalDate(); }
+    catch (Exception ignore) {}
+    return null;
+  }
+
+  private static LocalTime parseTimeOrDefault(String hhmm, LocalTime dflt) {
+    if (hhmm == null || hhmm.isBlank()) return dflt;
+    return LocalTime.parse(hhmm);
+  }
+
+  private static ZonedDateTime nextDayOfMonth(ZonedDateTime now, int dom, int hour, int minute) {
+    int lastDom = now.getMonth().length(now.toLocalDate().isLeapYear());
+    int day = Math.min(Math.max(dom, 1), lastDom);
+    ZonedDateTime candidate = now.withDayOfMonth(Math.min(day, now.getMonth().length(now.toLocalDate().isLeapYear())))
+                                 .withHour(hour).withMinute(minute).withSecond(0).withNano(0);
+    if (!candidate.isAfter(now)) {
+      // move to next month
+      ZonedDateTime nextMonth = now.plusMonths(1).withDayOfMonth(1);
+      int lastNextDom = nextMonth.getMonth().length(nextMonth.toLocalDate().isLeapYear());
+      int nextDay = Math.min(Math.max(dom, 1), lastNextDom);
+      candidate = nextMonth.withDayOfMonth(nextDay).withHour(hour).withMinute(minute).withSecond(0).withNano(0);
+    }
+    return candidate;
+  }
+
+  // very small parser for "sec opt" "min hour dom * *"
+  private static final class CronParts {
+    Integer minute, hour, dayOfMonth;
+    static CronParts parse(String cron) {
+      if (cron == null) return null;
+      String[] parts = cron.trim().split("\\s+");
+      if (parts.length < 5) return null;
+      // allow "0 30 09 10 * *" or "30 09 10 * *"
+      int idx = (parts.length == 6) ? 1 : 0;
+      CronParts p = new CronParts();
+      p.minute    = parseInt(parts[idx++]);
+      p.hour      = parseInt(parts[idx++]);
+      p.dayOfMonth= parseInt(parts[idx++]);
+      return (p.minute == null || p.hour == null || p.dayOfMonth == null) ? null : p;
+    }
+    private static Integer parseInt(String s) { try { return Integer.parseInt(s); } catch (Exception e) { return null; } }
+  }
+}
+
+3.3 MessageBus.java — schedule-aware send
+
+package com.neo.notification.sendtobus;
+
+import com.azure.messaging.servicebus.*;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.neo.notification.change.ChangeInfo;
+import com.neo.notification.config.EventConfig;
+import com.neo.notification.util.ErrorWriter;
+import com.azure.storage.blob.BlobContainerClient;
+
+import java.time.OffsetDateTime;
+import java.time.ZoneId;
+import java.util.*;
+import java.util.logging.Logger;
+
+/**
+ * Builds and sends a single event message to Service Bus.
+ * Thread-safe (stateless). Caller controls the sender instance.
+ */
+public final class MessageBus {
+  private static final ObjectMapper M = new ObjectMapper();
+
+  private MessageBus() {}
+
+  /**
+   * Send one message (scheduled or immediate) based on the event's schedule config.
+   *
+   * @param sender          an already-created ServiceBusSenderClient (thread-safe)
+   * @param container       cosmos container name
+   * @param docId           document id
+   * @param event           the fired EventConfig.Event
+   * @param when            "insert" | "update"
+   * @param deltas          tracked-field deltas (empty on insert is OK)
+   * @param context         extra headers (e.g., _etag, _lsn)
+   * @param newDoc          the current document (for error logging / schedule eval)
+   * @param correlationId   correlation id string
+   * @param sessionIdOrNull session id (null if sessions disabled)
+   * @param errorContainer  blob container to write errors to
+   * @param log             logger
+   */
+  public static void sendEvent(ServiceBusSenderClient sender,
+                               String container,
+                               String docId,
+                               EventConfig.Event event,
+                               String when,
+                               List<ChangeInfo> deltas,
+                               Map<String,Object> context,
+                               ObjectNode newDoc,
+                               String correlationId,
+                               String sessionIdOrNull,
+                               BlobContainerClient errorContainer,
+                               Logger log) {
+    Objects.requireNonNull(sender, "sender");
+    Objects.requireNonNull(event, "event");
+    Objects.requireNonNull(docId, "docId");
+
+    try {
+      // --- Build a compact JSON payload (no schemaVersion as requested) ---
+      Map<String,Object> body = new LinkedHashMap<>();
+      body.put("correlationId", correlationId);
+      body.put("container", container);
+      body.put("docId", docId);
+      body.put("eventId", event.id);
+      body.put("eventName", event.name);
+      body.put("when", when);
+      body.put("changes", compactChanges(deltas));
+      body.put("context", context == null ? Collections.emptyMap() : context);
+
+      byte[] bytes = M.writeValueAsBytes(body);
+      ServiceBusMessage msg = new ServiceBusMessage(bytes);
+      msg.setContentType("application/json");
+      msg.setMessageId(UUID.randomUUID().toString());
+      msg.setCorrelationId(correlationId);
+      if (sessionIdOrNull != null) msg.setSessionId(sessionIdOrNull);
+
+      // helpful application properties
+      msg.getApplicationProperties().put("container", container);
+      msg.getApplicationProperties().put("eventId", event.id);
+      msg.getApplicationProperties().put("docId", docId);
+      msg.getApplicationProperties().put("when", when);
+
+      // --- Compute schedule (if any) ---
+      ZoneId defaultTz = ZoneId.of(Optional.ofNullable(System.getenv("Business_TZ")).orElse("Asia/Tokyo"));
+      OffsetDateTime scheduleAt = SchedulePlanner.compute(event, newDoc, defaultTz, log);
+
+      if (scheduleAt != null && scheduleAt.isAfter(OffsetDateTime.now())) {
+        long seq = sender.scheduleMessage(msg, scheduleAt);
+        log.info("Scheduled message (seq=" + seq + ") eventId=" + event.id + " docId=" + docId + " at=" + scheduleAt);
+      } else {
+        sender.sendMessage(msg);
+        log.info("Sent message eventId=" + event.id + " docId=" + docId);
+      }
+    } catch (Exception ex) {
+      log.severe("ServiceBus send failed for eventId=" + event.id + ", docId=" + docId + ": " + ex.getMessage());
+      // Persist the failure (never throw past this point; your Function will keep processing other docs)
+      ErrorWriter.writeError(errorContainer,
+          container, docId, "ServiceBusSendError",
+          ex.getMessage(),
+          (when == null ? "UNKNOWN" : when.toUpperCase()),
+          newDoc == null ? "" : newDoc.toPrettyString(),
+          null, // etag unknown here
+          null, // invocation id set by caller if desired
+          "ServiceBusSend",
+          log);
+    }
+  }
+
+  private static List<Map<String,Object>> compactChanges(List<ChangeInfo> deltas) {
+    if (deltas == null || deltas.isEmpty()) return Collections.emptyList();
+    List<Map<String,Object>> out = new ArrayList<>(deltas.size());
+    for (ChangeInfo c : deltas) {
+      Map<String,Object> m = new LinkedHashMap<>();
+      m.put("field", c.getFieldPath());
+      m.put("kind",  c.getKind().name());
+      if (c.getOldValue() != null) m.put("old", c.getOldValue().isValueNode() ? c.getOldValue().asText() : c.getOldValue());
+      if (c.getNewValue() != null) m.put("new", c.getNewValue().isValueNode() ? c.getNewValue().asText() : c.getNewValue());
+      out.add(m);
+    }
+    return out;
+  }
+}
+
+Thread‑safety: ServiceBusSenderClient is thread‑safe. This class is stateless.
+Errors: Caught, logged, and persisted with ErrorWriter.
+Docs: JavaDoc on the public method explains the contract.
+
+3.4 Where to call it (inside your Function)
+
+Nothing fancy—right after you’ve computed eventsFired and when:
+
+// Decide when string
+final String when = isCreate ? "insert" : "update";
+
+// Useful context (optional)
+Map<String,Object> ctx = Map.of(
+  "etag", newDoc.path("_etag").asText(""),
+  "lsn",  newDoc.path("_lsn").asText(""),
+  "readAtUtc", java.time.OffsetDateTime.now().toString()
+);
+
+// For each fired event, send (now or scheduled)
+for (EventConfig.Event evt : eventsFired) {
+  // honor the event’s "when" filter (already in your evaluator)
+  MessageBus.sendEvent(
+      SB_SENDER,                  // your singleton sender
+      cosmosDbContainerName,
+      id,                          // doc id
+      evt,
+      when,
+      deltas,                      // your ChangeInfo list
+      ctx,
+      newDoc,
+      /* correlationId */ id + "|" + evt.id + "|" + when + "|" + context.getInvocationId(),
+      /* sessionIdOrNull */ SB_USE_SESSIONS ? id : null,
+      ERROR_CONTAINER,
+      context.getLogger()
+  );
+}
+
+
+⸻
+
+Why these choices?
+	•	Column G → schedule: encoded in one place (config) so you don’t scatter timing rules across code. If omitted → send now.
+	•	“Monthly ~10th”: included via simple "cron" support, but if this is truly a global accounting day, a Timer-trigger Function is cleaner and usually used in production. You can keep the event rule to decide which docs get messages and let the Timer trigger load those docs and enqueue.
+	•	Thread safety: one ServiceBusSenderClient per Function app (or one per Function class) is fine; reuse it across messages in the same invocation. No locks needed.
+
+⸻
+
+If you want me to tailor the "cron" parser to stricter patterns you’ll use (e.g., exactly “10th 09:00 JST”), say so and I’ll simplify it even further.
