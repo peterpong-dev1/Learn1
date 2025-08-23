@@ -1,70 +1,98 @@
-Short answer: yes—having a few Function classes, each with its own static clients, is okay. But you’ll do even better (fewer sockets/threads) if you share the heavy clients across the app.
-
-What’s safe vs. heavy
-	•	Blob
-	•	BlobServiceClient = heavy (connection pool, threads).
-	•	BlobContainerClient = light wrapper.
-Best: create one BlobServiceClient per storage account, and from it create as many BlobContainerClients as you need.
-	•	Service Bus
-	•	ServiceBusClient (builder root) = heavy.
-	•	ServiceBusSenderClient = relatively light per entity (queue/topic).
-Best: create one ServiceBusClient per namespace, then one sender per queue/topic you use.
-
-Multiple Function classes on the same host instance will share the JVM. If each class has its own static heavy client, you’ll have duplicates. It still works, but wastes resources. On scale‑out (multiple host instances), each instance will have its own set anyway—that’s normal.
-
-Simple shared-client holder (recommended)
-
-Put this in a small SharedClients class and use it from all Functions:
-
-package com.neo.notification.shared;
-
-import com.azure.messaging.servicebus.*;
-import com.azure.storage.blob.*;
-
-public final class SharedClients {
-  private static final String SB_CONN = System.getenv("ServiceBusConnection");
-  private static final String STORAGE_CONN = System.getenv("Blob_Connection");
-
-  // Heavy, shared once per process
-  public static final ServiceBusClientBuilder SB =
-      new ServiceBusClientBuilder().connectionString(SB_CONN);
-
-  public static final BlobServiceClient BLOB =
-      new BlobServiceClientBuilder().connectionString(STORAGE_CONN).buildClient();
-
-  private SharedClients() {}
-
-  /** Per-entity sender; call per queue/topic you need (lightweight). */
-  public static ServiceBusSenderClient senderForQueue(String queueName) {
-    return SB.sender().queueName(queueName).buildClient();
-  }
-
-  public static BlobContainerClient container(String containerName) {
-    return BLOB.getBlobContainerClient(containerName);
-  }
+{
+  "version": "1.0",
+  "container": "transactionProgress",
+  "events": [
+    {
+      "id": "transactionProgress_request_submitted",
+      "name": "Transaction Request Submitted",
+      "when": ["insert", "update"],
+      "conditions": {
+        "logic": "OR",
+        "rules": [
+          { "op": "becameNotNull", "field": "transferRequestStatusRegistrationDate" },
+          { "op": "changedTo",     "field": "transferRequestStatus", "value": "01" }
+        ]
+      }
+    },
+    {
+      "id": "transactionProgress_request_amended",
+      "name": "Transaction Request Amended",
+      "when": ["update"],
+      "conditions": {
+        "logic": "AND",
+        "rules": [
+          { "op": "becameNotNull", "field": "transferRequestStatusUpdateDate" }
+        ]
+      }
+    },
+    {
+      "id": "transactionProgress_request_cancelled",
+      "name": "Transaction Request Cancelled",
+      "when": ["update"],
+      "conditions": {
+        "logic": "AND",
+        "rules": [
+          { "op": "changedTo", "field": "transferRequestStatus", "value": "99" }
+        ]
+      }
+    },
+    {
+      "id": "transactionProgress_status_updated",
+      "name": "Status Updated",
+      "when": ["update"],
+      "conditions": {
+        "logic": "AND",
+        "rules": [
+          { "op": "changed", "field": "transferRequestStatus" }
+        ]
+      }
+    },
+    {
+      "id": "transactionProgress_deficiency_detected",
+      "name": "Deficiency Notification Sent",
+      "when": ["update"],
+      "conditions": {
+        "logic": "OR",
+        "rules": [
+          { "op": "changedTo",     "field": "inadequacy",     "value": "true" },
+          { "op": "becameNotNull", "field": "inadequacyContents" },
+          { "op": "changedTo",     "field": "FUBI_STATUS",    "value": "01" }
+        ]
+      }
+    },
+    {
+      "id": "transactionProgress_deficiency_resolved",
+      "name": "Deficiency Resolved",
+      "when": ["update"],
+      "conditions": {
+        "logic": "OR",
+        "rules": [
+          { "op": "changedTo", "field": "inadequacy",  "value": "false" },
+          { "op": "changedTo", "field": "FUBI_STATUS", "value": "00" }
+        ]
+      }
+    },
+    {
+      "id": "transactionProgress_decision_made",
+      "name": "Decision Notification Sent",
+      "when": ["update"],
+      "conditions": {
+        "logic": "AND",
+        "rules": [
+          { "op": "changedTo", "field": "transferRequestStatus", "value": "10" }
+        ]
+      }
+    },
+    {
+      "id": "transactionProgress_completed",
+      "name": "Transaction Completed",
+      "when": ["update"],
+      "conditions": {
+        "logic": "AND",
+        "rules": [
+          { "op": "becameNotNull", "field": "lastProcessingDate" }
+        ]
+      }
+    }
+  ]
 }
-
-In each Function class
-
-// static finals: light wrappers from the shared heavy clients
-private static final BlobContainerClient CONFIG_CONTAINER =
-    SharedClients.container(System.getenv("Blob_ContainerName_Config"));
-private static final BlobContainerClient DATA_CONTAINER =
-    SharedClients.container(System.getenv("Blob_ContainerName_Data"));
-private static final BlobContainerClient ERROR_CONTAINER =
-    SharedClients.container(System.getenv("Blob_ContainerName_Error"));
-
-private static final ServiceBusSenderClient SB_SENDER =
-    SharedClients.senderForQueue(System.getenv("ServiceBusEntity"));
-
-That pattern gives you:
-	•	One Storage connection pool and one Service Bus connection pool per host process.
-	•	As many container clients and sender clients as you need, cheaply.
-	•	No need to manually close them; Functions host will recycle the process. (If you want, add a shutdown hook to close SB_SENDER, but it’s optional.)
-
-When is “too many” a concern?
-	•	Dozens of senders on the same queue/topic: still fine.
-	•	Hundreds of heavy clients per host: avoid that (use the shared holder).
-	•	If you’re under tight memory or connection limits, this shared pattern keeps footprint small.
-
-So: copying the class and creating static clients in each will work. For a cleaner, production‑friendly setup, centralize the heavy clients as shown and reuse them from all your Function classes.
