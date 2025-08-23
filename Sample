@@ -500,4 +500,88 @@ Why these choices?
 
 ⸻
 
+
+got it — let’s ditch generic cron and make it dead‑simple.
+
+A) Config: replace "cron" with a clear monthly shape
+
+Use this for “run near the 10th at 09:00 JST”:
+
+"schedule": {
+  "type": "monthlyOnDay",
+  "day": 10,           // 1..31 (we’ll clamp to month length)
+  "time": "09:00",     // optional; default 09:00
+  "tz": "Asia/Tokyo"   // optional; default from env Business_TZ or Asia/Tokyo
+}
+
+(Everything else stays the same: immediate, atField, afterDaysFromField.)
+
+B) Code: tiny change in EventConfig.Schedule
+
+public static final class Schedule {
+  public String type;     // immediate | atField | afterDaysFromField | monthlyOnDay
+  public String field;    // for atField / afterDaysFromField
+  public Integer days;    // for afterDaysFromField
+  public String time;     // "HH:mm"
+  public String tz;       // zone id
+  public Integer day;     // NEW: for monthlyOnDay
+  public String note;     // ignored
+}
+
+C) Code: simplify SchedulePlanner.compute(...)
+
+Replace the previous case "cron" block (and delete CronParts) with:
+
+case "monthlyonday": {
+  int dom = evt.schedule.day == null ? 1 : Math.max(1, Math.min(31, evt.schedule.day));
+  LocalTime t = parseTimeOrDefault(evt.schedule.time, LocalTime.of(9, 0));
+  ZonedDateTime now = ZonedDateTime.now(zone);
+
+  // clamp day-of-month to this month’s length
+  int lastThis = now.getMonth().length(now.toLocalDate().isLeapYear());
+  int day = Math.min(dom, lastThis);
+  ZonedDateTime candidate = now.withDayOfMonth(day)
+                               .withHour(t.getHour()).withMinute(t.getMinute())
+                               .withSecond(0).withNano(0);
+
+  // if time already passed today, schedule next month (also clamped)
+  if (!candidate.isAfter(now)) {
+    ZonedDateTime next = now.plusMonths(1).withDayOfMonth(1);
+    int lastNext = next.getMonth().length(next.toLocalDate().isLeapYear());
+    int nextDay = Math.min(dom, lastNext);
+    candidate = next.withDayOfMonth(nextDay)
+                    .withHour(t.getHour()).withMinute(t.getMinute())
+                    .withSecond(0).withNano(0);
+  }
+  return candidate.toOffsetDateTime();
+}
+
+Everything else in SchedulePlanner stays as is; remove the CronParts helper entirely.
+
+D) Example (updated event)
+
+{
+  "id": "unpaidContractInquiry_extracted",
+  "name": "Unpaid Contract Extraction",
+  "when": ["insert","update"],
+  "conditions": {
+    "logic": "OR",
+    "rules": [
+      { "op": "becameNotNull", "field": "policyId" },
+      { "op": "becameNotNull", "field": "lapseDate" },
+      { "op": "becameNotNull", "field": "terminationDate" }
+    ]
+  },
+  "schedule": {
+    "type": "monthlyOnDay",
+    "day": 10,
+    "time": "09:00",
+    "tz": "Asia/Tokyo"
+  }
+}
+
+That’s it—no cron parsing, no surprises, and still handles short months by clamping to the last valid day. The rest of your send path (schedule vs immediate) remains unchanged.
+
+
+
 If you want me to tailor the "cron" parser to stricter patterns you’ll use (e.g., exactly “10th 09:00 JST”), say so and I’ll simplify it even further.
