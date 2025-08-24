@@ -1,46 +1,105 @@
-Yep—monthlyOnDay won’t cover “run every day at HH:mm.”
-Let’s add a dailyAtTime schedule type.
-
-1) Config (events.json)
-
-Example:
-
 {
-  "id": "unpaidContractInquiry_daily_extract",
-  "name": "Daily unpaid extract",
-  "when": ["insert","update"],
-  "conditions": { "logic": "OR", "rules": [ { "op": "becameNotNull", "field": "policyId" } ] },
-  "schedule": {
-    "type": "dailyAtTime",
-    "time": "09:00",
-    "tz": "Asia/Tokyo",
-    "businessDays": true   // optional; if true skip Sat/Sun
-  }
-}
-
-2) Scheduler change (Java)
-
-Add a case to your existing SchedulePlanner.compute(...):
-
-case "dailyattime": {
-    LocalTime t = parseTimeOrDefault(evt.schedule.time, LocalTime.of(9, 0));
-    ZonedDateTime now = ZonedDateTime.now(zone);
-    ZonedDateTime candidate = now.withHour(t.getHour()).withMinute(t.getMinute())
-                                 .withSecond(0).withNano(0);
-
-    if (!candidate.isAfter(now)) {
-        candidate = candidate.plusDays(1);
+  "version": "1.0",
+  "container": "unpaidContractInquiry",
+  "events": [
+    {
+      "id": "unpaidContractInquiry_extracted",
+      "name": "Unpaid Contract Extraction",
+      "when": ["insert", "update"],
+      "conditions": {
+        "logic": "OR",
+        "rules": [
+          { "op": "becameNotNull", "field": "policyId" },
+          { "op": "becameNotNull", "field": "lapseDate" },
+          { "op": "becameNotNull", "field": "terminationDate" }
+        ]
+      },
+      "schedule": {
+        "type": "monthlyOnDay",
+        "day": 10,
+        "time": "09:00",
+        "tz": "Asia/Tokyo",
+        "businessDays": false,
+        "note": "Monthly around 10th (aligns to NeoNet update); send same day at 09:00 JST."
+      }
+    },
+    {
+      "id": "unpaidContractInquiry_unpaid_notice",
+      "name": "Create Unpaid Notice",
+      "when": ["insert", "update"],
+      "conditions": {
+        "logic": "OR",
+        "rules": [
+          { "op": "becameNotNull", "field": "policyId" },
+          { "op": "becameNotNull", "field": "lapseDate" },
+          { "op": "becameNotNull", "field": "terminationDate" }
+        ]
+      },
+      "schedule": {
+        "type": "immediate",
+        "note": "Same day as extraction when a new unpaid contract is found."
+      }
+    },
+    {
+      "id": "unpaidContractInquiry_dunning_notice",
+      "name": "Create Dunning Notice",
+      "when": ["update"],
+      "conditions": {
+        "logic": "AND",
+        "rules": [
+          { "op": "eq", "field": "unpaidStatus", "value": "UNPAID" },
+          { "op": "becameNotNull", "field": "lastNoticeDate" }
+        ]
+      },
+      "schedule": {
+        "type": "afterDaysFromField",
+        "field": "lastNoticeDate",
+        "days": 6,
+        "time": "09:00",
+        "tz": "Asia/Tokyo",
+        "businessDays": true,
+        "note": "Send N business days after the previous notice if still unpaid."
+      }
+    },
+    {
+      "id": "unpaidContractInquiry_final_notice",
+      "name": "Create Final Notice",
+      "when": ["update"],
+      "conditions": {
+        "logic": "AND",
+        "rules": [
+          { "op": "eq", "field": "unpaidStatus", "value": "UNPAID" },
+          { "op": "becameNotNull", "field": "finalNoticeDueDate" }
+        ]
+      },
+      "schedule": {
+        "type": "atField",
+        "field": "finalNoticeDueDate",
+        "time": "09:00",
+        "tz": "Asia/Tokyo",
+        "businessDays": true,
+        "note": "At final notice due date, 09:00 JST (next business day if off-hours per sheet)."
+      }
+    },
+    {
+      "id": "unpaidContractInquiry_lapse_notice",
+      "name": "Create Lapse Notice",
+      "when": ["insert", "update"],
+      "conditions": {
+        "logic": "OR",
+        "rules": [
+          { "op": "becameNotNull", "field": "lapseDate" },
+          { "op": "changed", "field": "lapseDate" }
+        ]
+      },
+      "schedule": {
+        "type": "atField",
+        "field": "lapseDate",
+        "time": "09:00",
+        "tz": "Asia/Tokyo",
+        "businessDays": false,
+        "note": "On lapse date at 09:00 JST."
+      }
     }
-
-    if (Boolean.TRUE.equals(evt.schedule.businessDays)) {
-        while (candidate.getDayOfWeek() == DayOfWeek.SATURDAY ||
-               candidate.getDayOfWeek() == DayOfWeek.SUNDAY) {
-            candidate = candidate.plusDays(1);
-        }
-    }
-    return candidate.toOffsetDateTime();
+  ]
 }
-
-(Keep your existing immediate, atField, afterDaysFromField, monthlyOnDay cases as-is.)
-
-That’s it—now you can model Realtime (immediate), Daily (dailyAtTime), and Batch/Monthly (monthlyOnDay) explicitly.
