@@ -1,81 +1,46 @@
-/**
- * Compute desired enqueue time in UTC (or null for "send now").
- * If evt.schedule.businessDays == true, weekends (Sat/Sun) are skipped.
- */
-public static OffsetDateTime compute(EventConfig.Event evt,
-                                     ObjectNode newDoc,
-                                     ZoneId defaultTz,
-                                     Logger log) {
-    if (evt == null || evt.schedule == null || evt.schedule.type == null) return null;
+Yep—monthlyOnDay won’t cover “run every day at HH:mm.”
+Let’s add a dailyAtTime schedule type.
 
-    final String type = evt.schedule.type.trim().toLowerCase();
-    final ZoneId zone = safeZone(evt.schedule.tz, defaultTz);
-    final boolean useBusinessDays = Boolean.TRUE.equals(evt.schedule.businessDays); // <— NEW
+1) Config (events.json)
 
-    try {
-        switch (type) {
-            case "immediate":
-                return null;
+Example:
 
-            case "atfield": {
-                LocalDate d = readLocalDate(newDoc, evt.schedule.field);
-                if (d == null) return null;
-                LocalTime t = parseTimeOrDefault(evt.schedule.time, LocalTime.of(9, 0));
-                ZonedDateTime zdt = ZonedDateTime.of(d, t, zone);
-                if (useBusinessDays) zdt = bumpToNextBusinessDay(zdt);
-                return zdt.toOffsetDateTime();
-            }
+{
+  "id": "unpaidContractInquiry_daily_extract",
+  "name": "Daily unpaid extract",
+  "when": ["insert","update"],
+  "conditions": { "logic": "OR", "rules": [ { "op": "becameNotNull", "field": "policyId" } ] },
+  "schedule": {
+    "type": "dailyAtTime",
+    "time": "09:00",
+    "tz": "Asia/Tokyo",
+    "businessDays": true   // optional; if true skip Sat/Sun
+  }
+}
 
-            case "afterdaysfromfield": {
-                LocalDate base = readLocalDate(newDoc, evt.schedule.field);
-                if (base == null) return null;
-                int days = evt.schedule.days == null ? 0 : evt.schedule.days;
-                LocalTime t = parseTimeOrDefault(evt.schedule.time, LocalTime.of(9, 0));
-                ZonedDateTime zdt = ZonedDateTime.of(base.plusDays(days), t, zone);
-                if (useBusinessDays) zdt = bumpToNextBusinessDay(zdt);
-                return zdt.toOffsetDateTime();
-            }
+2) Scheduler change (Java)
 
-            case "monthlyonday": {
-                int dom = evt.schedule.day == null ? 1 : Math.max(1, Math.min(31, evt.schedule.day));
-                LocalTime t = parseTimeOrDefault(evt.schedule.time, LocalTime.of(9, 0));
-                ZonedDateTime now = ZonedDateTime.now(zone);
+Add a case to your existing SchedulePlanner.compute(...):
 
-                int lastThis = now.getMonth().length(now.toLocalDate().isLeapYear());
-                int day = Math.min(dom, lastThis);
+case "dailyattime": {
+    LocalTime t = parseTimeOrDefault(evt.schedule.time, LocalTime.of(9, 0));
+    ZonedDateTime now = ZonedDateTime.now(zone);
+    ZonedDateTime candidate = now.withHour(t.getHour()).withMinute(t.getMinute())
+                                 .withSecond(0).withNano(0);
 
-                ZonedDateTime candidate = now.withDayOfMonth(day)
-                                             .withHour(t.getHour())
-                                             .withMinute(t.getMinute())
-                                             .withSecond(0)
-                                             .withNano(0);
-
-                if (!candidate.isAfter(now)) {
-                    ZonedDateTime next = now.plusMonths(1);
-                    int lastNext = next.getMonth().length(next.toLocalDate().isLeapYear());
-                    int nextDay = Math.min(dom, lastNext);
-                    candidate = next.withDayOfMonth(nextDay)
-                                    .withHour(t.getHour()).withMinute(t.getMinute())
-                                    .withSecond(0).withNano(0);
-                }
-
-                if (useBusinessDays) candidate = bumpToNextBusinessDay(candidate);
-                return candidate.toOffsetDateTime();
-            }
-
-            default:
-                return null;
-        }
-    } catch (Exception ex) {
-        log.warning("SchedulePlanner error for event=" + evt.id + ": " + ex.getMessage());
-        return null;
+    if (!candidate.isAfter(now)) {
+        candidate = candidate.plusDays(1);
     }
+
+    if (Boolean.TRUE.equals(evt.schedule.businessDays)) {
+        while (candidate.getDayOfWeek() == DayOfWeek.SATURDAY ||
+               candidate.getDayOfWeek() == DayOfWeek.SUNDAY) {
+            candidate = candidate.plusDays(1);
+        }
+    }
+    return candidate.toOffsetDateTime();
 }
 
-/** Move Saturday/Sunday to the next Monday at the same local time. */
-private static ZonedDateTime bumpToNextBusinessDay(ZonedDateTime zdt) {
-    DayOfWeek d = zdt.getDayOfWeek();
-    if (d == DayOfWeek.SATURDAY) return zdt.plusDays(2);
-    if (d == DayOfWeek.SUNDAY)   return zdt.plusDays(1);
-    return zdt;
-}
+(Keep your existing immediate, atField, afterDaysFromField, monthlyOnDay cases as-is.)
+
+That’s it—now you can model Realtime (immediate), Daily (dailyAtTime), and Batch/Monthly (monthlyOnDay) explicitly.
