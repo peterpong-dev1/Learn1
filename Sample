@@ -1,67 +1,51 @@
-public final class MessageFactory {
-  private static final ObjectMapper M = new ObjectMapper();
-
-  public static ServiceBusMessage buildBodyAndEnvelope(
-      EventConfig.Event evt,
-      ObjectNode newDoc,
-      Map<String, Object> envelope,     // correlationId, messageId, container, docId, eventId, eventName, when, etc.
-      List<ChangeInfo> deltas,
-      String sessionIdOrNull
-  ) throws Exception {
-
-    ObjectNode root = M.createObjectNode();
-
-    // envelope
-    envelope.forEach((k,v) -> root.set(k, M.valueToTree(v)));
-    root.put("createdAtUtc", OffsetDateTime.now().toString());
-
-    // pass notificationType/triggerType if present
-    if (evt.notificationType != null || evt.triggerType != null) {
-      ObjectNode notify = M.createObjectNode();
-      if (evt.notificationType != null) notify.put("notificationType", evt.notificationType);
-      if (evt.triggerType != null)      notify.put("triggerType",      evt.triggerType);
-      root.set("notify", notify);
-    }
-
-    // dynamic keys (name -> JSON Pointer path)
-    if (evt.keys != null && !evt.keys.isEmpty()) {
-      ObjectNode keysNode = M.createObjectNode();
-      for (Map.Entry<String,String> e : evt.keys.entrySet()) {
-        String name = safe(e.getKey());
-        String ptr  = safe(e.getValue());
-        if (name.isEmpty() || ptr.isEmpty() || ptr.charAt(0) != '/') continue; // must be a JSON Pointer
-        JsonNode v = newDoc.at(ptr);                      // null-safe lookup
-        if (v != null && !v.isMissingNode() && !v.isNull()) {
-          // use text if scalar, else embed as JSON
-          keysNode.set(name, v.isValueNode() ? M.valueToTree(v.asText()) : v);
-        }
-      }
-      if (keysNode.size() > 0) root.set("keys", keysNode);
-    }
-
-    // shrink your deltas if you want (optional)
-    if (deltas != null && !deltas.isEmpty()) {
-      root.set("deltas", M.valueToTree(deltas.stream().map(ChangeInfo::toSmall).toList()));
-    }
-
-    byte[] payload = M.writeValueAsBytes(root);
-
-    ServiceBusMessage msg = new ServiceBusMessage(BinaryData.fromBytes(payload))
-        .setContentType("application/json");
-
-    // set broker props from envelope if present
-    if (envelope.containsKey("messageId"))    msg.setMessageId(String.valueOf(envelope.get("messageId")));
-    if (envelope.containsKey("correlationId"))msg.setCorrelationId(String.valueOf(envelope.get("correlationId")));
-    if (sessionIdOrNull != null)              msg.setSessionId(sessionIdOrNull);
-
-    // optional application properties for quick filtering
-    if (envelope.containsKey("container")) msg.getApplicationProperties().put("container", envelope.get("container"));
-    if (envelope.containsKey("eventId"))   msg.getApplicationProperties().put("eventId",   envelope.get("eventId"));
-    if (envelope.containsKey("docId"))     msg.getApplicationProperties().put("docId",     envelope.get("docId"));
-    if (envelope.containsKey("when"))      msg.getApplicationProperties().put("when",      envelope.get("when"));
-
-    return msg;
-  }
-
-  private static String safe(String s) { return s == null ? "" : s.trim(); }
-}
+/**
+ * Builds the Service Bus message body and envelope.
+ *
+ * Example output JSON (payload):
+ * {
+ *   "correlationId": "12345-abc",
+ *   "messageId": "msg-001",
+ *   "createdAtUtc": "2025-08-29T10:30:00Z",
+ *   "container": "unpaidContractInquiry",
+ *   "docId": "POL20250824001",
+ *   "eventId": "unpaidContractInquiry_dunning_notice",
+ *   "eventName": "Create Dunning Notice",
+ *   "when": "update",
+ *   "deltas": [
+ *     {
+ *       "field": "/unpaidStatus",
+ *       "kind": "CHANGED",
+ *       "old": "PAID",
+ *       "new": "UNPAID"
+ *     }
+ *   ],
+ *   "context": {
+ *     "user": "system",
+ *     "source": "cosmosdb-trigger"
+ *   },
+ *   "notify": {
+ *     "notificationType": "unpaid",
+ *     "triggerType": "dunning"
+ *   },
+ *   "keys": {
+ *     "policyId": "POL20250824001",
+ *     "applicationNumber": "APP20250824001"
+ *   }
+ * }
+ *
+ * Attached as Service Bus Application Properties for filtering/metrics:
+ *   container, eventId, docId, when
+ *
+ * @param container  Cosmos DB container name
+ * @param docId      Unique document identifier
+ * @param eventId    Configured event ID
+ * @param eventName  Human-readable event name
+ * @param when       Operation type ("insert" | "update")
+ * @param deltas     Changed fields (with old/new values)
+ * @param context    Optional metadata context
+ * @param notificationType Notification type from event.json (e.g., unpaid, newBusiness)
+ * @param triggerType Trigger type from event.json (e.g., dunning, notice)
+ * @param keys       Extracted keys from config (e.g., policyId, applicationNumber)
+ * @return ServiceBusMessage with payload and headers set
+ * @throws Exception if serialization fails
+ */
