@@ -1,326 +1,67 @@
-#Got it 👍
-Right now your Function is just forwarding raw JSON.
-If you want to punch into the body (e.g., read eventId, docId, correlationId) before calling the Message API, you can use Jackson.
+public final class MessageFactory {
+  private static final ObjectMapper M = new ObjectMapper();
 
-Here’s a safe snippet that you can drop in MessageRelayFunction before calling MessageApiRelay.send(...).
+  public static ServiceBusMessage buildBodyAndEnvelope(
+      EventConfig.Event evt,
+      ObjectNode newDoc,
+      Map<String, Object> envelope,     // correlationId, messageId, container, docId, eventId, eventName, when, etc.
+      List<ChangeInfo> deltas,
+      String sessionIdOrNull
+  ) throws Exception {
 
-⸻
+    ObjectNode root = M.createObjectNode();
 
-Example: Parse body → extract fields
+    // envelope
+    envelope.forEach((k,v) -> root.set(k, M.valueToTree(v)));
+    root.put("createdAtUtc", OffsetDateTime.now().toString());
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import java.util.UUID;
-
-Inside run(...) before the MessageApiRelay.send(...):
-
-// Parse JSON body (safe)
-ObjectMapper mapper = new ObjectMapper();
-String corr = firstNonBlank(correlationId, messageId, invocationId); // default
-
-try {
-    JsonNode root = mapper.readTree(body);
-
-    // Example: if JSON has "correlationId"
-    if (root.hasNonNull("correlationId")) {
-        corr = root.get("correlationId").asText();
+    // pass notificationType/triggerType if present
+    if (evt.notificationType != null || evt.triggerType != null) {
+      ObjectNode notify = M.createObjectNode();
+      if (evt.notificationType != null) notify.put("notificationType", evt.notificationType);
+      if (evt.triggerType != null)      notify.put("triggerType",      evt.triggerType);
+      root.set("notify", notify);
     }
 
-    // Example: log eventId/docId if present
-    String eventId = root.path("event").path("eventId").asText(null);
-    String docId   = root.path("event").path("docId").asText(null);
-
-    log.info("[Relay] Parsed body corr=" + corr
-            + " eventId=" + safe(eventId)
-            + " docId=" + safe(docId));
-
-} catch (Exception jex) {
-    log.warning("[Relay] Failed to parse JSON body: " + jex.getMessage()
-            + " | using fallback correlationId=" + corr);
-}
-
-Helper:
-
-private static String safe(String s) {
-    return (s == null || s.isBlank()) ? "-" : s;
-}
-
-
-⸻
-
-What this does
-	•	Uses Jackson to parse the Service Bus message body.
-	•	Extracts:
-	•	correlationId (if present in JSON)
-	•	eventId and docId (nested under event)
-	•	Falls back gracefully if JSON is missing or invalid.
-	•	Logs the important pieces for troubleshooting.
-
-⸻
-
-✅ With this, you can still forward the full body unchanged to the Message API, and you also have access to selected fields (e.g., for logging, headers, metrics).
-
-⸻
-
-Awesome—here’s a clean, production‑ready Java Azure Function (Service Bus trigger) that:
-	•	reads any JSON message
-	•	forwards it to a configurable Message API (POST by default)
-	•	is thread‑safe, with timeouts + robust error handling
-	•	makes it easy to tweak headers/method/URL via app settings
-
-⸻
-
-1) Function: Service Bus → Message API relay
-
-package com.neo.notification.bus;
-
-import com.microsoft.azure.functions.*;
-import com.microsoft.azure.functions.annotation.*;
-import java.util.Optional;
-import java.util.logging.Logger;
-
-/**
- * Service Bus triggered function that relays the message payload to the Message API.
- * All business logic stays in the Message API; this function only forwards.
- */
-public class MessageRelayFunction {
-
-    // App settings (set in local.settings.json / Function App → Configuration)
-    private static final String API_URL      = getenvReq("MESSAGE_API_URL");         // e.g. https://my.api/notify
-    private static final String API_METHOD   = getenvOr("MESSAGE_API_METHOD", "POST");
-    private static final boolean FAIL_ON_4XX = Boolean.parseBoolean(
-            getenvOr("FAIL_ON_4XX", "false")); // true => retry on 4xx too (usually not recommended)
-
-    @FunctionName("Neo_MessageRelay")
-    public void run(
-        @ServiceBusQueueTrigger(
-            name        = "msg",
-            queueName   = "%ServiceBusEntity%",          // app setting: ServiceBusEntity
-            connection  = "ServiceBusConnection")        // app setting: ServiceBusConnection
-        String body,
-
-        // optional broker props (null-safe if not bound)
-        @BindingName("MessageId")      String messageId,
-        @BindingName("CorrelationId")  String correlationId,
-        @BindingName("DeliveryCount")  Integer deliveryCount,
-
-        final ExecutionContext context
-    ) {
-        final Logger log = context.getLogger();
-        final String invocationId = context.getInvocationId();
-
-        // Guard: empty body
-        if (body == null || body.isBlank()) {
-            log.warning("[Relay] Empty Service Bus body; completing. invocationId=" + invocationId);
-            return; // nothing to forward
+    // dynamic keys (name -> JSON Pointer path)
+    if (evt.keys != null && !evt.keys.isEmpty()) {
+      ObjectNode keysNode = M.createObjectNode();
+      for (Map.Entry<String,String> e : evt.keys.entrySet()) {
+        String name = safe(e.getKey());
+        String ptr  = safe(e.getValue());
+        if (name.isEmpty() || ptr.isEmpty() || ptr.charAt(0) != '/') continue; // must be a JSON Pointer
+        JsonNode v = newDoc.at(ptr);                      // null-safe lookup
+        if (v != null && !v.isMissingNode() && !v.isNull()) {
+          // use text if scalar, else embed as JSON
+          keysNode.set(name, v.isValueNode() ? M.valueToTree(v.asText()) : v);
         }
-
-        // Build a safe correlation (prefer SB correlationId, fallback to messageId, else invocationId)
-        final String corr =
-                firstNonBlank(correlationId, messageId, invocationId);
-
-        try {
-            // Forward to Message API
-            var result = MessageApiRelay.send(API_URL, API_METHOD, body, corr, log);
-
-            // Decide retry vs complete
-            int status = result.statusCode();
-            if (status >= 200 && status < 300) {
-                log.info(String.format("[Relay] OK %d, corr=%s, msgId=%s, attempt=%s",
-                        status, corr, nullSafe(messageId), nullSafe(deliveryCount)));
-                return;
-            }
-
-            // Retry on transient conditions
-            if (status == 408 || status == 429 || status >= 500) {
-                throw new RuntimeException("Transient HTTP " + status + " from Message API");
-            }
-
-            // 4xx (besides 408/429): usually client/input; choose whether to fail
-            if (FAIL_ON_4XX) {
-                throw new RuntimeException("Client HTTP " + status + " from Message API");
-            } else {
-                log.warning(String.format("[Relay] Non‑retryable HTTP %d, completing. corr=%s", status, corr));
-                return;
-            }
-
-        } catch (Exception ex) {
-            // Throwing lets Functions retry and eventually dead‑letter (per queue MaxDeliveryCount)
-            log.severe("[Relay] Exception forwarding to Message API: " + ex.getMessage()
-                    + " | corr=" + corr + " | attempt=" + nullSafe(deliveryCount));
-            throw (ex instanceof RuntimeException) ? (RuntimeException) ex : new RuntimeException(ex);
-        }
+      }
+      if (keysNode.size() > 0) root.set("keys", keysNode);
     }
 
-    /* ------------------- tiny helpers ------------------- */
-
-    private static String getenvReq(String key) {
-        String v = System.getenv(key);
-        if (v == null || v.isBlank()) {
-            throw new IllegalStateException("Missing required app setting: " + key);
-        }
-        return v;
+    // shrink your deltas if you want (optional)
+    if (deltas != null && !deltas.isEmpty()) {
+      root.set("deltas", M.valueToTree(deltas.stream().map(ChangeInfo::toSmall).toList()));
     }
 
-    private static String getenvOr(String key, String def) {
-        String v = System.getenv(key);
-        return (v == null || v.isBlank()) ? def : v;
-    }
+    byte[] payload = M.writeValueAsBytes(root);
 
-    private static String firstNonBlank(String... xs) {
-        for (String x : xs) if (x != null && !x.isBlank()) return x;
-        return "";
-    }
+    ServiceBusMessage msg = new ServiceBusMessage(BinaryData.fromBytes(payload))
+        .setContentType("application/json");
 
-    private static String nullSafe(Object x) {
-        return (x == null) ? "null" : String.valueOf(x);
-    }
-}
+    // set broker props from envelope if present
+    if (envelope.containsKey("messageId"))    msg.setMessageId(String.valueOf(envelope.get("messageId")));
+    if (envelope.containsKey("correlationId"))msg.setCorrelationId(String.valueOf(envelope.get("correlationId")));
+    if (sessionIdOrNull != null)              msg.setSessionId(sessionIdOrNull);
 
+    // optional application properties for quick filtering
+    if (envelope.containsKey("container")) msg.getApplicationProperties().put("container", envelope.get("container"));
+    if (envelope.containsKey("eventId"))   msg.getApplicationProperties().put("eventId",   envelope.get("eventId"));
+    if (envelope.containsKey("docId"))     msg.getApplicationProperties().put("docId",     envelope.get("docId"));
+    if (envelope.containsKey("when"))      msg.getApplicationProperties().put("when",      envelope.get("when"));
 
-⸻
-
-2) Message API HTTP client (singleton, thread‑safe)
-
-package com.neo.notification.bus;
-
-import java.net.URI;
-import java.net.http.*;
-import java.time.Duration;
-import java.util.Map;
-import java.util.logging.Logger;
-
-/**
- * Thin HTTP relay to the Message API.
- * - Uses Java 11+ HttpClient (thread-safe).
- * - Adds standard headers (Content-Type, correlation, optional auth).
- * - Respects a configurable timeout.
- */
-public final class MessageApiRelay {
-
-    // One HttpClient per process (thread-safe)
-    private static final HttpClient CLIENT = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(timeout("MESSAGE_API_CONNECT_TIMEOUT_SEC", 10)))
-            .version(HttpClient.Version.HTTP_1_1)
-            .build();
-
-    // Optional auth/env headers
-    private static final String AUTH_BEARER = envOrNull("MESSAGE_API_AUTH_BEARER");     // raw token (avoid in plain text if possible)
-    private static final String API_KEY     = envOrNull("MESSAGE_API_KEY_VALUE");       // e.g. abc123
-    private static final String API_KEY_HDR = envOr("MESSAGE_API_KEY_HEADER", "X-API-Key");
-    private static final int REQ_TIMEOUT    = timeout("MESSAGE_API_TIMEOUT_SEC", 15);
-
-    private MessageApiRelay() {}
-
-    /**
-     * Forward a JSON string to Message API.
-     * @return HttpResponse<String> for status/logging.
-     */
-    public static HttpResponse<String> send(
-            String url, String method, String jsonBody, String correlationId, Logger log) throws Exception {
-
-        HttpRequest.Builder b = HttpRequest.newBuilder(URI.create(url))
-                .timeout(Duration.ofSeconds(REQ_TIMEOUT))
-                .header("Content-Type", "application/json")
-                .header("X-Correlation-Id", correlationId);
-
-        if (AUTH_BEARER != null && !AUTH_BEARER.isBlank()) {
-            b.header("Authorization", "Bearer " + AUTH_BEARER);
-        }
-        if (API_KEY != null && !API_KEY.isBlank()) {
-            b.header(API_KEY_HDR, API_KEY);
-        }
-
-        // Default POST; support PUT/PATCH if you want later
-        String m = (method == null ? "POST" : method.trim().toUpperCase());
-        switch (m) {
-            case "POST":
-                b.POST(HttpRequest.BodyPublishers.ofString(jsonBody));
-                break;
-            case "PUT":
-                b.PUT(HttpRequest.BodyPublishers.ofString(jsonBody));
-                break;
-            case "PATCH":
-                b.method("PATCH", HttpRequest.BodyPublishers.ofString(jsonBody));
-                break;
-            default:
-                // If GET ever needed, you must not send a body
-                throw new IllegalArgumentException("Unsupported MESSAGE_API_METHOD: " + m);
-        }
-
-        HttpRequest req = b.build();
-        log.info("[Relay] Calling Message API " + m + " " + url + " corr=" + correlationId);
-
-        return CLIENT.send(req, HttpResponse.BodyHandlers.ofString());
-    }
-
-    /* ------------------- env helpers ------------------- */
-
-    private static String envOr(String k, String def) {
-        String v = System.getenv(k);
-        return (v == null || v.isBlank()) ? def : v;
-    }
-
-    private static String envOrNull(String k) {
-        String v = System.getenv(k);
-        return (v == null || v.isBlank()) ? null : v;
-    }
-
-    private static int timeout(String k, int def) {
-        try {
-            return Integer.parseInt(envOr(k, String.valueOf(def)));
-        } catch (NumberFormatException nfe) {
-            return def;
-        }
-    }
-}
-
-
-⸻
-
-3) App settings you’ll need
-
-Add these to local.settings.json (dev) and Function App → Configuration (prod):
-
-{
-  "IsEncrypted": false,
-  "Values": {
-    "FUNCTIONS_WORKER_RUNTIME": "java",
-    "AzureWebJobsStorage": "<storage-conn-string>",
-
-    "ServiceBusConnection": "Endpoint=sb://<ns>.servicebus.windows.net/;SharedAccessKeyName=<send>;SharedAccessKey=<key>",
-    "ServiceBusEntity": "neo-events-queue",
-
-    "MESSAGE_API_URL": "https://<your-message-api>/notify",
-    "MESSAGE_API_METHOD": "POST",
-    "MESSAGE_API_TIMEOUT_SEC": "15",
-    "MESSAGE_API_CONNECT_TIMEOUT_SEC": "10",
-
-    // Optional auth
-    "MESSAGE_API_AUTH_BEARER": "",
-    "MESSAGE_API_KEY_HEADER": "X-API-Key",
-    "MESSAGE_API_KEY_VALUE": "",
-
-    // Retry choice on 4xx (besides 408/429)
-    "FAIL_ON_4XX": "false"
+    return msg;
   }
+
+  private static String safe(String s) { return s == null ? "" : s.trim(); }
 }
-
-Notes
-	•	Duplicate detection / Sessions are configured on the queue/topic in the portal (not in this code).
-	•	The function throws on 408/429/5xx so the runtime will retry and eventually dead‑letter (based on Max delivery count).
-	•	For 4xx errors, default is to log and complete (no retry) to avoid poison loops; set FAIL_ON_4XX=true if you’d rather dead‑letter via retries.
-
-⸻
-
-Why this is “production‑grade”
-	•	Thread‑safe singletons: one HttpClient shared across invocations.
-	•	Config‑driven: URL/method/timeouts/headers via app settings (no code changes).
-	•	Back‑pressure friendly: transient HTTP errors bubble up → Functions retry.
-	•	Idempotency‑friendly: preserves CorrelationId from Service Bus if present; your Message API can use it.
-	•	Minimal surface: The function doesn’t parse your payload at all (you can add parsing later when the contract is fixed).
-
-If you want, I can also drop a tiny MessageApiRequest class and show how to optionally parse the body with Jackson to enrich headers (e.g., pick correlationId inside JSON if present).
-
-
-Do you want me to also add these extracted fields as HTTP headers when calling the Message API (so the API gets them without parsing again)?
