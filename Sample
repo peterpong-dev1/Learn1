@@ -1,611 +1,202 @@
-Perfect 👍 You don’t want the heavy code yet — just the project structure + file skeletons so you can see how to organize your Message API Function cleanly.
+got it — here’s a clean, production-ready “parse step” you can drop in. it turns the SB body (your JSON from MessageFactory) + a few broker headers into a strongly-typed model.
 
-⸻
+1) Model classes
 
-📂 Suggested Project Structure
+package com.neo.message.model;
 
-src/main/java/com/yourorg/messageapi/
-│
-├── FnMessageRouter.java              // Azure Function entrypoint
-│
-├── model/
-│   ├── IncomingMessage.java          // POJO for SB message
-│   ├── Recipient.java                // POJO for resolved recipients
-│   └── ReportRecord.java             // POJO for reporting DB
-│
-├── service/
-│   ├── ParserService.java            // parse & validate SB JSON
-│   ├── FreshnessService.java         // stale check logic
-│   ├── RecipientService.java         // lookup agent/customer IDs
-│   ├── AgencyPolicyService.java      // agency filtering rules
-│   ├── PayloadBuilderService.java    // build JSON payload for next queue/API
-│   └── ReportingService.java         // write to reporting DB/blob
-│
-├── util/
-│   ├── JsonUtil.java                 // ObjectMapper helpers
-│   ├── HttpClientUtil.java           // HTTP POST helper if needed
-│   └── ConfigUtil.java               // load config/env vars
-│
-└── error/
-    └── ErrorWriter.java              // shared error -> blob writer
-
-
-⸻
-
-📄 Main Function
-
-public class FnMessageRouter {
-    @FunctionName("FnMessageRouter")
-    public void run(
-        @ServiceBusQueueTrigger(
-            name = "msg",
-            queueName = "%ServiceBusQueue%",
-            connection = "ServiceBusConnection"
-        ) String body,
-        final ExecutionContext ctx
-    ) {
-        Logger log = ctx.getLogger();
-
-        try {
-            IncomingMessage msg = ParserService.parse(body, log);
-            if (msg == null) return;
-
-            if (!FreshnessService.check(msg, log)) return;
-            if (!RecipientService.resolve(msg, log)) return;
-            if (!AgencyPolicyService.apply(msg, log)) return;
-            if (!PayloadBuilderService.buildAndSend(msg, log)) return;
-            if (!ReportingService.record(msg, log)) return;
-
-        } catch (Exception ex) {
-            log.severe("Fatal error in FnMessageRouter: " + ex.getMessage());
-            throw new RuntimeException(ex); // Functions runtime retries/DLQ
-        }
-    }
-}
-
-
-⸻
-
-📄 Example Service Skeleton
-
-public class FreshnessService {
-    /**
-     * Check if this message is still fresh (not outdated).
-     * @param msg Parsed IncomingMessage
-     * @param log Function logger
-     * @return true if still valid, false if skip
-     */
-    public static boolean check(IncomingMessage msg, Logger log) {
-        try {
-            // TODO: compare msg.timestamp vs Cosmos DB current state
-            return true;
-        } catch (Exception e) {
-            log.warning("Freshness check failed: " + e.getMessage());
-            return false;
-        }
-    }
-}
-
-
-⸻
-
-📄 POJO Example
-
-public class IncomingMessage {
-    private String messageId;
-    private String correlationId;
-    private String container;
-    private String docId;
-    private String eventId;
-    private String eventName;
-    private String payloadJson; // raw or structured
-    // getters/setters
-}
-
-
-⸻
-
-✅ With this layout:
-	•	FnMessageRouter stays clean (just pipeline).
-	•	Each Service is independent, unit-testable.
-	•	POJOs keep data consistent across services.
-	•	ErrorWriter is reusable across all steps.
-
-⸻
-
-Awesome — here’s a clean, production-style skeleton you can drop in.
-It keeps FnMessageRouter tiny and pushes each responsibility into a service.
-All methods return boolean so your run method can short-circuit on failure.
-
-Very short answer to your last question: Yes — you can query Cosmos DB directly using the Azure Cosmos DB Java SDK (SQL API) (no REST needed). See RecipientService + CosmosClientProvider below.
-
-⸻
-
-FnMessageRouter.java
-
-package com.yourorg.messageapi;
-
-import com.microsoft.azure.functions.annotation.*;
-import com.microsoft.azure.functions.*;
-import com.yourorg.messageapi.model.IncomingMessage;
-import com.yourorg.messageapi.service.*;
-import com.yourorg.messageapi.util.JsonUtil;
-
-import java.util.logging.Logger;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import java.time.OffsetDateTime;
+import java.util.List;
+import java.util.Map;
 
 /**
- * Azure Function (Service Bus trigger) that orchestrates the Message API pipeline:
- *   1) Parse & validate message
- *   2) Freshness check (optional)
- *   3) Resolve recipients (Cosmos lookups)
- *   4) Apply agency policy rules
- *   5) Build payload and send to next hop (queue or HTTP)
- *   6) Record/report outcome
- *
- * Keep this class VERY small—business logic lives in services.
+ * Immutable view of the message produced by the CosmosDB change trigger.
+ * Matches the JSON built by MessageFactory (correlationId, messageId, …).
  */
-public class FnMessageRouter {
+@JsonIgnoreProperties(ignoreUnknown = true)
+public final class IncomingMessage {
 
-    @FunctionName("FnMessageRouter")
-    public void run(
-        @ServiceBusQueueTrigger(
-            name = "msg",
-            queueName = "%ServiceBusQueue%",
-            connection = "ServiceBusConnection"
-        ) String body,
-        final ExecutionContext ctx
-    ) {
-        final Logger log = ctx.getLogger();
-        log.info("FnMessageRouter: message received");
+  /** Minimal “delta” item as emitted by MessageFactory. */
+  @JsonIgnoreProperties(ignoreUnknown = true)
+  public static final class Delta {
+    @JsonProperty("field") public String field;   // e.g. "/applicationStatus"
+    @JsonProperty("kind")  public String kind;    // ADDED | REMOVED | MODIFIED
+    @JsonProperty("old")   public String oldValue;
+    @JsonProperty("new")   public String newValue;
 
-        try {
-            // 1) Parse & validate
-            IncomingMessage msg = ParserService.parse(body, log);
-            if (msg == null) {
-                log.warning("ParserService returned null (invalid JSON or missing fields). Skipping.");
-                return;
-            }
-
-            // 2) Freshness gate (skip stale)
-            if (!FreshnessService.check(msg, log)) return;
-
-            // 3) Resolve recipients (Cosmos SDK queries, etc.)
-            if (!RecipientService.resolve(msg, log)) return;
-
-            // 4) Apply agency business rules
-            if (!AgencyPolicyService.apply(msg, log)) return;
-
-            // 5) Build and dispatch (queue or HTTP)
-            if (!PayloadBuilderService.buildAndDispatch(msg, log)) return;
-
-            // 6) Reporting / audit trail
-            if (!ReportingService.record(msg, log)) {
-                log.warning("ReportingService: record() returned false.");
-            }
-
-            log.info("FnMessageRouter: completed successfully for correlationId=" + msg.getCorrelationId());
-
-        } catch (Exception ex) {
-            // Let Functions retry / DLQ; you can also write an error blob here.
-            log.severe("FnMessageRouter fatal error: " + ex.getMessage());
-            throw new RuntimeException(ex);
-        }
+    @Override public String toString() {
+      return "Delta{field=" + field + ", kind=" + kind + ", old=" + oldValue + ", new=" + newValue + "}";
     }
+  }
+
+  /** Optional notification metadata carried by the producer. */
+  @JsonIgnoreProperties(ignoreUnknown = true)
+  public static final class NotifyMeta {
+    @JsonProperty("notificationType") public String notificationType; // e.g. "unpaid"
+    @JsonProperty("triggerType")      public String triggerType;      // e.g. "notice"
+  }
+
+  // --- core envelope ---
+  @JsonProperty("correlationId") public String correlationId;
+  @JsonProperty("messageId")     public String messageId;
+  @JsonProperty("createdAtUtc")  public OffsetDateTime createdAtUtc;
+
+  // producer/event info
+  @JsonProperty("container")     public String container;
+  @JsonProperty("docId")         public String docId;
+  @JsonProperty("eventId")       public String eventId;
+  @JsonProperty("eventName")     public String eventName;
+  @JsonProperty("when")          public String when; // "insert" | "update"
+
+  // data
+  @JsonProperty("deltas")        public List<Delta> deltas;                // may be empty on insert
+  @JsonProperty("context")       public Map<String,Object> context;        // optional
+  @JsonProperty("notify")        public NotifyMeta notify;                 // optional
+  @JsonProperty("keys")          public Map<String,String> keys;           // optional (already-resolved values)
+
+  // --- broker headers we capture from trigger binding (not part of body) ---
+  public String sbMessageId;     // binding: MessageId
+  public String sbCorrelationId; // binding: CorrelationId
+  public Integer sbDeliveryCount;// binding: DeliveryCount
+
+  @Override public String toString() {
+    return "IncomingMessage{eventId=" + eventId + ", docId=" + docId + ", container=" + container + "}";
+  }
 }
 
+2) Parse service
 
-⸻
+package com.neo.message.parse;
 
-model/IncomingMessage.java
-
-package com.yourorg.messageapi.model;
-
-import com.fasterxml.jackson.databind.JsonNode;
-
-/**
- * Strongly-typed message envelope parsed from Service Bus body.
- * Extend as needed, but keep it small and explicit.
- */
-public class IncomingMessage {
-    private String messageId;
-    private String correlationId;
-    private String container;
-    private String docId;
-    private String eventId;
-    private String eventName;
-    private String when;             // "insert" | "update"
-    private long producedAtEpochMs;  // producer timestamp
-    private JsonNode newDoc;         // full/partial doc as sent
-    private JsonNode changes;        // array of deltas (optional)
-
-    // Resolved by RecipientService:
-    private String recipientType;    // "agent" | "customer" | etc.
-    private String recipientId;      // resolved ID
-    private String recipientEmail;   // optional
-
-    // Getters/Setters omitted for brevity — generate them.
-    // ...
-    public String getMessageId() { return messageId; }
-    public void setMessageId(String messageId) { this.messageId = messageId; }
-    public String getCorrelationId() { return correlationId; }
-    public void setCorrelationId(String correlationId) { this.correlationId = correlationId; }
-    public String getContainer() { return container; }
-    public void setContainer(String container) { this.container = container; }
-    public String getDocId() { return docId; }
-    public void setDocId(String docId) { this.docId = docId; }
-    public String getEventId() { return eventId; }
-    public void setEventId(String eventId) { this.eventId = eventId; }
-    public String getEventName() { return eventName; }
-    public void setEventName(String eventName) { this.eventName = eventName; }
-    public String getWhen() { return when; }
-    public void setWhen(String when) { this.when = when; }
-    public long getProducedAtEpochMs() { return producedAtEpochMs; }
-    public void setProducedAtEpochMs(long producedAtEpochMs) { this.producedAtEpochMs = producedAtEpochMs; }
-    public JsonNode getNewDoc() { return newDoc; }
-    public void setNewDoc(JsonNode newDoc) { this.newDoc = newDoc; }
-    public JsonNode getChanges() { return changes; }
-    public void setChanges(JsonNode changes) { this.changes = changes; }
-
-    public String getRecipientType() { return recipientType; }
-    public void setRecipientType(String recipientType) { this.recipientType = recipientType; }
-    public String getRecipientId() { return recipientId; }
-    public void setRecipientId(String recipientId) { this.recipientId = recipientId; }
-    public String getRecipientEmail() { return recipientEmail; }
-    public void setRecipientEmail(String recipientEmail) { this.recipientEmail = recipientEmail; }
-}
-
-
-⸻
-
-service/ParserService.java
-
-package com.yourorg.messageapi.service;
-
-import com.fasterxml.jackson.databind.JsonNode;
-import com.yourorg.messageapi.model.IncomingMessage;
-import com.yourorg.messageapi.util.JsonUtil;
-
-import java.util.logging.Logger;
-
-/**
- * Parses raw Service Bus body into IncomingMessage.
- * Always validate minimal required fields here.
- */
-public final class ParserService {
-    private ParserService(){}
-
-    public static IncomingMessage parse(String body, Logger log) {
-        try {
-            JsonNode root = JsonUtil.M().readTree(body);
-
-            // Minimal validation (extend as needed)
-            if (root == null || !root.hasNonNull("event") || !root.hasNonNull("ids")) {
-                log.warning("ParserService: body missing 'event' or 'ids'");
-                return null;
-            }
-
-            IncomingMessage msg = new IncomingMessage();
-            // ids
-            JsonNode ids = root.path("ids");
-            msg.setMessageId(ids.path("messageId").asText(null));
-            msg.setCorrelationId(ids.path("correlationId").asText(null));
-
-            // event
-            JsonNode ev = root.path("event");
-            msg.setContainer(ev.path("container").asText(null));
-            msg.setDocId(ev.path("docId").asText(null));
-            msg.setEventId(ev.path("eventId").asText(null));
-            msg.setEventName(ev.path("eventName").asText(null));
-            msg.setWhen(ev.path("when").asText(null));
-            msg.setProducedAtEpochMs(ev.path("producedAtEpochMs").asLong(0));
-
-            // payload (optional)
-            msg.setNewDoc(root.path("newDoc").isMissingNode() ? null : root.path("newDoc"));
-            msg.setChanges(root.path("changes").isMissingNode() ? null : root.path("changes"));
-
-            // Basic sanity
-            if (msg.getCorrelationId() == null || msg.getEventId() == null || msg.getDocId() == null) {
-                log.warning("ParserService: required id fields missing");
-                return null;
-            }
-            return msg;
-        } catch (Exception e) {
-            log.severe("ParserService error: " + e.getMessage());
-            return null;
-        }
-    }
-}
-
-
-⸻
-
-service/FreshnessService.java
-
-package com.yourorg.messageapi.service;
-
-import com.yourorg.messageapi.model.IncomingMessage;
-
-import java.time.Instant;
-import java.util.logging.Logger;
-
-/**
- * Reject clearly stale items (fast gate).
- * You can also query Cosmos here to ensure message applies to the current state.
- */
-public final class FreshnessService {
-    private FreshnessService(){}
-
-    public static boolean check(IncomingMessage msg, Logger log) {
-        try {
-            // Example: drop if produced > 2 days ago
-            long ageMs = Math.abs(Instant.now().toEpochMilli() - msg.getProducedAtEpochMs());
-            long maxAgeMs = 2L * 24 * 60 * 60 * 1000; // 2 days
-            if (msg.getProducedAtEpochMs() > 0 && ageMs > maxAgeMs) {
-                log.info("FreshnessService: stale message, skipping. correlationId=" + msg.getCorrelationId());
-                return false;
-            }
-            return true;
-        } catch (Exception e) {
-            log.warning("FreshnessService error: " + e.getMessage());
-            return false;
-        }
-    }
-}
-
-
-⸻
-
-service/RecipientService.java (Cosmos DB SDK example)
-
-package com.yourorg.messageapi.service;
-
-import com.azure.cosmos.*;
-import com.azure.cosmos.models.CosmosQueryRequestOptions;
-import com.azure.cosmos.models.FeedResponse;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.yourorg.messageapi.model.IncomingMessage;
-import com.yourorg.messageapi.util.CosmosClientProvider;
-
-import java.util.logging.Logger;
-
-/**
- * Resolves recipient information (agent/customer) by querying Cosmos DB directly.
- * Example shows a simple lookup; adjust SQL and containers per your schema.
- */
-public final class RecipientService {
-    private RecipientService(){}
-
-    public static boolean resolve(IncomingMessage msg, Logger log) {
-        try {
-            // Example: lookup recipient by docId in a "Directory" container
-            CosmosClient client = CosmosClientProvider.client();
-            CosmosContainer container = client
-                    .getDatabase(System.getenv("DirectoryDb"))
-                    .getContainer(System.getenv("DirectoryContainer"));
-
-            String sql = "SELECT TOP 1 c.recipientType, c.recipientId, c.email " +
-                         "FROM c WHERE c.docId = @docId";
-            SqlParameterList params = new SqlParameterList(new SqlParameter("@docId", msg.getDocId()));
-
-            CosmosPagedIterable<JsonNode> results = container.queryItems(
-                    new SqlQuerySpec(sql, params),
-                    new CosmosQueryRequestOptions(),
-                    JsonNode.class
-            );
-
-            JsonNode first = results.stream().findFirst().orElse(null);
-            if (first == null) {
-                log.warning("RecipientService: no recipient found for docId=" + msg.getDocId());
-                return false; // no recipient => stop
-            }
-
-            msg.setRecipientType(first.path("recipientType").asText("unknown"));
-            msg.setRecipientId(first.path("recipientId").asText(null));
-            msg.setRecipientEmail(first.path("email").asText(null));
-
-            if (msg.getRecipientId() == null && msg.getRecipientEmail() == null) {
-                log.warning("RecipientService: recipient lacks id/email for docId=" + msg.getDocId());
-                return false;
-            }
-            return true;
-
-        } catch (Exception e) {
-            log.severe("RecipientService error: " + e.getMessage());
-            return false;
-        }
-    }
-}
-
-
-⸻
-
-service/AgencyPolicyService.java
-
-package com.yourorg.messageapi.service;
-
-import com.yourorg.messageapi.model.IncomingMessage;
-
-import java.util.logging.Logger;
-
-/**
- * Applies agency eligibility rules (opt-in flags, channel allow/deny, etc.).
- * Return false to stop the pipeline.
- */
-public final class AgencyPolicyService {
-    private AgencyPolicyService(){}
-
-    public static boolean apply(IncomingMessage msg, Logger log) {
-        try {
-            // TODO: evaluate policy from config or Cosmos
-            return true;
-        } catch (Exception e) {
-            log.warning("AgencyPolicyService error: " + e.getMessage());
-            return false;
-        }
-    }
-}
-
-
-⸻
-
-service/PayloadBuilderService.java
-
-package com.yourorg.messageapi.service;
-
-import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.yourorg.messageapi.model.IncomingMessage;
-import com.yourorg.messageapi.util.JsonUtil;
-
-import java.util.logging.Logger;
-
-/**
- * Build the final payload and dispatch it (HTTP or queue).
- * Keep I/O in this layer; the router just coordinates.
- */
-public final class PayloadBuilderService {
-    private PayloadBuilderService(){}
-
-    public static boolean buildAndDispatch(IncomingMessage msg, Logger log) {
-        try {
-            // Build payload
-            ObjectNode payload = JsonUtil.M().createObjectNode();
-            payload.put("correlationId", msg.getCorrelationId());
-            payload.put("eventId", msg.getEventId());
-            payload.put("eventName", msg.getEventName());
-            payload.put("container", msg.getContainer());
-            payload.put("docId", msg.getDocId());
-            payload.put("recipientType", msg.getRecipientType());
-            payload.put("recipientId", msg.getRecipientId());
-            if (msg.getRecipientEmail() != null) payload.put("recipientEmail", msg.getRecipientEmail());
-            if (msg.getChanges() != null) payload.set("changes", msg.getChanges());
-            if (msg.getNewDoc() != null) payload.set("newDoc", msg.getNewDoc());
-
-            // TODO: choose one:
-            // 1) enqueue to next Service Bus entity
-            // 2) HTTP POST to Notification API
-            // For now, pretend we sent it:
-            log.info("PayloadBuilderService: payload ready. size=" + payload.toString().length());
-            return true;
-
-        } catch (Exception e) {
-            log.severe("PayloadBuilderService error: " + e.getMessage());
-            return false;
-        }
-    }
-}
-
-
-⸻
-
-service/ReportingService.java
-
-package com.yourorg.messageapi.service;
-
-import com.yourorg.messageapi.model.IncomingMessage;
-
-import java.util.logging.Logger;
-
-/**
- * Optional: write an audit/report record (Cosmos/Blob/Table).
- * Non-fatal: return false on error but don’t throw.
- */
-public final class ReportingService {
-    private ReportingService(){}
-
-    public static boolean record(IncomingMessage msg, Logger log) {
-        try {
-            // TODO: write to your reporting store
-            return true;
-        } catch (Exception e) {
-            log.warning("ReportingService error: " + e.getMessage());
-            return false;
-        }
-    }
-}
-
-
-⸻
-
-util/JsonUtil.java
-
-package com.yourorg.messageapi.util;
-
+import com.fasterxml.jackson.core.JsonFactory;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
+import com.neo.message.model.IncomingMessage;
 
-/** Single shared ObjectMapper (thread-safe after config). */
-public final class JsonUtil {
-    private static final ObjectMapper MAPPER = new ObjectMapper()
-            .findAndRegisterModules()
-            .disable(SerializationFeature.FAIL_ON_EMPTY_BEANS);
-
-    private JsonUtil(){}
-
-    public static ObjectMapper M() { return MAPPER; }
-}
-
-
-⸻
-
-util/ConfigUtil.java
-
-package com.yourorg.messageapi.util;
-
-/** Tiny helpers for env/app settings access. */
-public final class ConfigUtil {
-    private ConfigUtil(){}
-
-    public static String get(String key, String def) {
-        String v = System.getenv(key);
-        return (v == null || v.isBlank()) ? def : v;
-    }
-}
-
-
-⸻
-
-util/CosmosClientProvider.java
-
-package com.yourorg.messageapi.util;
-
-import com.azure.cosmos.*;
+import java.time.OffsetDateTime;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.function.Function;
+import java.util.logging.Logger;
 
 /**
- * Singleton CosmosClient provider (thread-safe).
- * Reads endpoint/key from Function App settings:
- *   CosmosEndpoint, CosmosKey
+ * Parses and validates incoming Service Bus message bodies into {@link IncomingMessage}.
+ * Safe for concurrent use; ObjectMapper is thread-safe after configuration.
  */
-public final class CosmosClientProvider {
-    private static final String EP  = System.getenv("CosmosEndpoint");
-    private static final String KEY = System.getenv("CosmosKey");
+public final class ParseService {
 
-    private static class Holder {
-        static final CosmosClient CLIENT = new CosmosClientBuilder()
-                .endpoint(EP)
-                .key(KEY)
-                .consistencyLevel(ConsistencyLevel.EVENTUAL)
-                .gatewayMode() // or .directMode() if allowed
-                .buildClient();
-    }
-    private CosmosClientProvider(){}
+  private static final ObjectMapper MAPPER = new ObjectMapper(new JsonFactory())
+      .findAndRegisterModules() // java.time, etc.
+      .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+      .configure(DeserializationFeature.READ_UNKNOWN_ENUM_VALUES_AS_NULL, true);
 
-    public static CosmosClient client() {
-        return Holder.CLIENT;
+  private ParseService() {}
+
+  /** Lightweight checked error for parse/validation problems. */
+  public static final class ParseException extends Exception {
+    public ParseException(String msg) { super(msg); }
+    public ParseException(String msg, Throwable cause) { super(msg, cause); }
+  }
+
+  /**
+   * Strict parse: throws on malformed JSON or missing required fields.
+   *
+   * @param body JSON payload from Service Bus
+   * @param headers optional broker headers (MessageId, CorrelationId, DeliveryCount)
+   */
+  public static IncomingMessage parseOrThrow(String body,
+                                             Map<String, Object> headers) throws ParseException {
+    Objects.requireNonNull(body, "body");
+
+    final IncomingMessage msg;
+    try {
+      msg = MAPPER.readValue(body, IncomingMessage.class);
+    } catch (Exception e) {
+      throw new ParseException("Invalid JSON: " + e.getMessage(), e);
     }
+
+    // minimal required fields produced by MessageFactory
+    if (isBlank(msg.correlationId) || isBlank(msg.messageId) ||
+        isBlank(msg.container)     || isBlank(msg.docId)    ||
+        isBlank(msg.eventId)       || isBlank(msg.when)) {
+      throw new ParseException("Missing one or more required fields (correlationId,messageId,container,docId,eventId,when).");
+    }
+
+    // parse createdAtUtc if producer sent as string (jackson handles OffsetDateTime natively)
+    if (msg.createdAtUtc == null) {
+      // tolerate missing/invalid and fill with "now" so downstream always has a value
+      msg.createdAtUtc = OffsetDateTime.now();
+    }
+
+    // fold in SB headers (null-safe)
+    if (headers != null) {
+      msg.sbMessageId     = get(headers, "MessageId",     Object::toString);
+      msg.sbCorrelationId = get(headers, "CorrelationId", Object::toString);
+      msg.sbDeliveryCount = get(headers, "DeliveryCount", o -> {
+        try { return Integer.valueOf(o.toString()); } catch (Exception ex) { return null; }
+      });
+    }
+
+    return msg;
+  }
+
+  /**
+   * Lenient parse: never throws. Logs and returns Optional.empty() on error.
+   * Use this if you want your @Function run() to stay “one-line per step”.
+   */
+  public static Optional<IncomingMessage> parseSafe(String body,
+                                                    Map<String, Object> headers,
+                                                    Logger log) {
+    try {
+      return Optional.of(parseOrThrow(body, headers));
+    } catch (ParseException e) {
+      if (log != null) log.warning("ParseService: " + e.getMessage());
+      return Optional.empty();
+    }
+  }
+
+  // ------------- helpers -------------
+  private static boolean isBlank(String s) { return s == null || s.trim().isEmpty(); }
+
+  private static <T> T get(Map<String, Object> m, String k, Function<Object,T> conv) {
+    try { return m.containsKey(k) ? conv.apply(m.get(k)) : null; } catch (Exception e) { return null; }
+  }
 }
 
+3) How to call it from your Service Bus trigger run(...)
 
-⸻
+// inside your BusMessageRelayFunction.run(...)
+Map<String,Object> headers = Map.of(
+    "MessageId", messageId,
+    "CorrelationId", correlationId,
+    "DeliveryCount", deliveryCount
+);
 
-App settings you’ll need (Function App → Configuration)
-	•	ServiceBusConnection — SB connection string with Listen (for this consumer)
-	•	ServiceBusQueue — queue name (if you use Topic trigger, change annotation)
-	•	CosmosEndpoint, CosmosKey — for direct Cosmos queries
-	•	DirectoryDb, DirectoryContainer — for recipient lookups (example)
+// step 1: parse
+var maybe = ParseService.parseSafe(body, headers, context.getLogger());
+if (maybe.isEmpty()) {
+  // parse failed; let the function succeed to avoid poison-loop,
+  // or throw to trigger retry — your policy.
+  return;
+}
 
-⸻
+IncomingMessage in = maybe.get();
+// …now pass `in` to your next step (freshness, recipient lookup, etc.)
 
-If you want, I can next wire HTTP POST or Service Bus send inside PayloadBuilderService.buildAndDispatch() and add the exact dependency versions you’re already using.
+Why this is “production-grade”:
+	•	single, preconfigured ObjectMapper (thread-safe)
+	•	strict parseOrThrow + lenient parseSafe (you choose)
+	•	validates required fields; fills a sane createdAtUtc default
+	•	folds broker headers into the model for observability/retry logic
+	•	small immutable-by-convention model types with @JsonIgnoreProperties to tolerate future body additions
 
+If you want the parse step to return a boolean for your “one-line per step” pattern, just do:
 
-Do you want me to now expand this template into a working skeleton with JavaDocs + comments, so you can directly copy-paste and just fill business logic?
+boolean ok = ParseService.parseSafe(body, headers, log)
+                         .map(parsed -> { ctx.put("in", parsed); return true; })
+                         .orElse(false);
+if (!ok) return;
+
+(where ctx is your own per-invocation holder or you pass the IncomingMessage to the next method directly).
