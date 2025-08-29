@@ -1,202 +1,26 @@
-got it — here’s a clean, production-ready “parse step” you can drop in. it turns the SB body (your JSON from MessageFactory) + a few broker headers into a strongly-typed model.
+@FunctionName("Neo_MessageRelay")
+public void run(
+    @ServiceBusQueueTrigger(
+        name = "msg", 
+        queueName = "%ServiceBusEntity%", 
+        connection = "ServiceBusConnection") 
+    String body,
 
-1) Model classes
+    // envelope/system/application properties:
+    @BindingName("MessageId")     String messageId,
+    @BindingName("CorrelationId") String correlationId,
+    @BindingName("DeliveryCount") Integer deliveryCount,
+    @BindingName("SessionId")     String sessionId,        // if sessions enabled
+    final ExecutionContext context) {
 
-package com.neo.message.model;
+    // optional: collect for logging/metrics
+    Map<String,Object> headers = new HashMap<>();
+    headers.put("MessageId", messageId);
+    headers.put("CorrelationId", correlationId);
+    headers.put("DeliveryCount", deliveryCount);
+    headers.put("SessionId", sessionId);
 
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-import com.fasterxml.jackson.annotation.JsonProperty;
-import java.time.OffsetDateTime;
-import java.util.List;
-import java.util.Map;
-
-/**
- * Immutable view of the message produced by the CosmosDB change trigger.
- * Matches the JSON built by MessageFactory (correlationId, messageId, …).
- */
-@JsonIgnoreProperties(ignoreUnknown = true)
-public final class IncomingMessage {
-
-  /** Minimal “delta” item as emitted by MessageFactory. */
-  @JsonIgnoreProperties(ignoreUnknown = true)
-  public static final class Delta {
-    @JsonProperty("field") public String field;   // e.g. "/applicationStatus"
-    @JsonProperty("kind")  public String kind;    // ADDED | REMOVED | MODIFIED
-    @JsonProperty("old")   public String oldValue;
-    @JsonProperty("new")   public String newValue;
-
-    @Override public String toString() {
-      return "Delta{field=" + field + ", kind=" + kind + ", old=" + oldValue + ", new=" + newValue + "}";
-    }
-  }
-
-  /** Optional notification metadata carried by the producer. */
-  @JsonIgnoreProperties(ignoreUnknown = true)
-  public static final class NotifyMeta {
-    @JsonProperty("notificationType") public String notificationType; // e.g. "unpaid"
-    @JsonProperty("triggerType")      public String triggerType;      // e.g. "notice"
-  }
-
-  // --- core envelope ---
-  @JsonProperty("correlationId") public String correlationId;
-  @JsonProperty("messageId")     public String messageId;
-  @JsonProperty("createdAtUtc")  public OffsetDateTime createdAtUtc;
-
-  // producer/event info
-  @JsonProperty("container")     public String container;
-  @JsonProperty("docId")         public String docId;
-  @JsonProperty("eventId")       public String eventId;
-  @JsonProperty("eventName")     public String eventName;
-  @JsonProperty("when")          public String when; // "insert" | "update"
-
-  // data
-  @JsonProperty("deltas")        public List<Delta> deltas;                // may be empty on insert
-  @JsonProperty("context")       public Map<String,Object> context;        // optional
-  @JsonProperty("notify")        public NotifyMeta notify;                 // optional
-  @JsonProperty("keys")          public Map<String,String> keys;           // optional (already-resolved values)
-
-  // --- broker headers we capture from trigger binding (not part of body) ---
-  public String sbMessageId;     // binding: MessageId
-  public String sbCorrelationId; // binding: CorrelationId
-  public Integer sbDeliveryCount;// binding: DeliveryCount
-
-  @Override public String toString() {
-    return "IncomingMessage{eventId=" + eventId + ", docId=" + docId + ", container=" + container + "}";
-  }
+    // parse your JSON body separately
+    IncomingMessage msg = ParseService.parseOrThrow(body);
+    ...
 }
-
-2) Parse service
-
-package com.neo.message.parse;
-
-import com.fasterxml.jackson.core.JsonFactory;
-import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.neo.message.model.IncomingMessage;
-
-import java.time.OffsetDateTime;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Optional;
-import java.util.function.Function;
-import java.util.logging.Logger;
-
-/**
- * Parses and validates incoming Service Bus message bodies into {@link IncomingMessage}.
- * Safe for concurrent use; ObjectMapper is thread-safe after configuration.
- */
-public final class ParseService {
-
-  private static final ObjectMapper MAPPER = new ObjectMapper(new JsonFactory())
-      .findAndRegisterModules() // java.time, etc.
-      .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
-      .configure(DeserializationFeature.READ_UNKNOWN_ENUM_VALUES_AS_NULL, true);
-
-  private ParseService() {}
-
-  /** Lightweight checked error for parse/validation problems. */
-  public static final class ParseException extends Exception {
-    public ParseException(String msg) { super(msg); }
-    public ParseException(String msg, Throwable cause) { super(msg, cause); }
-  }
-
-  /**
-   * Strict parse: throws on malformed JSON or missing required fields.
-   *
-   * @param body JSON payload from Service Bus
-   * @param headers optional broker headers (MessageId, CorrelationId, DeliveryCount)
-   */
-  public static IncomingMessage parseOrThrow(String body,
-                                             Map<String, Object> headers) throws ParseException {
-    Objects.requireNonNull(body, "body");
-
-    final IncomingMessage msg;
-    try {
-      msg = MAPPER.readValue(body, IncomingMessage.class);
-    } catch (Exception e) {
-      throw new ParseException("Invalid JSON: " + e.getMessage(), e);
-    }
-
-    // minimal required fields produced by MessageFactory
-    if (isBlank(msg.correlationId) || isBlank(msg.messageId) ||
-        isBlank(msg.container)     || isBlank(msg.docId)    ||
-        isBlank(msg.eventId)       || isBlank(msg.when)) {
-      throw new ParseException("Missing one or more required fields (correlationId,messageId,container,docId,eventId,when).");
-    }
-
-    // parse createdAtUtc if producer sent as string (jackson handles OffsetDateTime natively)
-    if (msg.createdAtUtc == null) {
-      // tolerate missing/invalid and fill with "now" so downstream always has a value
-      msg.createdAtUtc = OffsetDateTime.now();
-    }
-
-    // fold in SB headers (null-safe)
-    if (headers != null) {
-      msg.sbMessageId     = get(headers, "MessageId",     Object::toString);
-      msg.sbCorrelationId = get(headers, "CorrelationId", Object::toString);
-      msg.sbDeliveryCount = get(headers, "DeliveryCount", o -> {
-        try { return Integer.valueOf(o.toString()); } catch (Exception ex) { return null; }
-      });
-    }
-
-    return msg;
-  }
-
-  /**
-   * Lenient parse: never throws. Logs and returns Optional.empty() on error.
-   * Use this if you want your @Function run() to stay “one-line per step”.
-   */
-  public static Optional<IncomingMessage> parseSafe(String body,
-                                                    Map<String, Object> headers,
-                                                    Logger log) {
-    try {
-      return Optional.of(parseOrThrow(body, headers));
-    } catch (ParseException e) {
-      if (log != null) log.warning("ParseService: " + e.getMessage());
-      return Optional.empty();
-    }
-  }
-
-  // ------------- helpers -------------
-  private static boolean isBlank(String s) { return s == null || s.trim().isEmpty(); }
-
-  private static <T> T get(Map<String, Object> m, String k, Function<Object,T> conv) {
-    try { return m.containsKey(k) ? conv.apply(m.get(k)) : null; } catch (Exception e) { return null; }
-  }
-}
-
-3) How to call it from your Service Bus trigger run(...)
-
-// inside your BusMessageRelayFunction.run(...)
-Map<String,Object> headers = Map.of(
-    "MessageId", messageId,
-    "CorrelationId", correlationId,
-    "DeliveryCount", deliveryCount
-);
-
-// step 1: parse
-var maybe = ParseService.parseSafe(body, headers, context.getLogger());
-if (maybe.isEmpty()) {
-  // parse failed; let the function succeed to avoid poison-loop,
-  // or throw to trigger retry — your policy.
-  return;
-}
-
-IncomingMessage in = maybe.get();
-// …now pass `in` to your next step (freshness, recipient lookup, etc.)
-
-Why this is “production-grade”:
-	•	single, preconfigured ObjectMapper (thread-safe)
-	•	strict parseOrThrow + lenient parseSafe (you choose)
-	•	validates required fields; fills a sane createdAtUtc default
-	•	folds broker headers into the model for observability/retry logic
-	•	small immutable-by-convention model types with @JsonIgnoreProperties to tolerate future body additions
-
-If you want the parse step to return a boolean for your “one-line per step” pattern, just do:
-
-boolean ok = ParseService.parseSafe(body, headers, log)
-                         .map(parsed -> { ctx.put("in", parsed); return true; })
-                         .orElse(false);
-if (!ok) return;
-
-(where ctx is your own per-invocation holder or you pass the IncomingMessage to the next method directly).
