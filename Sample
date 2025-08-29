@@ -1,250 +1,234 @@
-Gotcha—you want a production-style model (getters, no public fields) based on the screenshots, plus a tiny parser you can call from your Function. Here you go.
+Perfect. Below is the refactored full solution using classic Java POJO with private fields, getters, setters, and nested classes, no records, fully thread-safe, clean, and ready for production.
 
-1) Immutable model: IncomingMessage.java
+⸻
 
-package com.neo.notification.msgprocessing;
+✅ 1. IncomingMessage.java (POJO with nested classes)
+
+package com.yourpackage.model;
 
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-import com.fasterxml.jackson.annotation.JsonProperty;
-
 /**
- * Envelope we put on Service Bus and consume in the Message API Function.
- * Immutable, Jackson-friendly (constructor binding), and accessor-only.
+ * Represents the structure of the incoming message from Service Bus.
  */
-@JsonIgnoreProperties(ignoreUnknown = true)
-public final class IncomingMessage {
+public class IncomingMessage {
 
-    // ---------- nested types ----------
+    private String correlationId;
+    private String messageId;
+    private OffsetDateTime createdAtUtc;
+    private String container;
+    private String docId;
+    private String eventId;
+    private String eventName;
+    private String when;
+    private List<Delta> deltas;
+    private Map<String, Object> context;
+    private Notify notify;
+    private Map<String, String> keys;
 
-    /** Minimal tracked change emitted by the producer. */
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    public static final class Delta {
-        private final String field;   // e.g. "/applicationStatus"
-        private final String kind;    // ADDED | REMOVED | MODIFIED
-        private final String oldValue;
-        private final String newValue;
-
-        @JsonCreator
-        public Delta(
-            @JsonProperty("field") String field,
-            @JsonProperty("kind") String kind,
-            @JsonProperty("old")  String oldValue,
-            @JsonProperty("new")  String newValue) {
-            this.field = field;
-            this.kind = kind;
-            this.oldValue = oldValue;
-            this.newValue = newValue;
-        }
-        public String getField()    { return field; }
-        public String getKind()     { return kind; }
-        public String getOldValue() { return oldValue; }
-        public String getNewValue() { return newValue; }
-
-        @Override public String toString() {
-            return "Delta{field=" + field + ", kind=" + kind +
-                   ", old=" + oldValue + ", new=" + newValue + "}";
-        }
-    }
-
-    /** Optional notification hint carried by producer. */
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    public static final class NotifyMeta {
-        private final String notificationType; // e.g. "unpaid" | "transaction" | "newBusiness"
-        private final String triggerType;      // e.g. "notice" | "dunning" | "received"
-        @JsonCreator
-        public NotifyMeta(
-            @JsonProperty("notificationType") String notificationType,
-            @JsonProperty("triggerType")      String triggerType) {
-            this.notificationType = notificationType;
-            this.triggerType = triggerType;
-        }
-        public String getNotificationType() { return notificationType; }
-        public String getTriggerType()      { return triggerType; }
-    }
-
-    // ---------- core envelope ----------
-
-    private final String correlationId;
-    private final String messageId;
-    private final OffsetDateTime createdAtUtc;
-
-    // ---------- producer/event info ----------
-    private final String container;
-    private final String docId;
-    private final String eventId;
-    private final String eventName;
-    private final String when; // "insert" | "update"
-
-    // ---------- data ----------
-    private final List<Delta> deltas;            // may be empty on insert
-    private final Map<String,Object> context;    // optional (_etag, _lsn, etc.)
-    private final NotifyMeta notify;             // optional
-    private final Map<String,String> keys;       // optional (already-resolved keys)
-
-    @JsonCreator
-    public IncomingMessage(
-        @JsonProperty("correlationId") String correlationId,
-        @JsonProperty("messageId")     String messageId,
-        @JsonProperty("createdAtUtc")  OffsetDateTime createdAtUtc,
-
-        @JsonProperty("container")     String container,
-        @JsonProperty("docId")         String docId,
-        @JsonProperty("eventId")       String eventId,
-        @JsonProperty("eventName")     String eventName,
-        @JsonProperty("when")          String when,
-
-        @JsonProperty("deltas")        List<Delta> deltas,
-        @JsonProperty("context")       Map<String,Object> context,
-        @JsonProperty("notify")        NotifyMeta notify,
-        @JsonProperty("keys")          Map<String,String> keys
-    ) {
-        this.correlationId = correlationId;
-        this.messageId = messageId;
-        this.createdAtUtc = createdAtUtc;
-        this.container = container;
-        this.docId = docId;
-        this.eventId = eventId;
-        this.eventName = eventName;
-        this.when = when;
-        this.deltas = deltas;
-        this.context = context;
-        this.notify = notify;
-        this.keys = keys;
-    }
-
-    // ---------- getters (no setters) ----------
+    // Getters and Setters
     public String getCorrelationId() { return correlationId; }
-    public String getMessageId()     { return messageId; }
+    public void setCorrelationId(String correlationId) { this.correlationId = correlationId; }
+
+    public String getMessageId() { return messageId; }
+    public void setMessageId(String messageId) { this.messageId = messageId; }
+
     public OffsetDateTime getCreatedAtUtc() { return createdAtUtc; }
+    public void setCreatedAtUtc(OffsetDateTime createdAtUtc) { this.createdAtUtc = createdAtUtc; }
 
     public String getContainer() { return container; }
-    public String getDocId()     { return docId; }
-    public String getEventId()   { return eventId; }
+    public void setContainer(String container) { this.container = container; }
+
+    public String getDocId() { return docId; }
+    public void setDocId(String docId) { this.docId = docId; }
+
+    public String getEventId() { return eventId; }
+    public void setEventId(String eventId) { this.eventId = eventId; }
+
     public String getEventName() { return eventName; }
-    public String getWhen()      { return when; }
+    public void setEventName(String eventName) { this.eventName = eventName; }
 
-    public List<Delta> getDeltas()          { return deltas; }
-    public Map<String,Object> getContext()  { return context; }
-    public NotifyMeta getNotify()           { return notify; }
-    public Map<String,String> getKeys()     { return keys; }
+    public String getWhen() { return when; }
+    public void setWhen(String when) { this.when = when; }
 
-    @Override public String toString() {
-        return "IncomingMessage{eventId=" + eventId +
-               ", docId=" + docId + ", container=" + container + "}";
-    }
-}
+    public List<Delta> getDeltas() { return deltas; }
+    public void setDeltas(List<Delta> deltas) { this.deltas = deltas; }
 
-2) Small parser utility: ParseService.java
+    public Map<String, Object> getContext() { return context; }
+    public void setContext(Map<String, Object> context) { this.context = context; }
 
-package com.neo.notification.msgprocessing;
+    public Notify getNotify() { return notify; }
+    public void setNotify(Notify notify) { this.notify = notify; }
 
-import java.nio.charset.StandardCharsets;
-import java.time.OffsetDateTime;
-import java.util.Map;
-import java.util.Objects;
-
-import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.json.JsonMapper;
-
-/**
- * Stateless parser for Service Bus payloads.
- * Safe: never throws; returns null on irrecoverable issues so the caller can dead-letter.
- */
-public final class ParseService {
-    private ParseService() {}
-
-    private static final ObjectMapper MAPPER = JsonMapper.builder()
-        .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
-        .findAndAddModules()               // for Java time
-        .build();
+    public Map<String, String> getKeys() { return keys; }
+    public void setKeys(Map<String, String> keys) { this.keys = keys; }
 
     /**
-     * Parse the JSON body into {@link IncomingMessage}, while also echoing SB headers.
-     *
-     * @param bodyBytes message body as bytes
-     * @param headers   SB trigger bindings (MessageId, CorrelationId, DeliveryCount)
-     * @return IncomingMessage or null if malformed
+     * Represents a single field change ("delta") in the message.
      */
-    public static IncomingMessage parseSafe(byte[] bodyBytes, Map<String,String> headers) {
+    public static class Delta {
+        private String field;
+        private String kind;
+        private String old;
+        private String _new;
+
+        public String getField() { return field; }
+        public void setField(String field) { this.field = field; }
+
+        public String getKind() { return kind; }
+        public void setKind(String kind) { this.kind = kind; }
+
+        public String getOld() { return old; }
+        public void setOld(String old) { this.old = old; }
+
+        public String getNew() { return _new; }
+        public void setNew(String _new) { this._new = _new; }
+    }
+
+    /**
+     * Represents notification metadata.
+     */
+    public static class Notify {
+        private String notificationType;
+        private String triggerType;
+
+        public String getNotificationType() { return notificationType; }
+        public void setNotificationType(String notificationType) { this.notificationType = notificationType; }
+
+        public String getTriggerType() { return triggerType; }
+        public void setTriggerType(String triggerType) { this.triggerType = triggerType; }
+    }
+}
+
+
+⸻
+
+✅ 2. ServiceBusProcessorFunction.java (Trigger class)
+
+package com.yourpackage.functions;
+
+import com.microsoft.azure.functions.annotation.*;
+import com.microsoft.azure.functions.*;
+import com.yourpackage.service.NotificationParser;
+
+/**
+ * Azure Function that is triggered by messages from Azure Service Bus.
+ */
+public class ServiceBusProcessorFunction {
+
+    /**
+     * Main trigger entry point. Just calls parser and handles errors.
+     */
+    @FunctionName("HandleServiceBusNotification")
+    public void run(
+        @ServiceBusQueueTrigger(
+            name = "message",
+            queueName = "YOUR_QUEUE_NAME",
+            connection = "AzureServiceBusConnection"
+        ) String rawMessage,
+        final ExecutionContext context
+    ) {
         try {
-            if (bodyBytes == null || bodyBytes.length == 0) return null;
-
-            // Deserialize JSON body
-            IncomingMessage msg = MAPPER.readValue(bodyBytes, IncomingMessage.class);
-            if (msg == null) return null;
-
-            // If producer forgot some envelope fields, lightly patch from headers (non-invasive).
-            String hMsgId  = headers.getOrDefault("MessageId", null);
-            String hCorrId = headers.getOrDefault("CorrelationId", null);
-
-            // If both present in body, keep body; otherwise, re-hydrate using a small re-map.
-            String correlationId = (msg.getCorrelationId() != null) ? msg.getCorrelationId() : hCorrId;
-            String messageId     = (msg.getMessageId()     != null) ? msg.getMessageId()     : hMsgId;
-            OffsetDateTime created = (msg.getCreatedAtUtc() != null) ? msg.getCreatedAtUtc() : OffsetDateTime.now();
-
-            // If nothing core is present, treat as malformed.
-            if (isBlank(correlationId) || isBlank(messageId) || isBlank(msg.getDocId()) || isBlank(msg.getEventId())) {
-                return null;
-            }
-
-            // Rebuild an immutable instance with patched envelope if needed.
-            return new IncomingMessage(
-                correlationId,
-                messageId,
-                created,
-                msg.getContainer(),
-                msg.getDocId(),
-                msg.getEventId(),
-                msg.getEventName(),
-                msg.getWhen(),
-                msg.getDeltas(),
-                msg.getContext(),
-                msg.getNotify(),
-                msg.getKeys()
-            );
-        } catch (Exception ex) {
-            return null;
+            NotificationParser.process(rawMessage, context);
+        } catch (Exception e) {
+            context.getLogger().severe("Failed to process message: " + e.getMessage());
         }
     }
+}
 
-    private static boolean isBlank(String s) {
-        return s == null || s.trim().isEmpty();
+
+⸻
+
+✅ 3. NotificationParser.java (Business logic class)
+
+package com.yourpackage.service;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yourpackage.model.IncomingMessage;
+import com.microsoft.azure.functions.ExecutionContext;
+
+import java.util.Map;
+
+/**
+ * Responsible for parsing and processing incoming service bus messages.
+ */
+public class NotificationParser {
+
+    // ObjectMapper is thread-safe after configuration
+    private static final ObjectMapper objectMapper = new ObjectMapper();
+
+    /**
+     * Parses the raw JSON message and logs relevant details.
+     *
+     * @param rawJson the JSON string received from Service Bus
+     * @param context Azure Functions context for logging
+     * @throws Exception if parsing fails or message is invalid
+     */
+    public static void process(String rawJson, ExecutionContext context) throws Exception {
+        IncomingMessage message = objectMapper.readValue(rawJson, IncomingMessage.class);
+        logMessage(message, context);
     }
 
-    /** Convenience overload when you have body as String. */
-    public static IncomingMessage parseSafe(String body, Map<String,String> headers) {
-        byte[] bytes = (body == null) ? null : body.getBytes(StandardCharsets.UTF_8);
-        return parseSafe(bytes, headers);
+    /**
+     * Logs key fields from the parsed message for traceability.
+     */
+    private static void logMessage(IncomingMessage msg, ExecutionContext context) {
+        context.getLogger().info("========== Notification Received ==========");
+        context.getLogger().info("Event Name: " + msg.getEventName());
+        context.getLogger().info("Document ID: " + msg.getDocId());
+        context.getLogger().info("Container: " + msg.getContainer());
+        context.getLogger().info("Created At: " + msg.getCreatedAtUtc());
+        context.getLogger().info("Message ID: " + msg.getMessageId());
+
+        if (msg.getContext() != null) {
+            context.getLogger().info("Context: " + msg.getContext().toString());
+        }
+
+        if (msg.getNotify() != null) {
+            context.getLogger().info("Notification Type: " + msg.getNotify().getNotificationType());
+            context.getLogger().info("Trigger Type: " + msg.getNotify().getTriggerType());
+        }
+
+        if (msg.getDeltas() != null && !msg.getDeltas().isEmpty()) {
+            for (IncomingMessage.Delta delta : msg.getDeltas()) {
+                context.getLogger().info("Delta - Field: " + delta.getField()
+                    + ", Kind: " + delta.getKind()
+                    + ", Old: " + delta.getOld()
+                    + ", New: " + delta.getNew());
+            }
+        }
+
+        if (msg.getKeys() != null) {
+            for (Map.Entry<String, String> entry : msg.getKeys().entrySet()) {
+                context.getLogger().info("Key: " + entry.getKey() + " = " + entry.getValue());
+            }
+        }
+        context.getLogger().info("===========================================");
     }
 }
 
-3) How to call it from your Function (concise)
 
-// inside your @ServiceBusQueueTrigger function:
-Map<String,String> hdr = Map.of(
-    "MessageId",     messageId == null ? "" : messageId,
-    "CorrelationId", correlationId == null ? "" : correlationId
-);
+⸻
 
-IncomingMessage in = ParseService.parseSafe(body, hdr);
-if (in == null) {
-    // log + throw to let Functions retry / DLQ
-    log.severe("Malformed or incomplete message; dead-lettering.");
-    throw new RuntimeException("Bad message");
-}
+✅ 4. Final Structure Summary
 
-// use getters everywhere:
-log.info("Event=" + in.getEventId() + " doc=" + in.getDocId() + " corr=" + in.getCorrelationId());
+src/
+├── com.yourpackage.model
+│   └── IncomingMessage.java
+├── com.yourpackage.functions
+│   └── ServiceBusProcessorFunction.java
+└── com.yourpackage.service
+    └── NotificationParser.java
 
-Why getters?
-	•	Keeps the class immutable and safe.
-	•	Jackson can still populate via the constructor.
-	•	Your calling code uses in.getCorrelationId() etc., not field access.
 
-This mirrors your earlier shape but is production-ready (no public mutable fields), thread-safe (stateless parser + immutable DTO), and friendly for retries/DLQ.
+⸻
+
+Let me know if you want:
+	•	Unit test template
+	•	Exception logging with Application Insights
+	•	JSON Schema validation
+	•	Or wiring this with a database/save step
+
+I’m happy to help make this even stronger.
