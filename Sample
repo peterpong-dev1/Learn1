@@ -1,51 +1,116 @@
-/**
- * Builds the Service Bus message body and envelope.
- *
- * Example output JSON (payload):
- * {
- *   "correlationId": "12345-abc",
- *   "messageId": "msg-001",
- *   "createdAtUtc": "2025-08-29T10:30:00Z",
- *   "container": "unpaidContractInquiry",
- *   "docId": "POL20250824001",
- *   "eventId": "unpaidContractInquiry_dunning_notice",
- *   "eventName": "Create Dunning Notice",
- *   "when": "update",
- *   "deltas": [
- *     {
- *       "field": "/unpaidStatus",
- *       "kind": "CHANGED",
- *       "old": "PAID",
- *       "new": "UNPAID"
- *     }
- *   ],
- *   "context": {
- *     "user": "system",
- *     "source": "cosmosdb-trigger"
- *   },
- *   "notify": {
- *     "notificationType": "unpaid",
- *     "triggerType": "dunning"
- *   },
- *   "keys": {
- *     "policyId": "POL20250824001",
- *     "applicationNumber": "APP20250824001"
- *   }
- * }
- *
- * Attached as Service Bus Application Properties for filtering/metrics:
- *   container, eventId, docId, when
- *
- * @param container  Cosmos DB container name
- * @param docId      Unique document identifier
- * @param eventId    Configured event ID
- * @param eventName  Human-readable event name
- * @param when       Operation type ("insert" | "update")
- * @param deltas     Changed fields (with old/new values)
- * @param context    Optional metadata context
- * @param notificationType Notification type from event.json (e.g., unpaid, newBusiness)
- * @param triggerType Trigger type from event.json (e.g., dunning, notice)
- * @param keys       Extracted keys from config (e.g., policyId, applicationNumber)
- * @return ServiceBusMessage with payload and headers set
- * @throws Exception if serialization fails
- */
+Perfect 👍 You don’t want the heavy code yet — just the project structure + file skeletons so you can see how to organize your Message API Function cleanly.
+
+⸻
+
+📂 Suggested Project Structure
+
+src/main/java/com/yourorg/messageapi/
+│
+├── FnMessageRouter.java              // Azure Function entrypoint
+│
+├── model/
+│   ├── IncomingMessage.java          // POJO for SB message
+│   ├── Recipient.java                // POJO for resolved recipients
+│   └── ReportRecord.java             // POJO for reporting DB
+│
+├── service/
+│   ├── ParserService.java            // parse & validate SB JSON
+│   ├── FreshnessService.java         // stale check logic
+│   ├── RecipientService.java         // lookup agent/customer IDs
+│   ├── AgencyPolicyService.java      // agency filtering rules
+│   ├── PayloadBuilderService.java    // build JSON payload for next queue/API
+│   └── ReportingService.java         // write to reporting DB/blob
+│
+├── util/
+│   ├── JsonUtil.java                 // ObjectMapper helpers
+│   ├── HttpClientUtil.java           // HTTP POST helper if needed
+│   └── ConfigUtil.java               // load config/env vars
+│
+└── error/
+    └── ErrorWriter.java              // shared error -> blob writer
+
+
+⸻
+
+📄 Main Function
+
+public class FnMessageRouter {
+    @FunctionName("FnMessageRouter")
+    public void run(
+        @ServiceBusQueueTrigger(
+            name = "msg",
+            queueName = "%ServiceBusQueue%",
+            connection = "ServiceBusConnection"
+        ) String body,
+        final ExecutionContext ctx
+    ) {
+        Logger log = ctx.getLogger();
+
+        try {
+            IncomingMessage msg = ParserService.parse(body, log);
+            if (msg == null) return;
+
+            if (!FreshnessService.check(msg, log)) return;
+            if (!RecipientService.resolve(msg, log)) return;
+            if (!AgencyPolicyService.apply(msg, log)) return;
+            if (!PayloadBuilderService.buildAndSend(msg, log)) return;
+            if (!ReportingService.record(msg, log)) return;
+
+        } catch (Exception ex) {
+            log.severe("Fatal error in FnMessageRouter: " + ex.getMessage());
+            throw new RuntimeException(ex); // Functions runtime retries/DLQ
+        }
+    }
+}
+
+
+⸻
+
+📄 Example Service Skeleton
+
+public class FreshnessService {
+    /**
+     * Check if this message is still fresh (not outdated).
+     * @param msg Parsed IncomingMessage
+     * @param log Function logger
+     * @return true if still valid, false if skip
+     */
+    public static boolean check(IncomingMessage msg, Logger log) {
+        try {
+            // TODO: compare msg.timestamp vs Cosmos DB current state
+            return true;
+        } catch (Exception e) {
+            log.warning("Freshness check failed: " + e.getMessage());
+            return false;
+        }
+    }
+}
+
+
+⸻
+
+📄 POJO Example
+
+public class IncomingMessage {
+    private String messageId;
+    private String correlationId;
+    private String container;
+    private String docId;
+    private String eventId;
+    private String eventName;
+    private String payloadJson; // raw or structured
+    // getters/setters
+}
+
+
+⸻
+
+✅ With this layout:
+	•	FnMessageRouter stays clean (just pipeline).
+	•	Each Service is independent, unit-testable.
+	•	POJOs keep data consistent across services.
+	•	ErrorWriter is reusable across all steps.
+
+⸻
+
+Do you want me to now expand this template into a working skeleton with JavaDocs + comments, so you can directly copy-paste and just fill business logic?
