@@ -1,234 +1,222 @@
-Perfect. Below is the refactored full solution using classic Java POJO with private fields, getters, setters, and nested classes, no records, fully thread-safe, clean, and ready for production.
+Absolutely! Below is the full copy-paste-ready code for your request, including:
+	1.	✅ PathResolverService.java — full production-grade service
+	2.	✅ lookup-paths.json — sample config with types, required, returnField flags
+	3.	✅ Recommended folder structure
 
 ⸻
 
-✅ 1. IncomingMessage.java (POJO with nested classes)
+📁 Folder Structure
 
-package com.yourpackage.model;
-
-import java.time.OffsetDateTime;
-import java.util.List;
-import java.util.Map;
-
-/**
- * Represents the structure of the incoming message from Service Bus.
- */
-public class IncomingMessage {
-
-    private String correlationId;
-    private String messageId;
-    private OffsetDateTime createdAtUtc;
-    private String container;
-    private String docId;
-    private String eventId;
-    private String eventName;
-    private String when;
-    private List<Delta> deltas;
-    private Map<String, Object> context;
-    private Notify notify;
-    private Map<String, String> keys;
-
-    // Getters and Setters
-    public String getCorrelationId() { return correlationId; }
-    public void setCorrelationId(String correlationId) { this.correlationId = correlationId; }
-
-    public String getMessageId() { return messageId; }
-    public void setMessageId(String messageId) { this.messageId = messageId; }
-
-    public OffsetDateTime getCreatedAtUtc() { return createdAtUtc; }
-    public void setCreatedAtUtc(OffsetDateTime createdAtUtc) { this.createdAtUtc = createdAtUtc; }
-
-    public String getContainer() { return container; }
-    public void setContainer(String container) { this.container = container; }
-
-    public String getDocId() { return docId; }
-    public void setDocId(String docId) { this.docId = docId; }
-
-    public String getEventId() { return eventId; }
-    public void setEventId(String eventId) { this.eventId = eventId; }
-
-    public String getEventName() { return eventName; }
-    public void setEventName(String eventName) { this.eventName = eventName; }
-
-    public String getWhen() { return when; }
-    public void setWhen(String when) { this.when = when; }
-
-    public List<Delta> getDeltas() { return deltas; }
-    public void setDeltas(List<Delta> deltas) { this.deltas = deltas; }
-
-    public Map<String, Object> getContext() { return context; }
-    public void setContext(Map<String, Object> context) { this.context = context; }
-
-    public Notify getNotify() { return notify; }
-    public void setNotify(Notify notify) { this.notify = notify; }
-
-    public Map<String, String> getKeys() { return keys; }
-    public void setKeys(Map<String, String> keys) { this.keys = keys; }
-
-    /**
-     * Represents a single field change ("delta") in the message.
-     */
-    public static class Delta {
-        private String field;
-        private String kind;
-        private String old;
-        private String _new;
-
-        public String getField() { return field; }
-        public void setField(String field) { this.field = field; }
-
-        public String getKind() { return kind; }
-        public void setKind(String kind) { this.kind = kind; }
-
-        public String getOld() { return old; }
-        public void setOld(String old) { this.old = old; }
-
-        public String getNew() { return _new; }
-        public void setNew(String _new) { this._new = _new; }
-    }
-
-    /**
-     * Represents notification metadata.
-     */
-    public static class Notify {
-        private String notificationType;
-        private String triggerType;
-
-        public String getNotificationType() { return notificationType; }
-        public void setNotificationType(String notificationType) { this.notificationType = notificationType; }
-
-        public String getTriggerType() { return triggerType; }
-        public void setTriggerType(String triggerType) { this.triggerType = triggerType; }
-    }
-}
+/src
+  /main
+    /java
+      /com/yourcompany/resolver
+        PathResolverService.java
+  /resources
+    config/
+      lookup-paths.json
 
 
 ⸻
 
-✅ 2. ServiceBusProcessorFunction.java (Trigger class)
+✅ 1. PathResolverService.java
 
-package com.yourpackage.functions;
+package com.yourcompany.resolver;
 
-import com.microsoft.azure.functions.annotation.*;
-import com.microsoft.azure.functions.*;
-import com.yourpackage.service.NotificationParser;
-
-/**
- * Azure Function that is triggered by messages from Azure Service Bus.
- */
-public class ServiceBusProcessorFunction {
-
-    /**
-     * Main trigger entry point. Just calls parser and handles errors.
-     */
-    @FunctionName("HandleServiceBusNotification")
-    public void run(
-        @ServiceBusQueueTrigger(
-            name = "message",
-            queueName = "YOUR_QUEUE_NAME",
-            connection = "AzureServiceBusConnection"
-        ) String rawMessage,
-        final ExecutionContext context
-    ) {
-        try {
-            NotificationParser.process(rawMessage, context);
-        } catch (Exception e) {
-            context.getLogger().severe("Failed to process message: " + e.getMessage());
-        }
-    }
-}
-
-
-⸻
-
-✅ 3. NotificationParser.java (Business logic class)
-
-package com.yourpackage.service;
-
+import com.azure.cosmos.*;
+import com.azure.cosmos.models.*;
+import com.azure.cosmos.util.CosmosPagedIterable;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.yourpackage.model.IncomingMessage;
-import com.microsoft.azure.functions.ExecutionContext;
+import com.fasterxml.jackson.core.type.TypeReference;
 
-import java.util.Map;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Responsible for parsing and processing incoming service bus messages.
+ * Thread-safe, production-grade service to resolve chained Cosmos DB lookups using external config.
+ * Supports input/output types, required flags, and flexible field inclusion.
  */
-public class NotificationParser {
+public class PathResolverService {
 
-    // ObjectMapper is thread-safe after configuration
-    private static final ObjectMapper objectMapper = new ObjectMapper();
+    private static final ObjectMapper mapper = new ObjectMapper();
+
+    // Cosmos client is thread-safe and reused across function instances
+    private static final CosmosClient cosmosClient = new CosmosClientBuilder()
+            .endpoint(System.getenv("CosmosDbEndpoint"))
+            .key(System.getenv("CosmosDbKey"))
+            .consistencyLevel(ConsistencyLevel.EVENTUAL)
+            .buildClient();
+
+    // Cache for parsed JSON config to avoid re-parsing each time
+    private static final Map<Integer, List<LookupStep>> pathCache = new ConcurrentHashMap<>();
 
     /**
-     * Parses the raw JSON message and logs relevant details.
+     * Resolves the lookup path by reading configuration and executing step-by-step queries.
      *
-     * @param rawJson the JSON string received from Service Bus
-     * @param context Azure Functions context for logging
-     * @throws Exception if parsing fails or message is invalid
+     * @param pathNumber the path ID defined in the config JSON
+     * @param inputKeys  the input keys from the original message (e.g., applicationId, policyId)
+     * @return a map of resolved field values (only fields marked returnField=true)
+     * @throws Exception if required step fails or config is missing
      */
-    public static void process(String rawJson, ExecutionContext context) throws Exception {
-        IncomingMessage message = objectMapper.readValue(rawJson, IncomingMessage.class);
-        logMessage(message, context);
+    public Map<String, String> resolvePath(int pathNumber, Map<String, String> inputKeys) throws Exception {
+        List<LookupStep> steps = loadPathConfig(pathNumber);
+        Map<String, String> workingContext = new HashMap<>(inputKeys);
+        Map<String, String> result = new HashMap<>();
+
+        for (LookupStep step : steps) {
+            String inputVal = workingContext.get(step.inputKey());
+
+            if (inputVal == null) {
+                if (step.required()) {
+                    throw new IllegalStateException("Missing required input key: " + step.inputKey());
+                } else {
+                    continue;
+                }
+            }
+
+            String outputVal = queryCosmos(step, inputVal);
+            if (outputVal == null && step.required()) {
+                throw new IllegalStateException("Required lookup failed for: " + step.outputField());
+            }
+
+            if (outputVal != null) {
+                workingContext.put(step.outputField(), outputVal);
+                if (step.returnField()) {
+                    result.put(step.outputField(), outputVal);
+                }
+            }
+        }
+        return result;
     }
 
     /**
-     * Logs key fields from the parsed message for traceability.
+     * Executes a Cosmos DB query for a given step and returns the extracted output field value.
      */
-    private static void logMessage(IncomingMessage msg, ExecutionContext context) {
-        context.getLogger().info("========== Notification Received ==========");
-        context.getLogger().info("Event Name: " + msg.getEventName());
-        context.getLogger().info("Document ID: " + msg.getDocId());
-        context.getLogger().info("Container: " + msg.getContainer());
-        context.getLogger().info("Created At: " + msg.getCreatedAtUtc());
-        context.getLogger().info("Message ID: " + msg.getMessageId());
+    private String queryCosmos(LookupStep step, String inputVal) {
+        try {
+            CosmosContainer container = cosmosClient
+                    .getDatabase(step.database())
+                    .getContainer(step.container());
 
-        if (msg.getContext() != null) {
-            context.getLogger().info("Context: " + msg.getContext().toString());
-        }
+            SqlParameter param = new SqlParameter("@" + step.inputKey(), inputVal);
+            SqlQuerySpec querySpec = new SqlQuerySpec(step.query(), Collections.singletonList(param));
 
-        if (msg.getNotify() != null) {
-            context.getLogger().info("Notification Type: " + msg.getNotify().getNotificationType());
-            context.getLogger().info("Trigger Type: " + msg.getNotify().getTriggerType());
-        }
+            CosmosPagedIterable<JsonNode> response = container.queryItems(querySpec, new CosmosQueryRequestOptions(), JsonNode.class);
 
-        if (msg.getDeltas() != null && !msg.getDeltas().isEmpty()) {
-            for (IncomingMessage.Delta delta : msg.getDeltas()) {
-                context.getLogger().info("Delta - Field: " + delta.getField()
-                    + ", Kind: " + delta.getKind()
-                    + ", Old: " + delta.getOld()
-                    + ", New: " + delta.getNew());
+            for (JsonNode item : response) {
+                JsonNode value = item.path(step.outputField());
+                return value.isMissingNode() ? null : value.asText();
             }
+            return null;
+        } catch (Exception e) {
+            if (step.required()) throw new RuntimeException("Failed query for required step: " + step.outputField(), e);
+            return null;
         }
-
-        if (msg.getKeys() != null) {
-            for (Map.Entry<String, String> entry : msg.getKeys().entrySet()) {
-                context.getLogger().info("Key: " + entry.getKey() + " = " + entry.getValue());
-            }
-        }
-        context.getLogger().info("===========================================");
     }
+
+    /**
+     * Loads and caches the lookup path configuration from the JSON config file.
+     */
+    private List<LookupStep> loadPathConfig(int pathNumber) throws IOException {
+        if (pathCache.containsKey(pathNumber)) {
+            return pathCache.get(pathNumber);
+        }
+
+        byte[] jsonData = Files.readAllBytes(Paths.get("src/main/resources/config/lookup-paths.json"));
+        Map<String, List<LookupStep>> config = mapper.readValue(jsonData, new TypeReference<>() {});
+        List<LookupStep> steps = config.getOrDefault(String.valueOf(pathNumber), Collections.emptyList());
+
+        if (steps.isEmpty()) {
+            throw new IllegalArgumentException("No config found for path number: " + pathNumber);
+        }
+
+        pathCache.put(pathNumber, steps);
+        return steps;
+    }
+
+    /**
+     * POJO record representing each step in the lookup config.
+     */
+    public record LookupStep(
+            String database,
+            String container,
+            String query,
+            String inputKey,
+            String inputType,
+            String outputField,
+            String outputType,
+            boolean required,
+            boolean returnField
+    ) {}
 }
 
 
 ⸻
 
-✅ 4. Final Structure Summary
+✅ 2. lookup-paths.json (Place in src/main/resources/config/)
 
-src/
-├── com.yourpackage.model
-│   └── IncomingMessage.java
-├── com.yourpackage.functions
-│   └── ServiceBusProcessorFunction.java
-└── com.yourpackage.service
-    └── NotificationParser.java
+{
+  "1": [
+    {
+      "database": "AppDB",
+      "container": "Applications",
+      "query": "SELECT c.agentId FROM c WHERE c.applicationId = @applicationId",
+      "inputKey": "applicationId",
+      "inputType": "string",
+      "outputField": "agentId",
+      "outputType": "string",
+      "required": true,
+      "returnField": true
+    },
+    {
+      "database": "AgentDB",
+      "container": "Agents",
+      "query": "SELECT c.email FROM c WHERE c.agentId = @agentId",
+      "inputKey": "agentId",
+      "inputType": "string",
+      "outputField": "email",
+      "outputType": "string",
+      "required": true,
+      "returnField": true
+    }
+  ]
+}
 
 
 ⸻
 
-Let me know if you want:
-	•	Unit test template
-	•	Exception logging with Application Insights
-	•	JSON Schema validation
-	•	Or wiring this with a database/save step
+🔑 Set These in Your App Settings / local.settings.json
 
-I’m happy to help make this even stronger.
+{
+  "IsEncrypted": false,
+  "Values": {
+    "CosmosDbEndpoint": "https://<your-account>.documents.azure.com:443/",
+    "CosmosDbKey": "<your-key>"
+  }
+}
+
+
+⸻
+
+✅ Example Usage
+
+PathResolverService resolver = new PathResolverService();
+
+Map<String, String> inputKeys = Map.of("applicationId", "APP001");
+Map<String, String> result = resolver.resolvePath(1, inputKeys);
+
+// Output: { "agentId": "...", "email": "..." }
+
+
+⸻
+
+Let me know when you’re ready to:
+	•	Load config from Azure Blob
+	•	Add support for optional steps
+	•	Write unit tests or mock Cosmos responses
+
+I’m ready when you are.
