@@ -1,150 +1,89 @@
-{
-  // 1. policy.handler.agency.agentId -> agents.agent.email (if validated)
-  "1": [
-    {
-      "database": "api_policy_db",
-      "container": "handler",
-      "query": "SELECT c.agency.agentId FROM c WHERE c.policyId = @policyId",
-      "inputKey": "policyId",
-      "inputType": "string",
-      "outputField": "agentId",
-      "outputType": "string",
-      "required": true,
-      "returnField": false
-    },
-    {
-      "database": "api_agents_db",
-      "container": "agent",
-      "query": "SELECT c.eMail.address FROM c WHERE c.agentId = @agentId AND c.eMail.addressValidated = true",
-      "inputKey": "agentId",
-      "inputType": "string",
-      "outputField": "email",
-      "outputType": "string",
-      "required": true,
-      "returnField": true
-    }
-  ],
+package com.yourcompany.config;
 
-  // 2. policy.customer.email.address (if validated)
-  "2": [
-    {
-      "database": "api_policy_db",
-      "container": "customer",
-      "query": "SELECT c.eMail.address FROM c WHERE c.policyId = @policyId AND c.eMail.addressValidated = true",
-      "inputKey": "policyId",
-      "inputType": "string",
-      "outputField": "email",
-      "outputType": "string",
-      "required": true,
-      "returnField": true
-    }
-  ],
+/**
+ * Represents one step in a multi-step Cosmos DB lookup path.
+ */
+public class LookupStep {
+    private String database;
+    private String container;
+    private String query;
+    private String inputKey;
+    private String inputType;
+    private String outputField;
+    private String outputType;
+    private boolean required;
+    private boolean returnField;
 
-  // 3. unpaidContractInquiry.representativeAgency.agentId -> representativeAgency.email.address
-  "3": [
-    {
-      "database": "api_policy_db",
-      "container": "unpaidContractInquiry",
-      "query": "SELECT c.representativeAgency.agentId FROM c WHERE c.policyId = @policyId",
-      "inputKey": "policyId",
-      "inputType": "string",
-      "outputField": "agentId",
-      "outputType": "string",
-      "required": false,
-      "returnField": false
-    },
-    {
-      "database": "api_policy_db",
-      "container": "representativeAgency",
-      "query": "SELECT c.eMail.address FROM c WHERE c.agentId = @agentId AND c.eMail.addressValidated = true",
-      "inputKey": "agentId",
-      "inputType": "string",
-      "outputField": "email",
-      "outputType": "string",
-      "required": false,
-      "returnField": true
+    // Getters and setters
+    public String getDatabase() {
+        return database;
     }
-  ],
 
-  // 4. policy.customer.email.address (again)
-  "4": [
-    {
-      "database": "api_policy_db",
-      "container": "customer",
-      "query": "SELECT c.eMail.address FROM c WHERE c.policyId = @policyId AND c.eMail.addressValidated = true",
-      "inputKey": "policyId",
-      "inputType": "string",
-      "outputField": "email",
-      "outputType": "string",
-      "required": true,
-      "returnField": true
+    public void setDatabase(String database) {
+        this.database = database;
     }
-  ],
 
-  // 5. newBusiness.appInfoProgressManagement.agency[0].agentRegistrationNumber -> agents.agent.email
-  "5": [
-    {
-      "database": "api_newbusiness_db",
-      "container": "appInfoProgressManagement",
-      "query": "SELECT c.agency[0].agentRegistrationNumber FROM c WHERE c.applicationId = @applicationId",
-      "inputKey": "applicationId",
-      "inputType": "string",
-      "outputField": "agentRegistrationNumber",
-      "outputType": "string",
-      "required": true,
-      "returnField": false
-    },
-    {
-      "database": "api_agents_db",
-      "container": "agent",
-      "query": "SELECT c.eMail.address FROM c WHERE c.agentRegistrationNumber = @agentRegistrationNumber AND c.eMail.addressValidated = true",
-      "inputKey": "agentRegistrationNumber",
-      "inputType": "string",
-      "outputField": "email",
-      "outputType": "string",
-      "required": true,
-      "returnField": true
+    public String getContainer() {
+        return container;
     }
-  ],
 
-  // 6. Same as 5 but different notation (redundant fallback path)
-  "6": [
-    {
-      "database": "api_newbusiness_db",
-      "container": "appInfoProgressManagement",
-      "query": "SELECT c.agency[0].agentRegistrationNumber FROM c WHERE c.applicationId = @applicationId",
-      "inputKey": "applicationId",
-      "inputType": "string",
-      "outputField": "agentRegistrationNumber",
-      "outputType": "string",
-      "required": true,
-      "returnField": false
-    },
-    {
-      "database": "agents_db",
-      "container": "agent",
-      "query": "SELECT c.eMail.address FROM c WHERE c.agentRegistrationNumber = @agentRegistrationNumber AND c.eMail.addressValidated = true",
-      "inputKey": "agentRegistrationNumber",
-      "inputType": "string",
-      "outputField": "email",
-      "outputType": "string",
-      "required": true,
-      "returnField": true
+    public void setContainer(String container) {
+        this.container = container;
     }
-  ],
 
-  // 7. agentRegistrationNumber directly passed to agent container (generic fallback)
-  "7": [
-    {
-      "database": "agents_db",
-      "container": "agent",
-      "query": "SELECT c.eMail.address FROM c WHERE c.agentRegistrationNumber = @agentRegistrationNumber AND c.eMail.addressValidated = true",
-      "inputKey": "agentRegistrationNumber",
-      "inputType": "string",
-      "outputField": "email",
-      "outputType": "string",
-      "required": true,
-      "returnField": true
+    public String getQuery() {
+        return query;
     }
-  ]
+
+    public void setQuery(String query) {
+        this.query = query;
+    }
+
+    public String getInputKey() {
+        return inputKey;
+    }
+
+    public void setInputKey(String inputKey) {
+        this.inputKey = inputKey;
+    }
+
+    public String getInputType() {
+        return inputType;
+    }
+
+    public void setInputType(String inputType) {
+        this.inputType = inputType;
+    }
+
+    public String getOutputField() {
+        return outputField;
+    }
+
+    public void setOutputField(String outputField) {
+        this.outputField = outputField;
+    }
+
+    public String getOutputType() {
+        return outputType;
+    }
+
+    public void setOutputType(String outputType) {
+        this.outputType = outputType;
+    }
+
+    public boolean isRequired() {
+        return required;
+    }
+
+    public void setRequired(boolean required) {
+        this.required = required;
+    }
+
+    public boolean isReturnField() {
+        return returnField;
+    }
+
+    public void setReturnField(boolean returnField) {
+        this.returnField = returnField;
+    }
 }
