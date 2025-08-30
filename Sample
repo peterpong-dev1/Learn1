@@ -1,182 +1,88 @@
-Absolutely! Below is the full copy-paste-ready code for your request, including:
-	1.	✅ PathResolverService.java — full production-grade service
-	2.	✅ lookup-paths.json — sample config with types, required, returnField flags
-	3.	✅ Recommended folder structure
+Thanks for the screenshot — it’s clear and useful. Based on the resolution logic you’ve shared (highlighted and red paths), here’s how your lookup-paths.json could look using your earlier discussed structure.
 
 ⸻
 
-📁 Folder Structure
-
-/src
-  /main
-    /java
-      /com/yourcompany/resolver
-        PathResolverService.java
-  /resources
-    config/
-      lookup-paths.json
-
-
-⸻
-
-✅ 1. PathResolverService.java
-
-package com.yourcompany.resolver;
-
-import com.azure.cosmos.*;
-import com.azure.cosmos.models.*;
-import com.azure.cosmos.util.CosmosPagedIterable;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.core.type.TypeReference;
-
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Paths;
-import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-
-/**
- * Thread-safe, production-grade service to resolve chained Cosmos DB lookups using external config.
- * Supports input/output types, required flags, and flexible field inclusion.
- */
-public class PathResolverService {
-
-    private static final ObjectMapper mapper = new ObjectMapper();
-
-    // Cosmos client is thread-safe and reused across function instances
-    private static final CosmosClient cosmosClient = new CosmosClientBuilder()
-            .endpoint(System.getenv("CosmosDbEndpoint"))
-            .key(System.getenv("CosmosDbKey"))
-            .consistencyLevel(ConsistencyLevel.EVENTUAL)
-            .buildClient();
-
-    // Cache for parsed JSON config to avoid re-parsing each time
-    private static final Map<Integer, List<LookupStep>> pathCache = new ConcurrentHashMap<>();
-
-    /**
-     * Resolves the lookup path by reading configuration and executing step-by-step queries.
-     *
-     * @param pathNumber the path ID defined in the config JSON
-     * @param inputKeys  the input keys from the original message (e.g., applicationId, policyId)
-     * @return a map of resolved field values (only fields marked returnField=true)
-     * @throws Exception if required step fails or config is missing
-     */
-    public Map<String, String> resolvePath(int pathNumber, Map<String, String> inputKeys) throws Exception {
-        List<LookupStep> steps = loadPathConfig(pathNumber);
-        Map<String, String> workingContext = new HashMap<>(inputKeys);
-        Map<String, String> result = new HashMap<>();
-
-        for (LookupStep step : steps) {
-            String inputVal = workingContext.get(step.inputKey());
-
-            if (inputVal == null) {
-                if (step.required()) {
-                    throw new IllegalStateException("Missing required input key: " + step.inputKey());
-                } else {
-                    continue;
-                }
-            }
-
-            String outputVal = queryCosmos(step, inputVal);
-            if (outputVal == null && step.required()) {
-                throw new IllegalStateException("Required lookup failed for: " + step.outputField());
-            }
-
-            if (outputVal != null) {
-                workingContext.put(step.outputField(), outputVal);
-                if (step.returnField()) {
-                    result.put(step.outputField(), outputVal);
-                }
-            }
-        }
-        return result;
-    }
-
-    /**
-     * Executes a Cosmos DB query for a given step and returns the extracted output field value.
-     */
-    private String queryCosmos(LookupStep step, String inputVal) {
-        try {
-            CosmosContainer container = cosmosClient
-                    .getDatabase(step.database())
-                    .getContainer(step.container());
-
-            SqlParameter param = new SqlParameter("@" + step.inputKey(), inputVal);
-            SqlQuerySpec querySpec = new SqlQuerySpec(step.query(), Collections.singletonList(param));
-
-            CosmosPagedIterable<JsonNode> response = container.queryItems(querySpec, new CosmosQueryRequestOptions(), JsonNode.class);
-
-            for (JsonNode item : response) {
-                JsonNode value = item.path(step.outputField());
-                return value.isMissingNode() ? null : value.asText();
-            }
-            return null;
-        } catch (Exception e) {
-            if (step.required()) throw new RuntimeException("Failed query for required step: " + step.outputField(), e);
-            return null;
-        }
-    }
-
-    /**
-     * Loads and caches the lookup path configuration from the JSON config file.
-     */
-    private List<LookupStep> loadPathConfig(int pathNumber) throws IOException {
-        if (pathCache.containsKey(pathNumber)) {
-            return pathCache.get(pathNumber);
-        }
-
-        byte[] jsonData = Files.readAllBytes(Paths.get("src/main/resources/config/lookup-paths.json"));
-        Map<String, List<LookupStep>> config = mapper.readValue(jsonData, new TypeReference<>() {});
-        List<LookupStep> steps = config.getOrDefault(String.valueOf(pathNumber), Collections.emptyList());
-
-        if (steps.isEmpty()) {
-            throw new IllegalArgumentException("No config found for path number: " + pathNumber);
-        }
-
-        pathCache.put(pathNumber, steps);
-        return steps;
-    }
-
-    /**
-     * POJO record representing each step in the lookup config.
-     */
-    public record LookupStep(
-            String database,
-            String container,
-            String query,
-            String inputKey,
-            String inputType,
-            String outputField,
-            String outputType,
-            boolean required,
-            boolean returnField
-    ) {}
-}
-
-
-⸻
-
-✅ 2. lookup-paths.json (Place in src/main/resources/config/)
+✅ lookup-paths.json
 
 {
   "1": [
     {
-      "database": "AppDB",
-      "container": "Applications",
-      "query": "SELECT c.agentId FROM c WHERE c.applicationId = @applicationId",
-      "inputKey": "applicationId",
+      "database": "api_policy_db",
+      "container": "handler",
+      "query": "SELECT c.agency.agentId FROM c WHERE c.policyId = @policyId",
+      "inputKey": "policyId",
       "inputType": "string",
       "outputField": "agentId",
       "outputType": "string",
       "required": true,
-      "returnField": true
+      "returnField": false
     },
     {
-      "database": "AgentDB",
-      "container": "Agents",
-      "query": "SELECT c.email FROM c WHERE c.agentId = @agentId",
+      "database": "api_agents_db",
+      "container": "agent",
+      "query": "SELECT c.eMail.address FROM c WHERE c.agentId = @agentId AND c.eMail.addressValidated = true",
       "inputKey": "agentId",
+      "inputType": "string",
+      "outputField": "email",
+      "outputType": "string",
+      "required": true,
+      "returnField": true
+    }
+  ],
+  "2": [
+    {
+      "database": "api_policy_db",
+      "container": "customer",
+      "query": "SELECT c.eMail.address FROM c WHERE c.policyId = @policyId AND c.eMail.addressValidated = true",
+      "inputKey": "policyId",
+      "inputType": "string",
+      "outputField": "email",
+      "outputType": "string",
+      "required": true,
+      "returnField": true
+    }
+  ],
+  "3": [
+    {
+      "database": "api_policy_db",
+      "container": "unpaidContractInquiry",
+      "query": "SELECT c.representativeAgency.agentId FROM c WHERE c.policyId = @policyId",
+      "inputKey": "policyId",
+      "inputType": "string",
+      "outputField": "agentId",
+      "outputType": "string",
+      "required": false,
+      "returnField": false
+    },
+    {
+      "database": "api_policy_db",
+      "container": "representativeAgency",
+      "query": "SELECT c.eMail.address FROM c WHERE c.agentId = @agentId AND c.eMail.addressValidated = true",
+      "inputKey": "agentId",
+      "inputType": "string",
+      "outputField": "email",
+      "outputType": "string",
+      "required": false,
+      "returnField": true
+    }
+  ],
+  "4": [
+    {
+      "database": "api_newbusiness_db",
+      "container": "appInfoProgressManagement",
+      "query": "SELECT c.agency[0].agentRegistrationNumber FROM c WHERE c.applicationId = @applicationId",
+      "inputKey": "applicationId",
+      "inputType": "string",
+      "outputField": "agentRegistrationNumber",
+      "outputType": "string",
+      "required": true,
+      "returnField": false
+    },
+    {
+      "database": "agents_db",
+      "container": "agent",
+      "query": "SELECT c.eMail.address FROM c WHERE c.agentRegistrationNumber = @agentRegistrationNumber AND c.eMail.addressValidated = true",
+      "inputKey": "agentRegistrationNumber",
       "inputType": "string",
       "outputField": "email",
       "outputType": "string",
@@ -189,34 +95,16 @@ public class PathResolverService {
 
 ⸻
 
-🔑 Set These in Your App Settings / local.settings.json
+📝 Notes:
+	•	Path “1” and “2” are from the yellow-highlighted resolution logic.
+	•	Path “3” and “4” are based on the red text paths.
+	•	@policyId, @applicationId, etc., are expected to be present in your input keys map.
+	•	You can add more paths ("5", "6"…) as needed using the same pattern.
 
-{
-  "IsEncrypted": false,
-  "Values": {
-    "CosmosDbEndpoint": "https://<your-account>.documents.azure.com:443/",
-    "CosmosDbKey": "<your-key>"
-  }
-}
+Let me know if you’d like:
+	•	🔁 These to be pulled from Azure Blob
+	•	🧪 Tests
+	•	✅ Optional field fallback logic
+	•	📄 Documentation/validation
 
-
-⸻
-
-✅ Example Usage
-
-PathResolverService resolver = new PathResolverService();
-
-Map<String, String> inputKeys = Map.of("applicationId", "APP001");
-Map<String, String> result = resolver.resolvePath(1, inputKeys);
-
-// Output: { "agentId": "...", "email": "..." }
-
-
-⸻
-
-Let me know when you’re ready to:
-	•	Load config from Azure Blob
-	•	Add support for optional steps
-	•	Write unit tests or mock Cosmos responses
-
-I’m ready when you are.
+Ready when you are!
