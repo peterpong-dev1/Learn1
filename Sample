@@ -1,10 +1,5 @@
-Thanks for the screenshot — it’s clear and useful. Based on the resolution logic you’ve shared (highlighted and red paths), here’s how your lookup-paths.json could look using your earlier discussed structure.
-
-⸻
-
-✅ lookup-paths.json
-
 {
+  // 1. policy.handler.agency.agentId -> agents.agent.email (if validated)
   "1": [
     {
       "database": "api_policy_db",
@@ -29,6 +24,8 @@ Thanks for the screenshot — it’s clear and useful. Based on the resolution l
       "returnField": true
     }
   ],
+
+  // 2. policy.customer.email.address (if validated)
   "2": [
     {
       "database": "api_policy_db",
@@ -42,6 +39,8 @@ Thanks for the screenshot — it’s clear and useful. Based on the resolution l
       "returnField": true
     }
   ],
+
+  // 3. unpaidContractInquiry.representativeAgency.agentId -> representativeAgency.email.address
   "3": [
     {
       "database": "api_policy_db",
@@ -66,7 +65,50 @@ Thanks for the screenshot — it’s clear and useful. Based on the resolution l
       "returnField": true
     }
   ],
+
+  // 4. policy.customer.email.address (again)
   "4": [
+    {
+      "database": "api_policy_db",
+      "container": "customer",
+      "query": "SELECT c.eMail.address FROM c WHERE c.policyId = @policyId AND c.eMail.addressValidated = true",
+      "inputKey": "policyId",
+      "inputType": "string",
+      "outputField": "email",
+      "outputType": "string",
+      "required": true,
+      "returnField": true
+    }
+  ],
+
+  // 5. newBusiness.appInfoProgressManagement.agency[0].agentRegistrationNumber -> agents.agent.email
+  "5": [
+    {
+      "database": "api_newbusiness_db",
+      "container": "appInfoProgressManagement",
+      "query": "SELECT c.agency[0].agentRegistrationNumber FROM c WHERE c.applicationId = @applicationId",
+      "inputKey": "applicationId",
+      "inputType": "string",
+      "outputField": "agentRegistrationNumber",
+      "outputType": "string",
+      "required": true,
+      "returnField": false
+    },
+    {
+      "database": "api_agents_db",
+      "container": "agent",
+      "query": "SELECT c.eMail.address FROM c WHERE c.agentRegistrationNumber = @agentRegistrationNumber AND c.eMail.addressValidated = true",
+      "inputKey": "agentRegistrationNumber",
+      "inputType": "string",
+      "outputField": "email",
+      "outputType": "string",
+      "required": true,
+      "returnField": true
+    }
+  ],
+
+  // 6. Same as 5 but different notation (redundant fallback path)
+  "6": [
     {
       "database": "api_newbusiness_db",
       "container": "appInfoProgressManagement",
@@ -89,22 +131,20 @@ Thanks for the screenshot — it’s clear and useful. Based on the resolution l
       "required": true,
       "returnField": true
     }
+  ],
+
+  // 7. agentRegistrationNumber directly passed to agent container (generic fallback)
+  "7": [
+    {
+      "database": "agents_db",
+      "container": "agent",
+      "query": "SELECT c.eMail.address FROM c WHERE c.agentRegistrationNumber = @agentRegistrationNumber AND c.eMail.addressValidated = true",
+      "inputKey": "agentRegistrationNumber",
+      "inputType": "string",
+      "outputField": "email",
+      "outputType": "string",
+      "required": true,
+      "returnField": true
+    }
   ]
 }
-
-
-⸻
-
-📝 Notes:
-	•	Path “1” and “2” are from the yellow-highlighted resolution logic.
-	•	Path “3” and “4” are based on the red text paths.
-	•	@policyId, @applicationId, etc., are expected to be present in your input keys map.
-	•	You can add more paths ("5", "6"…) as needed using the same pattern.
-
-Let me know if you’d like:
-	•	🔁 These to be pulled from Azure Blob
-	•	🧪 Tests
-	•	✅ Optional field fallback logic
-	•	📄 Documentation/validation
-
-Ready when you are!
