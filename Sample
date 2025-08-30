@@ -1,154 +1,144 @@
-import java.util.List;
-import java.util.Map;
+Absolutely! Here’s the full LookupExecutor.java class you can copy and paste directly into your project:
+
+package com.example.lookup;
+
+import com.azure.cosmos.*;
+import com.azure.cosmos.models.*;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import java.util.*;
 
 /**
- * Root POJO representing the full config.
- * Map of event ID to its associated LookupConfig.
+ * Executes a sequence of Cosmos DB queries defined in a LookupRule,
+ * populating and enriching a shared context map with output values.
  */
-public class LookupConfig extends java.util.HashMap<String, EventLookup> {
-    private static final long serialVersionUID = 1L;
-}
+public class LookupExecutor {
 
-/**
- * Represents an event-specific configuration.
- * Contains a list of entities to look up.
- */
-class EventLookup {
-    private List<LookupEntity> entities;
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
-    public List<LookupEntity> getEntities() {
-        return entities;
+    // You can inject or manage this via DI or factory
+    private final CosmosClient cosmosClient;
+
+    public LookupExecutor(CosmosClient cosmosClient) {
+        this.cosmosClient = cosmosClient;
     }
 
-    public void setEntities(List<LookupEntity> entities) {
-        this.entities = entities;
-    }
-}
+    /**
+     * Executes all lookup entities defined in the given rule using the context map for parameter resolution.
+     *
+     * @param context     Shared data map containing both inputs and outputs between query steps.
+     * @param lookupRule  Rule defining the sequence of Cosmos DB lookups to perform.
+     * @throws RuntimeException if any query or mapping fails.
+     */
+    public void executeLookupSteps(Map<String, Object> context, LookupRule lookupRule) {
+        for (LookupEntity entity : lookupRule.getEntities()) {
+            try {
+                CosmosDatabase database = cosmosClient.getDatabase(entity.getDatabase());
+                CosmosContainer container = database.getContainer(entity.getContainer());
 
-/**
- * Represents a single lookup step in the chain.
- * Includes DB details, query, inputs, and outputs.
- */
-class LookupEntity {
-    private String name;
-    private String database;
-    private String container;
-    private String query;
-    private Map<String, String> params;
-    private Map<String, String> outputs;
+                // Resolve parameters using context
+                SqlParameterList sqlParams = resolveParams(entity.getParams(), context);
+                SqlQuerySpec querySpec = new SqlQuerySpec(entity.getQuery(), sqlParams);
 
-    public String getName() {
-        return name;
-    }
+                CosmosPagedIterable<JsonNode> response = container.queryItems(querySpec, new CosmosQueryRequestOptions(), JsonNode.class);
 
-    public void setName(String name) {
-        this.name = name;
-    }
+                Optional<JsonNode> firstResult = response.stream().findFirst();
+                if (firstResult.isEmpty()) {
+                    throw new NoSuchElementException("No result found for entity: " + entity.getName());
+                }
 
-    public String getDatabase() {
-        return database;
-    }
+                JsonNode resultNode = firstResult.get();
 
-    public void setDatabase(String database) {
-        this.database = database;
-    }
+                // Extract and populate outputs into context
+                extractOutputs(resultNode, entity.getOutputs(), context);
 
-    public String getContainer() {
-        return container;
+            } catch (Exception e) {
+                throw new RuntimeException("Failed to process entity: " + entity.getName(), e);
+            }
+        }
     }
 
-    public void setContainer(String container) {
-        this.container = container;
-    }
-
-    public String getQuery() {
-        return query;
-    }
-
-    public void setQuery(String query) {
-        this.query = query;
-    }
-
-    public Map<String, String> getParams() {
+    /**
+     * Resolves parameters by looking up their values in the shared context map.
+     *
+     * @param paramDefs Map of parameter names to context keys.
+     * @param context   Context map to resolve values from.
+     * @return SqlParameterList containing resolved parameters.
+     */
+    private SqlParameterList resolveParams(Map<String, String> paramDefs, Map<String, Object> context) {
+        SqlParameterList params = new SqlParameterList();
+        for (Map.Entry<String, String> entry : paramDefs.entrySet()) {
+            String paramName = entry.getKey();
+            String contextKey = entry.getValue();
+            Object value = context.get(contextKey);
+            if (value == null) {
+                throw new IllegalArgumentException("Missing parameter in context: " + contextKey);
+            }
+            params.add(new SqlParameter("@" + paramName, value));
+        }
         return params;
     }
 
-    public void setParams(Map<String, String> params) {
-        this.params = params;
+    /**
+     * Extracts output fields from a JSON result node and adds them to the context map.
+     *
+     * @param resultNode JSON document returned from query.
+     * @param outputs    Map of document paths to context keys.
+     * @param context    Context map to populate.
+     */
+    private void extractOutputs(JsonNode resultNode, Map<String, String> outputs, Map<String, Object> context) {
+        for (Map.Entry<String, String> entry : outputs.entrySet()) {
+            String docPath = entry.getKey();
+            String contextKey = entry.getValue();
+
+            JsonNode valueNode = resolveJsonPath(resultNode, docPath);
+            if (valueNode != null && !valueNode.isNull()) {
+                context.put(contextKey, valueNode.isValueNode() ? valueNode.asText() : valueNode.toString());
+            }
+        }
     }
 
-    public Map<String, String> getOutputs() {
-        return outputs;
-    }
-
-    public void setOutputs(Map<String, String> outputs) {
-        this.outputs = outputs;
+    /**
+     * Resolves dot-notation JSON path from a JsonNode.
+     * Supports basic array index resolution like "agency[0].name".
+     *
+     * @param node  JSON root node.
+     * @param path  Dot-notation path like "agency[0].name".
+     * @return Resolved JsonNode or null.
+     */
+    private JsonNode resolveJsonPath(JsonNode node, String path) {
+        try {
+            String[] parts = path.split("\\.");
+            JsonNode current = node;
+            for (String part : parts) {
+                if (part.contains("[") && part.endsWith("]")) {
+                    String field = part.substring(0, part.indexOf("["));
+                    int index = Integer.parseInt(part.substring(part.indexOf("[") + 1, part.indexOf("]")));
+                    current = current.get(field);
+                    if (current == null || !current.isArray() || current.size() <= index) return null;
+                    current = current.get(index);
+                } else {
+                    current = current.get(part);
+                    if (current == null) return null;
+                }
+            }
+            return current;
+        } catch (Exception e) {
+            return null;
+        }
     }
 }
 
-{
-  "newBusiness_submitted_agent": {
-    "entities": [
-      {
-        "name": "policy",
-        "database": "policy-db",
-        "container": "transactionProgress",
-        "query": "SELECT c.applicationId, c.agentId FROM c WHERE c.policyId = @policyId",
-        "params": {
-          "policyId": "policyId"  // from trigger
-        },
-        "outputs": {
-          "applicationId": "applicationId",
-          "agentId": "agentId"
-        }
-      },
-      {
-        "name": "agent",
-        "database": "agent-db",
-        "container": "agentDetails",
-        "query": "SELECT c.name, c.eMail.address, c.phone, c.lineId FROM c WHERE c.agentId = @agentId",
-        "params": {
-          "agentId": "agentId"
-        },
-        "outputs": {
-          "name": "recipient.name",
-          "address": "recipient.email",
-          "phone": "recipient.phone",
-          "lineId": "recipient.lineId"
-        }
-      }
-    ]
-  },
 
-  "policy_approved_customer": {
-    "entities": [
-      {
-        "name": "policy",
-        "database": "policy-db",
-        "container": "approvedPolicies",
-        "query": "SELECT c.customerId, c.policyNumber FROM c WHERE c.policyId = @policyId",
-        "params": {
-          "policyId": "policyId"
-        },
-        "outputs": {
-          "customerId": "customerId",
-          "policyNumber": "policyNumber"
-        }
-      },
-      {
-        "name": "customer",
-        "database": "customer-db",
-        "container": "customers",
-        "query": "SELECT c.name, c.contact.email FROM c WHERE c.customerId = @customerId",
-        "params": {
-          "customerId": "customerId"
-        },
-        "outputs": {
-          "name": "recipient.name",
-          "email": "recipient.email"
-        }
-      }
-    ]
-  }
-}
+⸻
 
+✅ This class depends on the following:
+	•	LookupRule and LookupEntity POJO classes (already assumed you have)
+	•	Working CosmosClient instance (already implemented)
+
+Let me know if you want:
+	•	The POJOs again
+	•	A test or usage snippet for resolveRecipient()
+
+You’re all set to run dynamic multi-step lookups now!
