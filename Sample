@@ -87,3 +87,24 @@ Let me know if:
 	•	You want to add TTL/refresh or cache eviction
 
 Happy to help adapt it.
+
+
+AZURE_KEYVAULT_ENABLED
+true or false
+Enables/disables Key Vault access
+COSMOS_URI
+https://<account>.documents.azure.com:443/
+Used if Key Vault is disabled
+COSMOS_KEY
+your-key-here
+Used if Key Vault is disabled
+KEYVAULT_URI
+https://<vault-name>.vault.azure.net/
+Required if Key Vault is enabled
+COSMOS_URI_SECRET_NAME
+CosmosDbUri
+Name of secret in Key Vault
+COSMOS_KEY_SECRET_NAME
+CosmosDbKey
+
+
