@@ -1,89 +1,23 @@
-package com.yourcompany.config;
+public class RecipientInfo {
+    private String agentId;
+    private String email;
 
-/**
- * Represents one step in a multi-step Cosmos DB lookup path.
- */
-public class LookupStep {
-    private String database;
-    private String container;
-    private String query;
-    private String inputKey;
-    private String inputType;
-    private String outputField;
-    private String outputType;
-    private boolean required;
-    private boolean returnField;
-
+    // Optional: add more fields like name, type, etc.
+    
     // Getters and setters
-    public String getDatabase() {
-        return database;
+    public String getAgentId() {
+        return agentId;
     }
 
-    public void setDatabase(String database) {
-        this.database = database;
+    public void setAgentId(String agentId) {
+        this.agentId = agentId;
     }
 
-    public String getContainer() {
-        return container;
+    public String getEmail() {
+        return email;
     }
 
-    public void setContainer(String container) {
-        this.container = container;
-    }
-
-    public String getQuery() {
-        return query;
-    }
-
-    public void setQuery(String query) {
-        this.query = query;
-    }
-
-    public String getInputKey() {
-        return inputKey;
-    }
-
-    public void setInputKey(String inputKey) {
-        this.inputKey = inputKey;
-    }
-
-    public String getInputType() {
-        return inputType;
-    }
-
-    public void setInputType(String inputType) {
-        this.inputType = inputType;
-    }
-
-    public String getOutputField() {
-        return outputField;
-    }
-
-    public void setOutputField(String outputField) {
-        this.outputField = outputField;
-    }
-
-    public String getOutputType() {
-        return outputType;
-    }
-
-    public void setOutputType(String outputType) {
-        this.outputType = outputType;
-    }
-
-    public boolean isRequired() {
-        return required;
-    }
-
-    public void setRequired(boolean required) {
-        this.required = required;
-    }
-
-    public boolean isReturnField() {
-        return returnField;
-    }
-
-    public void setReturnField(boolean returnField) {
-        this.returnField = returnField;
+    public void setEmail(String email) {
+        this.email = email;
     }
 }
