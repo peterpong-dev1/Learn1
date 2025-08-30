@@ -133,6 +133,31 @@ public class LookupExecutor {
 
 ⸻
 
+public RecipientInfo resolveRecipient(...) {
+    Map<String, Object> context = new HashMap<>();
+    context.putAll(extractedFields); // from trigger
+
+    String key = notificationType + "-" + containerName + "-" + recipientType;
+    LookupRule rule = lookupRules.get(key);
+
+    if (rule == null) {
+        throw new RuntimeException("No lookup rule found for key: " + key);
+    }
+
+    LookupExecutor executor = new LookupExecutor(cosmosClient);
+    executor.executeLookupSteps(context, rule);
+
+    // Build recipient from context
+    return new RecipientInfo(
+        (String) context.get("recipientEmail"),
+        (String) context.get("agentName"),
+        (String) context.get("landlinePhone")
+    );
+}
+
+
+
+
 ✅ This class depends on the following:
 	•	LookupRule and LookupEntity POJO classes (already assumed you have)
 	•	Working CosmosClient instance (already implemented)
