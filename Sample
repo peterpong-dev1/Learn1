@@ -1,110 +1,87 @@
-You’re right — you clearly mentioned not to use synchronized, and I appreciate the reminder.
-
-The use of synchronized in the previous version was for safe lazy initialization of the Cosmos client, but since you’ve asked to avoid it, we can fully switch to a concurrent + atomic solution using ConcurrentHashMap.computeIfAbsent() for both the CosmosClient and the containers.
-
-⸻
-
-✅ Here’s a revised version without synchronized, using lazy caching with computeIfAbsent:
-
-import com.azure.cosmos.*;
-import com.azure.identity.DefaultAzureCredentialBuilder;
-import com.azure.security.keyvault.secrets.SecretClient;
-import com.azure.security.keyvault.secrets.SecretClientBuilder;
-import com.azure.security.keyvault.secrets.models.KeyVaultSecret;
-
+import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
-public class CosmosClientProvider {
+/**
+ * Root POJO representing the full config.
+ * Map of event ID to its associated LookupConfig.
+ */
+public class LookupConfig extends java.util.HashMap<String, EventLookup> {
+    private static final long serialVersionUID = 1L;
+}
 
-    private static final boolean keyVaultEnabled = Boolean.parseBoolean(System.getenv().getOrDefault("AZURE_KEYVAULT_ENABLED", "false"));
-    private static final String cosmosUri = System.getenv("COSMOS_URI");
-    private static final String cosmosKey = System.getenv("COSMOS_KEY");
+/**
+ * Represents an event-specific configuration.
+ * Contains a list of entities to look up.
+ */
+class EventLookup {
+    private List<LookupEntity> entities;
 
-    private static final String cosmosDbUriSecretName = System.getenv("COSMOS_URI_SECRET_NAME");
-    private static final String cosmosDbKeySecretName = System.getenv("COSMOS_KEY_SECRET_NAME");
-    private static final String keyVaultUri = System.getenv("KEYVAULT_URI");
-
-    // Thread-safe caches
-    private static final Map<String, CosmosClient> clientCache = new ConcurrentHashMap<>();
-    private static final Map<String, CosmosDatabase> dbCache = new ConcurrentHashMap<>();
-    private static final Map<String, CosmosContainer> containerCache = new ConcurrentHashMap<>();
-
-    private static final String DEFAULT_CLIENT_KEY = "default";
-
-    private CosmosClientProvider() {}
-
-    public static CosmosClient getCosmosClient() {
-        return clientCache.computeIfAbsent(DEFAULT_CLIENT_KEY, key -> {
-            String uri, keyValue;
-            if (keyVaultEnabled) {
-                SecretClient secretClient = new SecretClientBuilder()
-                        .vaultUrl(keyVaultUri)
-                        .credential(new DefaultAzureCredentialBuilder().build())
-                        .buildClient();
-
-                uri = secretClient.getSecret(cosmosDbUriSecretName).getValue();
-                keyValue = secretClient.getSecret(cosmosDbKeySecretName).getValue();
-            } else {
-                uri = cosmosUri;
-                keyValue = cosmosKey;
-            }
-
-            return new CosmosClientBuilder()
-                    .endpoint(uri)
-                    .key(keyValue)
-                    .consistencyLevel(ConsistencyLevel.EVENTUAL)
-                    .gatewayMode()
-                    .buildClient();
-        });
+    public List<LookupEntity> getEntities() {
+        return entities;
     }
 
-    public static CosmosContainer getContainer(String databaseName, String containerName) {
-        String containerKey = databaseName + ":" + containerName;
-
-        return containerCache.computeIfAbsent(containerKey, key -> {
-            CosmosDatabase database = dbCache.computeIfAbsent(databaseName,
-                    dbName -> getCosmosClient().getDatabase(dbName));
-            return database.getContainer(containerName);
-        });
+    public void setEntities(List<LookupEntity> entities) {
+        this.entities = entities;
     }
 }
 
+/**
+ * Represents a single lookup step in the chain.
+ * Includes DB details, query, inputs, and outputs.
+ */
+class LookupEntity {
+    private String name;
+    private String database;
+    private String container;
+    private String query;
+    private Map<String, String> params;
+    private Map<String, String> outputs;
 
-⸻
+    public String getName() {
+        return name;
+    }
 
-✅ Key Benefits
-	•	🚫 No synchronized
-	•	✅ Uses ConcurrentHashMap.computeIfAbsent() for safe concurrent access
-	•	✅ Lazy-loading: nothing is created until needed
-	•	✅ Caches CosmosClient, CosmosDatabase, and CosmosContainer efficiently
+    public void setName(String name) {
+        this.name = name;
+    }
 
-⸻
+    public String getDatabase() {
+        return database;
+    }
 
-Let me know if:
-	•	You want multiple CosmosClient instances (for multi-account setup)
-	•	You plan to use different configs per container
-	•	You want to add TTL/refresh or cache eviction
+    public void setDatabase(String database) {
+        this.database = database;
+    }
 
-Happy to help adapt it.
+    public String getContainer() {
+        return container;
+    }
 
+    public void setContainer(String container) {
+        this.container = container;
+    }
 
-AZURE_KEYVAULT_ENABLED
-true or false
-Enables/disables Key Vault access
-COSMOS_URI
-https://<account>.documents.azure.com:443/
-Used if Key Vault is disabled
-COSMOS_KEY
-your-key-here
-Used if Key Vault is disabled
-KEYVAULT_URI
-https://<vault-name>.vault.azure.net/
-Required if Key Vault is enabled
-COSMOS_URI_SECRET_NAME
-CosmosDbUri
-Name of secret in Key Vault
-COSMOS_KEY_SECRET_NAME
-CosmosDbKey
+    public String getQuery() {
+        return query;
+    }
 
+    public void setQuery(String query) {
+        this.query = query;
+    }
 
+    public Map<String, String> getParams() {
+        return params;
+    }
+
+    public void setParams(Map<String, String> params) {
+        this.params = params;
+    }
+
+    public Map<String, String> getOutputs() {
+        return outputs;
+    }
+
+    public void setOutputs(Map<String, String> outputs) {
+        this.outputs = outputs;
+    }
+}
