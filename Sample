@@ -1,23 +1,100 @@
-public class RecipientInfo {
-    private String agentId;
-    private String email;
+Great follow-up — and no, it’s not necessary to use CosmosAsyncClient. You can absolutely use the sync client (CosmosClient) in your Azure Functions project, especially if:
 
-    // Optional: add more fields like name, type, etc.
-    
-    // Getters and setters
-    public String getAgentId() {
-        return agentId;
+⸻
+
+✅ You Are:
+	•	Writing blocking (non-reactive) Java code
+	•	Not using Reactor or Mono/Flux style programming
+	•	Prefer simple, easier-to-read logic
+
+⸻
+
+🔄 Sync vs Async — Quick Comparison
+
+Feature	CosmosClient (Sync)	CosmosAsyncClient (Async)
+Style	Blocking	Reactive / non-blocking
+Ease of use	Simple for most use cases ✅	Requires Reactor / reactive programming
+Best for	Functions, REST APIs, simple apps ✅	High-throughput streaming or event-based systems
+Can be mixed?	Not recommended (pick one)	Not recommended (pick one)
+
+
+⸻
+
+✅ So If You’re Already Using CosmosClient…
+
+You can use this version of the utility class (sync version):
+
+⸻
+
+🧱 CosmosClientProvider.java (Sync Version)
+
+package com.your.package.cosmos;
+
+import com.azure.cosmos.*;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
+/**
+ * Thread-safe utility to manage CosmosClient and cached CosmosContainer instances.
+ */
+public final class CosmosClientProvider {
+
+    private static final CosmosClient COSMOS_CLIENT = new CosmosClientBuilder()
+            .endpoint(System.getenv("COSMOS_DB_ENDPOINT"))
+            .key(System.getenv("COSMOS_DB_KEY"))
+            .consistencyLevel(ConsistencyLevel.EVENTUAL)
+            .buildClient();
+
+    private static final Map<String, CosmosContainer> containerCache = new ConcurrentHashMap<>();
+
+    private CosmosClientProvider() {}
+
+    /**
+     * Lazily loads and caches CosmosContainer references.
+     *
+     * @param databaseName  Database name
+     * @param containerName Container name
+     * @return Cached CosmosContainer
+     */
+    public static CosmosContainer getContainer(String databaseName, String containerName) {
+        String key = databaseName + ":" + containerName;
+        return containerCache.computeIfAbsent(key, k ->
+            COSMOS_CLIENT.getDatabase(databaseName).getContainer(containerName)
+        );
     }
 
-    public void setAgentId(String agentId) {
-        this.agentId = agentId;
-    }
-
-    public String getEmail() {
-        return email;
-    }
-
-    public void setEmail(String email) {
-        this.email = email;
+    /**
+     * Get singleton CosmosClient
+     */
+    public static CosmosClient getClient() {
+        return COSMOS_CLIENT;
     }
 }
+
+
+⸻
+
+✅ Usage (Sync)
+
+CosmosContainer container = CosmosClientProvider.getContainer("myDb", "myContainer");
+
+// Execute a query
+CosmosQueryRequestOptions options = new CosmosQueryRequestOptions();
+SqlQuerySpec query = new SqlQuerySpec("SELECT * FROM c WHERE c.id = @id")
+    .setParameters(List.of(new SqlParameter("@id", "123")));
+
+Iterable<FeedResponse<JsonNode>> results = container.queryItems(query, options, JsonNode.class).iterableByPage();
+
+for (FeedResponse<JsonNode> page : results) {
+    page.getResults().forEach(item -> System.out.println(item.toPrettyString()));
+}
+
+
+⸻
+
+✅ Summary
+	•	You can and should use CosmosClient if you’re writing non-reactive Azure Function code.
+	•	The sync version is easier to manage, integrates cleanly with most Java apps.
+	•	You’ll still get full thread safety, reusability, and lazy container caching.
+
+Let me know if you want this wired into your lookup logic next.
