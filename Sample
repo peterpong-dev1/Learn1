@@ -85,3 +85,70 @@ class LookupEntity {
         this.outputs = outputs;
     }
 }
+
+{
+  "newBusiness_submitted_agent": {
+    "entities": [
+      {
+        "name": "policy",
+        "database": "policy-db",
+        "container": "transactionProgress",
+        "query": "SELECT c.applicationId, c.agentId FROM c WHERE c.policyId = @policyId",
+        "params": {
+          "policyId": "policyId"  // from trigger
+        },
+        "outputs": {
+          "applicationId": "applicationId",
+          "agentId": "agentId"
+        }
+      },
+      {
+        "name": "agent",
+        "database": "agent-db",
+        "container": "agentDetails",
+        "query": "SELECT c.name, c.eMail.address, c.phone, c.lineId FROM c WHERE c.agentId = @agentId",
+        "params": {
+          "agentId": "agentId"
+        },
+        "outputs": {
+          "name": "recipient.name",
+          "address": "recipient.email",
+          "phone": "recipient.phone",
+          "lineId": "recipient.lineId"
+        }
+      }
+    ]
+  },
+
+  "policy_approved_customer": {
+    "entities": [
+      {
+        "name": "policy",
+        "database": "policy-db",
+        "container": "approvedPolicies",
+        "query": "SELECT c.customerId, c.policyNumber FROM c WHERE c.policyId = @policyId",
+        "params": {
+          "policyId": "policyId"
+        },
+        "outputs": {
+          "customerId": "customerId",
+          "policyNumber": "policyNumber"
+        }
+      },
+      {
+        "name": "customer",
+        "database": "customer-db",
+        "container": "customers",
+        "query": "SELECT c.name, c.contact.email FROM c WHERE c.customerId = @customerId",
+        "params": {
+          "customerId": "customerId"
+        },
+        "outputs": {
+          "name": "recipient.name",
+          "email": "recipient.email"
+        }
+      }
+    ]
+  }
+}
+
