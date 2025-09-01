@@ -1,169 +1,89 @@
-Absolutely! Here’s the full LookupExecutor.java class you can copy and paste directly into your project:
+package com.example.notification;
 
-package com.example.lookup;
-
-import com.azure.cosmos.*;
-import com.azure.cosmos.models.*;
-import com.fasterxml.jackson.databind.JsonNode;
+import com.azure.core.util.BinaryData;
+import com.azure.storage.blob.*;
+import com.azure.storage.blob.models.BlobDownloadContentResponse;
+import com.azure.storage.blob.models.BlobStorageException;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.*;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
- * Executes a sequence of Cosmos DB queries defined in a LookupRule,
- * populating and enriching a shared context map with output values.
+ * Thread-safe class that loads a list of allowed agency IDs from Azure Blob Storage
+ * and provides validation logic.
  */
-public class LookupExecutor {
+public class AllowedAgencyValidator {
 
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final Logger logger = Logger.getLogger(AllowedAgencyValidator.class.getName());
+    private static final ObjectMapper objectMapper = new ObjectMapper();
 
-    // You can inject or manage this via DI or factory
-    private final CosmosClient cosmosClient;
+    // AtomicReference ensures visibility and safe concurrent reads
+    private final AtomicReference<Set<String>> allowedAgenciesRef = new AtomicReference<>(Set.of());
 
-    public LookupExecutor(CosmosClient cosmosClient) {
-        this.cosmosClient = cosmosClient;
+    /**
+     * Loads allowed agencies from the blob file.
+     *
+     * Expected blob JSON format:
+     * {
+     *   "allowedAgencies": ["AGENCY001", "AGENCY002", ...]
+     * }
+     *
+     * @param blobClient BlobClient pointing to the JSON blob
+     */
+    public AllowedAgencyValidator(BlobClient blobClient) {
+        loadAllowedAgencies(blobClient);
     }
 
     /**
-     * Executes all lookup entities defined in the given rule using the context map for parameter resolution.
+     * Reloads the allowed agencies set from blob and stores it in an atomic reference.
+     * Can be called periodically if dynamic refresh is required.
      *
-     * @param context     Shared data map containing both inputs and outputs between query steps.
-     * @param lookupRule  Rule defining the sequence of Cosmos DB lookups to perform.
-     * @throws RuntimeException if any query or mapping fails.
+     * @param blobClient BlobClient instance pointing to allowed-agencies.json
      */
-    public void executeLookupSteps(Map<String, Object> context, LookupRule lookupRule) {
-        for (LookupEntity entity : lookupRule.getEntities()) {
-            try {
-                CosmosDatabase database = cosmosClient.getDatabase(entity.getDatabase());
-                CosmosContainer container = database.getContainer(entity.getContainer());
-
-                // Resolve parameters using context
-                SqlParameterList sqlParams = resolveParams(entity.getParams(), context);
-                SqlQuerySpec querySpec = new SqlQuerySpec(entity.getQuery(), sqlParams);
-
-                CosmosPagedIterable<JsonNode> response = container.queryItems(querySpec, new CosmosQueryRequestOptions(), JsonNode.class);
-
-                Optional<JsonNode> firstResult = response.stream().findFirst();
-                if (firstResult.isEmpty()) {
-                    throw new NoSuchElementException("No result found for entity: " + entity.getName());
-                }
-
-                JsonNode resultNode = firstResult.get();
-
-                // Extract and populate outputs into context
-                extractOutputs(resultNode, entity.getOutputs(), context);
-
-            } catch (Exception e) {
-                throw new RuntimeException("Failed to process entity: " + entity.getName(), e);
-            }
-        }
-    }
-
-    /**
-     * Resolves parameters by looking up their values in the shared context map.
-     *
-     * @param paramDefs Map of parameter names to context keys.
-     * @param context   Context map to resolve values from.
-     * @return SqlParameterList containing resolved parameters.
-     */
-    private SqlParameterList resolveParams(Map<String, String> paramDefs, Map<String, Object> context) {
-        SqlParameterList params = new SqlParameterList();
-        for (Map.Entry<String, String> entry : paramDefs.entrySet()) {
-            String paramName = entry.getKey();
-            String contextKey = entry.getValue();
-            Object value = context.get(contextKey);
-            if (value == null) {
-                throw new IllegalArgumentException("Missing parameter in context: " + contextKey);
-            }
-            params.add(new SqlParameter("@" + paramName, value));
-        }
-        return params;
-    }
-
-    /**
-     * Extracts output fields from a JSON result node and adds them to the context map.
-     *
-     * @param resultNode JSON document returned from query.
-     * @param outputs    Map of document paths to context keys.
-     * @param context    Context map to populate.
-     */
-    private void extractOutputs(JsonNode resultNode, Map<String, String> outputs, Map<String, Object> context) {
-        for (Map.Entry<String, String> entry : outputs.entrySet()) {
-            String docPath = entry.getKey();
-            String contextKey = entry.getValue();
-
-            JsonNode valueNode = resolveJsonPath(resultNode, docPath);
-            if (valueNode != null && !valueNode.isNull()) {
-                context.put(contextKey, valueNode.isValueNode() ? valueNode.asText() : valueNode.toString());
-            }
-        }
-    }
-
-    /**
-     * Resolves dot-notation JSON path from a JsonNode.
-     * Supports basic array index resolution like "agency[0].name".
-     *
-     * @param node  JSON root node.
-     * @param path  Dot-notation path like "agency[0].name".
-     * @return Resolved JsonNode or null.
-     */
-    private JsonNode resolveJsonPath(JsonNode node, String path) {
+    public void loadAllowedAgencies(BlobClient blobClient) {
         try {
-            String[] parts = path.split("\\.");
-            JsonNode current = node;
-            for (String part : parts) {
-                if (part.contains("[") && part.endsWith("]")) {
-                    String field = part.substring(0, part.indexOf("["));
-                    int index = Integer.parseInt(part.substring(part.indexOf("[") + 1, part.indexOf("]")));
-                    current = current.get(field);
-                    if (current == null || !current.isArray() || current.size() <= index) return null;
-                    current = current.get(index);
-                } else {
-                    current = current.get(part);
-                    if (current == null) return null;
-                }
-            }
-            return current;
+            BlobDownloadContentResponse content = blobClient.downloadContent();
+            String json = content.getContent().toString();
+
+            Map<String, List<String>> map = objectMapper.readValue(json, new TypeReference<>() {});
+            List<String> agencyList = map.getOrDefault("allowedAgencies", List.of());
+
+            // Safely update the reference to new data
+            allowedAgenciesRef.set(Collections.unmodifiableSet(new HashSet<>(agencyList)));
+
+            logger.info("Allowed agencies loaded: " + agencyList.size());
+
         } catch (Exception e) {
-            return null;
+            logger.log(Level.SEVERE, "Error loading allowed agencies from blob", e);
+            // Leave the previous list intact if error occurs
         }
     }
-}
 
-
-⸻
-
-public RecipientInfo resolveRecipient(...) {
-    Map<String, Object> context = new HashMap<>();
-    context.putAll(extractedFields); // from trigger
-
-    String key = notificationType + "-" + containerName + "-" + recipientType;
-    LookupRule rule = lookupRules.get(key);
-
-    if (rule == null) {
-        throw new RuntimeException("No lookup rule found for key: " + key);
+    /**
+     * Validates whether a given agency is in the allowed list.
+     * If not allowed, logs and optionally stores the rejected event to blob.
+     *
+     * @param agencyId            The agency ID to validate
+     * @param eventJson           The full JSON payload of the event (for logging)
+     * @param fallbackBlobClient  Optional: blob to store rejected event if agency not allowed
+     * @return true if agency is allowed, false otherwise
+     */
+    public boolean isAgencyAllowed(String agencyId, String eventJson, BlobClient fallbackBlobClient) {
+        if (!allowedAgenciesRef.get().contains(agencyId)) {
+            logger.warning("Rejected event: unauthorized agencyId = " + agencyId);
+            if (fallbackBlobClient != null) {
+                try {
+                    fallbackBlobClient.upload(BinaryData.fromString(eventJson), true);
+                } catch (BlobStorageException e) {
+                    logger.log(Level.SEVERE, "Failed to write rejected event to fallback blob", e);
+                }
+            }
+            return false;
+        }
+        return true;
     }
-
-    LookupExecutor executor = new LookupExecutor(cosmosClient);
-    executor.executeLookupSteps(context, rule);
-
-    // Build recipient from context
-    return new RecipientInfo(
-        (String) context.get("recipientEmail"),
-        (String) context.get("agentName"),
-        (String) context.get("landlinePhone")
-    );
 }
-
-
-
-
-✅ This class depends on the following:
-	•	LookupRule and LookupEntity POJO classes (already assumed you have)
-	•	Working CosmosClient instance (already implemented)
-
-Let me know if you want:
-	•	The POJOs again
-	•	A test or usage snippet for resolveRecipient()
-
-You’re all set to run dynamic multi-step lookups now!
