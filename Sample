@@ -1,89 +1,58 @@
-package com.example.notification;
-
-import com.azure.core.util.BinaryData;
-import com.azure.storage.blob.*;
-import com.azure.storage.blob.models.BlobDownloadContentResponse;
+import com.azure.storage.blob.BlobClient;
+import com.azure.storage.blob.BlobContainerClient;
 import com.azure.storage.blob.models.BlobStorageException;
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
-import java.util.*;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.logging.Level;
-import java.util.logging.Logger;
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.time.format.DateTimeFormatter;
 
-/**
- * Thread-safe class that loads a list of allowed agency IDs from Azure Blob Storage
- * and provides validation logic.
- */
-public class AllowedAgencyValidator {
+public class IgnoredTriggerLogger {
 
-    private static final Logger logger = Logger.getLogger(AllowedAgencyValidator.class.getName());
-    private static final ObjectMapper objectMapper = new ObjectMapper();
-
-    // AtomicReference ensures visibility and safe concurrent reads
-    private final AtomicReference<Set<String>> allowedAgenciesRef = new AtomicReference<>(Set.of());
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     /**
-     * Loads allowed agencies from the blob file.
+     * Logs a skipped trigger to Blob Storage in JSON format with timestamped filename.
      *
-     * Expected blob JSON format:
-     * {
-     *   "allowedAgencies": ["AGENCY001", "AGENCY002", ...]
-     * }
-     *
-     * @param blobClient BlobClient pointing to the JSON blob
+     * @param container        The blob container client.
+     * @param docId            Unique document ID or trigger ID.
+     * @param notificationType The notification type.
+     * @param agencyId         The agency ID that caused the skip.
+     * @param reason           Human-readable reason for skipping.
      */
-    public AllowedAgencyValidator(BlobClient blobClient) {
-        loadAllowedAgencies(blobClient);
-    }
-
-    /**
-     * Reloads the allowed agencies set from blob and stores it in an atomic reference.
-     * Can be called periodically if dynamic refresh is required.
-     *
-     * @param blobClient BlobClient instance pointing to allowed-agencies.json
-     */
-    public void loadAllowedAgencies(BlobClient blobClient) {
+    public static void logSkippedTrigger(
+            BlobContainerClient container,
+            String docId,
+            String notificationType,
+            String agencyId,
+            String reason
+    ) {
         try {
-            BlobDownloadContentResponse content = blobClient.downloadContent();
-            String json = content.getContent().toString();
+            // Generate UTC timestamp
+            String timestamp = Instant.now().toString(); // e.g., 2025-08-26T12:00:00Z
 
-            Map<String, List<String>> map = objectMapper.readValue(json, new TypeReference<>() {});
-            List<String> agencyList = map.getOrDefault("allowedAgencies", List.of());
+            // Create JSON object
+            ObjectNode logEntry = MAPPER.createObjectNode();
+            logEntry.put("timestamp", timestamp);
+            logEntry.put("notificationType", notificationType);
+            logEntry.put("agencyId", agencyId);
+            logEntry.put("reason", reason);
 
-            // Safely update the reference to new data
-            allowedAgenciesRef.set(Collections.unmodifiableSet(new HashSet<>(agencyList)));
+            // Create filename
+            String fileName = docId + "_" + timestamp.replace(":", "-") + ".json";
 
-            logger.info("Allowed agencies loaded: " + agencyList.size());
+            // Upload as blob
+            BlobClient blobClient = container.getBlobClient(fileName);
+            byte[] jsonBytes = MAPPER.writeValueAsString(logEntry).getBytes(StandardCharsets.UTF_8);
+            blobClient.uploadBinaryContent(jsonBytes);
 
+            System.out.println("✅ Ignored trigger logged to blob: " + fileName);
+
+        } catch (BlobStorageException e) {
+            System.err.println("❌ Blob storage error while writing skipped log: " + e.getMessage());
         } catch (Exception e) {
-            logger.log(Level.SEVERE, "Error loading allowed agencies from blob", e);
-            // Leave the previous list intact if error occurs
+            System.err.println("❌ Unexpected error during skipped trigger logging: " + e.getMessage());
         }
-    }
-
-    /**
-     * Validates whether a given agency is in the allowed list.
-     * If not allowed, logs and optionally stores the rejected event to blob.
-     *
-     * @param agencyId            The agency ID to validate
-     * @param eventJson           The full JSON payload of the event (for logging)
-     * @param fallbackBlobClient  Optional: blob to store rejected event if agency not allowed
-     * @return true if agency is allowed, false otherwise
-     */
-    public boolean isAgencyAllowed(String agencyId, String eventJson, BlobClient fallbackBlobClient) {
-        if (!allowedAgenciesRef.get().contains(agencyId)) {
-            logger.warning("Rejected event: unauthorized agencyId = " + agencyId);
-            if (fallbackBlobClient != null) {
-                try {
-                    fallbackBlobClient.upload(BinaryData.fromString(eventJson), true);
-                } catch (BlobStorageException e) {
-                    logger.log(Level.SEVERE, "Failed to write rejected event to fallback blob", e);
-                }
-            }
-            return false;
-        }
-        return true;
     }
 }
