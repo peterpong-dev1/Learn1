@@ -1,253 +1,194 @@
-Awesome — here’s a clean, production-grade way to build the Notification API request with a dynamic placeholders bag and a simple call from your run method.
+You’re exactly right:
+	•	Parse failures or missing mandatory fields are non-recoverable → don’t retry; log to an error blob and return.
+	•	Save throws for transient issues (e.g., Cosmos/Service Bus outages) where retry might succeed.
 
-The design is:
-	•	POJOs: NotificationRequest, Recipient, Agency
-	•	Builder: NotificationPayloadBuilder (stateless, thread-safe)
-	•	Serialization: Jackson ObjectMapper
-	•	Dynamic placeholders: either pass a Map<String,Object> in the context under placeholders, or prefix any context keys with ph. (e.g. ph.contractDate) and they’ll be auto-collected.
+Below is copy-paste code that fits your flow:
 
 ⸻
 
+1) ErrorBlobWriter — writes a JSON error record to a blob
 
-// ============ POJOs ============
+package com.yourco.notification.errors;
 
-package com.yourco.notification.payload;
-
-import com.fasterxml.jackson.annotation.JsonInclude;
-import java.util.Map;
-
-/** Top-level payload sent to Notification API/queue. */
-@JsonInclude(JsonInclude.Include.NON_NULL)
-public class NotificationRequest {
-    private String notificationType;
-    private String triggerType;
-    private String messageType;
-    private String language;
-    private String applicationId;
-    private String policyId;
-    private Recipient recipient;
-    private Agency agency;
-    private Map<String, Object> placeholders; // dynamic key/value bag
-
-    // getters/setters
-    public String getNotificationType() { return notificationType; }
-    public void setNotificationType(String notificationType) { this.notificationType = notificationType; }
-    public String getTriggerType() { return triggerType; }
-    public void setTriggerType(String triggerType) { this.triggerType = triggerType; }
-    public String getMessageType() { return messageType; }
-    public void setMessageType(String messageType) { this.messageType = messageType; }
-    public String getLanguage() { return language; }
-    public void setLanguage(String language) { this.language = language; }
-    public String getApplicationId() { return applicationId; }
-    public void setApplicationId(String applicationId) { this.applicationId = applicationId; }
-    public String getPolicyId() { return policyId; }
-    public void setPolicyId(String policyId) { this.policyId = policyId; }
-    public Recipient getRecipient() { return recipient; }
-    public void setRecipient(Recipient recipient) { this.recipient = recipient; }
-    public Agency getAgency() { return agency; }
-    public void setAgency(Agency agency) { this.agency = agency; }
-    public Map<String, Object> getPlaceholders() { return placeholders; }
-    public void setPlaceholders(Map<String, Object> placeholders) { this.placeholders = placeholders; }
-}
-
-/** Nested recipient object. */
-@JsonInclude(JsonInclude.Include.NON_NULL)
-class Recipient {
-    private String name;
-    private String email;
-    private String phone;
-    private String lineId;
-
-    public String getName() { return name; }
-    public void setName(String name) { this.name = name; }
-    public String getEmail() { return email; }
-    public void setEmail(String email) { this.email = email; }
-    public String getPhone() { return phone; }
-    public void setPhone(String phone) { this.phone = phone; }
-    public String getLineId() { return lineId; }
-    public void setLineId(String lineId) { this.lineId = lineId; }
-}
-
-/** Nested agency object. */
-@JsonInclude(JsonInclude.Include.NON_NULL)
-class Agency {
-    private String agencyId;
-    private String agencyName;
-
-    public String getAgencyId() { return agencyId; }
-    public void setAgencyId(String agencyId) { this.agencyId = agencyId; }
-    public String getAgencyName() { return agencyName; }
-    public void setAgencyName(String agencyName) { this.agencyName = agencyName; }
-}
-
-
-// ============ Builder + Serializer ============
-
-package com.yourco.notification.payload;
-
-import com.fasterxml.jackson.core.JsonProcessingException;
+import com.azure.core.util.BinaryData;
+import com.azure.storage.blob.BlobClient;
+import com.azure.storage.blob.BlobContainerClient;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
-import java.util.*;
+import java.time.Instant;
+import java.util.Map;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
-/**
- * Stateless, thread-safe builder for NotificationRequest.
- * - Pulls fixed fields from parsed message and/or context.
- * - Builds dynamic placeholders from:
- *   (1) a Map under key "placeholders" in context, and/or
- *   (2) any context entries whose key starts with "ph." (prefix is stripped).
- */
-public final class NotificationPayloadBuilder {
+/** Stateless helper to persist error details to Blob Storage. */
+public final class ErrorBlobWriter {
     private static final ObjectMapper M = new ObjectMapper();
 
-    private NotificationPayloadBuilder() {}
+    private ErrorBlobWriter() {}
 
     /**
-     * Build the NotificationRequest object.
-     *
-     * @param context map produced by your lookup executor (String -> Object)
-     * @param notificationType value from parsed message (e.g., "newBusiness")
-     * @param triggerType value from parsed message (e.g., "established")
-     * @param messageType channel ("email" / "line" / etc.)
-     * @param language ISO code (e.g., "ja")
-     * @param applicationId nullable
-     * @param policyId nullable
-     * @param log logger
+     * Writes an error JSON blob named: {docIdOrUnknown}_{UTC}.json
      */
-    public static NotificationRequest build(
-            Map<String,Object> context,
-            String notificationType,
-            String triggerType,
-            String messageType,
-            String language,
-            String applicationId,
-            String policyId,
+    public static void write(
+            String reason,
+            String rawBody,                       // raw Service Bus body (may be null)
+            Object parsedMessageOrNull,           // your IncomingMessage or null if parse failed
+            Map<String, Object> headers,          // envelope headers you collected
+            BlobContainerClient errorContainer,
             Logger log
     ) {
-        Objects.requireNonNull(context, "context");
-
-        NotificationRequest req = new NotificationRequest();
-        req.setNotificationType(notificationType);
-        req.setTriggerType(triggerType);
-        req.setMessageType(messageType);
-        req.setLanguage(language);
-        req.setApplicationId(applicationId);
-        req.setPolicyId(policyId);
-
-        // Recipient (safely pull from context)
-        Recipient rcpt = new Recipient();
-        rcpt.setName(str(context.get("recipient.name")));
-        rcpt.setEmail(str(context.get("recipient.email")));
-        rcpt.setPhone(str(context.get("recipient.phone")));
-        rcpt.setLineId(str(context.get("recipient.lineId")));
-        // If everything is null/blank, leave recipient null
-        if (anyNonBlank(rcpt.getName(), rcpt.getEmail(), rcpt.getPhone(), rcpt.getLineId())) {
-            req.setRecipient(rcpt);
-        }
-
-        // Agency
-        Agency agency = new Agency();
-        agency.setAgencyId(str(context.get("agency.agencyId")));
-        agency.setAgencyName(str(context.get("agency.agencyName")));
-        if (anyNonBlank(agency.getAgencyId(), agency.getAgencyName())) {
-            req.setAgency(agency);
-        }
-
-        // Dynamic placeholders:
-        // 1) If context contains a Map under key "placeholders", copy it.
-        Map<String,Object> placeholders = new LinkedHashMap<>();
-        Object phObj = context.get("placeholders");
-        if (phObj instanceof Map<?,?> m) {
-            for (Map.Entry<?,?> e : m.entrySet()) {
-                if (e.getKey() != null) placeholders.put(e.getKey().toString(), e.getValue());
-            }
-        }
-        // 2) Also collect all context entries with key prefix "ph."
-        for (Map.Entry<String,Object> e : context.entrySet()) {
-            String k = e.getKey();
-            if (k != null && k.startsWith("ph.")) {
-                placeholders.put(k.substring(3), e.getValue()); // strip "ph."
-            }
-        }
-        if (!placeholders.isEmpty()) {
-            req.setPlaceholders(placeholders);
-        }
-
-        // Basic mandatory checks (customize as needed)
-        if (isBlank(req.getNotificationType()) || isBlank(req.getTriggerType()) || isBlank(req.getMessageType())) {
-            throw new IllegalArgumentException("Missing mandatory fields: notificationType/triggerType/messageType");
-        }
-
-        log.info("Notification payload built.");
-        return req;
-    }
-
-    /** Serialize to JSON string. */
-    public static String toJson(NotificationRequest req) {
         try {
-            return M.writeValueAsString(req);
-        } catch (JsonProcessingException e) {
-            throw new RuntimeException("Failed to serialize NotificationRequest", e);
+            String ts = Instant.now().toString().replace(":", "-");
+            String docId = safeDocId(parsedMessageOrNull);
+            String name = (docId.isBlank() ? "unknownDoc" : docId) + "_" + ts + ".json";
+
+            ObjectNode root = M.createObjectNode();
+            root.put("timestamp", Instant.now().toString());
+            root.put("reason", reason);
+            if (rawBody != null) root.put("rawBody", rawBody);
+            if (headers != null) root.putPOJO("headers", headers);
+            if (parsedMessageOrNull != null) root.putPOJO("message", parsedMessageOrNull);
+
+            BlobClient blob = errorContainer.getBlobClient(name);
+            blob.upload(BinaryData.fromString(M.writeValueAsString(root)), true);
+
+            log.info("Error blob written: " + name + " (reason=" + reason + ")");
+        } catch (Exception e) {
+            log.log(Level.SEVERE, "Failed to write error blob", e);
         }
     }
 
-    // ---- helpers ----
-    private static String str(Object o) { return o == null ? null : String.valueOf(o); }
-    private static boolean isBlank(String s) { return s == null || s.isBlank(); }
-    private static boolean anyNonBlank(String... vals) {
-        for (String v : vals) if (!isBlank(v)) return true;
-        return false;
+    private static String safeDocId(Object msg) {
+        try {
+            if (msg == null) return "";
+            // Uses reflection to avoid hard coupling; replace with ((IncomingMessage)msg).getDocId() if you prefer.
+            var m = msg.getClass().getMethod("getDocId");
+            Object v = m.invoke(msg);
+            return v == null ? "" : v.toString();
+        } catch (Exception ignore) {
+            return "";
+        }
     }
 }
 
 
 ⸻
 
-How to call it from your run method
+2) MessageValidator — checks mandatory fields on your IncomingMessage
 
-Right after your allowed-agency check succeeds, build the payload and serialize it. (You’ll enqueue it later.)
+package com.yourco.notification.validation;
 
-// inside your ServiceBusProcessorFunction.run(...)
-try {
-    // ... after parsing, lookups, and allow-list checks
+import java.util.*;
 
-    Map<String,Object> ctx = recipientMapFromCosmosDb;  // your context produced by LookupExecutor
-    // You can also enrich ctx here if needed:
-    // ctx.put("recipient.email", someValueFromLookups);
-    // ctx.put("ph.contractDate", "2025-08-24"); // auto-collected into placeholders
+/** Stateless validator for IncomingMessage. */
+public final class MessageValidator {
 
-    var req = NotificationPayloadBuilder.build(
-            ctx,
-            parsedMessage.getNotify().getNotificationType(),  // notificationType
-            parsedMessage.getNotify().getTriggerType(),       // triggerType
-            "email",                                          // messageType (decide per channel)
-            "ja",                                             // language (from context or rules)
-            strOrNull(parsedMessage.getKeys().get("applicationId")),
-            strOrNull(parsedMessage.getKeys().get("policyId")),
-            log
-    );
+    private MessageValidator() {}
 
-    String json = NotificationPayloadBuilder.toJson(req);
-    log.info("Notification JSON: " + json);
+    /**
+     * Return the list of missing fields (empty if valid).
+     * Field names are logical labels you can log (not JSONPath).
+     */
+    public static List<String> validateRequired(IncomingMessage msg) {
+        List<String> missing = new ArrayList<>();
 
-    // TODO next step: enqueue 'json' to your notification-request queue
+        mustHave(nonBlank(msg.getMessageId()),       "messageId", missing);
+        mustHave(nonBlank(msg.getCorrelationId()),   "correlationId", missing);
+        mustHave(nonBlank(msg.getContainer()),       "container", missing);
+        mustHave(nonBlank(msg.getDocId()),           "docId", missing);
+        mustHave(nonBlank(msg.getEventId()),         "eventId", missing);
+        mustHave(nonBlank(msg.getEventName()),       "eventName", missing);
 
-} catch (Exception ex) {
-    log.severe("Failed to build notification payload: " + ex.getMessage());
-    throw new RuntimeException(ex); // let Functions retry / DLQ
+        // notify.*
+        if (msg.getNotify() == null) {
+            missing.add("notify.notificationType");
+            missing.add("notify.triggerType");
+        } else {
+            mustHave(nonBlank(msg.getNotify().getNotificationType()), "notify.notificationType", missing);
+            mustHave(nonBlank(msg.getNotify().getTriggerType()),      "notify.triggerType", missing);
+        }
+
+        // optional: extracted keys you consider mandatory for later steps
+        Map<String,String> extracted = msg.getExtractedFields();
+        if (extracted == null) {
+            // if you require at least one of them:
+            // missing.add("extractedFields");
+        } else {
+            // Example: require at least one business key
+            if (isBlank(extracted.get("applicationNumber")) &&
+                isBlank(extracted.get("policyId"))) {
+                missing.add("extractedFields.(applicationNumber|policyId)");
+            }
+        }
+
+        return missing;
+    }
+
+    private static void mustHave(boolean ok, String name, List<String> missing) {
+        if (!ok) missing.add(name);
+    }
+    private static boolean nonBlank(String s) { return s != null && !s.isBlank(); }
+    private static boolean isBlank(String s) { return s == null || s.isBlank(); }
 }
 
-// helper:
-private static String strOrNull(Object o) { return o == null ? null : o.toString(); }
+Update the “extracted keys” part to match your real requirements.
+
+⸻
+
+3) Use it in your run method (no RuntimeException for non-recoverable issues)
+
+// step 1: parse
+IncomingMessage parsedMessage = null;
+try {
+    parsedMessage = NotificationParser.process(body, context, headers);
+} catch (Exception parseEx) {
+    // Non-recoverable parse error → write blob and stop
+    ErrorBlobWriter.write(
+        "parseFailed",
+        body,
+        null,
+        headers,
+        ERROR_CONTAINER,                  // BlobContainerClient
+        context.getLogger()
+    );
+    return; // STOP (no throw → no retry)
+}
+
+if (parsedMessage == null) {
+    // Defensive (shouldn’t happen if process throws on parse errors)
+    ErrorBlobWriter.write("parseReturnedNull", body, null, headers, ERROR_CONTAINER, context.getLogger());
+    return;
+}
+
+// step 1.1: validate mandatory fields
+var missing = MessageValidator.validateRequired(parsedMessage);
+if (!missing.isEmpty()) {
+    // Non-recoverable validation failure → write blob and stop
+    ErrorBlobWriter.write(
+        "validationFailed: " + String.join(", ", missing),
+        body,
+        parsedMessage,
+        headers,
+        ERROR_CONTAINER,
+        context.getLogger()
+    );
+    return; // STOP (no throw → no retry)
+}
 
 
 ⸻
 
-Why this works well
-	•	Thread-safe: builder is stateless; ObjectMapper is reused safely.
-	•	Dynamic placeholders: pass a map (placeholders) or just prefix context keys with ph. — no if/else per event.
-	•	Extensible: add more fields in context (e.g., recipient.nameKana) and wire them into POJO later.
-	•	Minimal mandatory checks to fail fast and push to DLQ when payload cannot be built.
+When should you still throw?
 
-If you want me to wire this directly to your Service Bus enqueue code next, send your queue name and connection setting key and I’ll drop in the exact function-safe snippet.
+Keep throw new RuntimeException(...) only for transient problems where retry could fix it:
+	•	Cosmos DB/Service Bus/HTTP timeouts
+	•	Temporary throttling (429)
+	•	Network hiccups
+	•	Notification API returns 5xx and you have retry policy
+
+For all permanent problems (bad schema, missing required fields, invalid business rules), log to error blob and return.
+
+⸻
+
+If you want, I can fold the validation directly into NotificationParser.process(...) so it parses + validates + error-blob in one place; but the above separation keeps parsing, validation, and error persistence clean and testable.
