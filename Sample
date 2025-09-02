@@ -1,194 +1,126 @@
-You’re exactly right:
-	•	Parse failures or missing mandatory fields are non-recoverable → don’t retry; log to an error blob and return.
-	•	Save throws for transient issues (e.g., Cosmos/Service Bus outages) where retry might succeed.
-
-Below is copy-paste code that fits your flow:
+Awesome—here’s the Cosmos-DB–corrected query (using IS_DEFINED(..) + IS NOT NULL) and the lookup JSON that works with your current extractor (dot paths + optional [index] only). No JsonPath filters.
 
 ⸻
 
-1) ErrorBlobWriter — writes a JSON error record to a blob
+✅ Cosmos SQL (copy-paste)
 
-package com.yourco.notification.errors;
+If agency is an object (your latest screenshots show this):
 
-import com.azure.core.util.BinaryData;
-import com.azure.storage.blob.BlobClient;
-import com.azure.storage.blob.BlobContainerClient;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+SELECT
+  /* name candidates as scalars */
+  (SELECT VALUE CONCAT(n.lastName, " ", n.firstName)
+     FROM n IN c.name
+     WHERE n.charactersetType = "kanji"
+       AND IS_DEFINED(n.lastName)  AND n.lastName  IS NOT NULL
+       AND IS_DEFINED(n.firstName) AND n.firstName IS NOT NULL
+     OFFSET 0 LIMIT 1) AS kanjiName,
 
-import java.time.Instant;
-import java.util.Map;
-import java.util.logging.Level;
-import java.util.logging.Logger;
+  (SELECT VALUE CONCAT(n.lastName, " ", n.firstName)
+     FROM n IN c.name
+     WHERE n.charactersetType = "kana"
+       AND IS_DEFINED(n.lastName)  AND n.lastName  IS NOT NULL
+       AND IS_DEFINED(n.firstName) AND n.firstName IS NOT NULL
+     OFFSET 0 LIMIT 1) AS kanaName,
 
-/** Stateless helper to persist error details to Blob Storage. */
-public final class ErrorBlobWriter {
-    private static final ObjectMapper M = new ObjectMapper();
+  (SELECT VALUE CONCAT(n.lastName, " ", n.firstName)
+     FROM n IN c.name
+     WHERE n.charactersetType = "alphabet"
+       AND IS_DEFINED(n.lastName)  AND n.lastName  IS NOT NULL
+       AND IS_DEFINED(n.firstName) AND n.firstName IS NOT NULL
+     OFFSET 0 LIMIT 1) AS alphabetName,
 
-    private ErrorBlobWriter() {}
+  /* first validated email (scalar) */
+  (SELECT VALUE e.address
+     FROM e IN c.eMail
+     WHERE e.addressValidated = true
+       AND IS_DEFINED(e.address) AND e.address IS NOT NULL AND e.address != ""
+     OFFSET 0 LIMIT 1) AS email,
 
-    /**
-     * Writes an error JSON blob named: {docIdOrUnknown}_{UTC}.json
-     */
-    public static void write(
-            String reason,
-            String rawBody,                       // raw Service Bus body (may be null)
-            Object parsedMessageOrNull,           // your IncomingMessage or null if parse failed
-            Map<String, Object> headers,          // envelope headers you collected
-            BlobContainerClient errorContainer,
-            Logger log
-    ) {
-        try {
-            String ts = Instant.now().toString().replace(":", "-");
-            String docId = safeDocId(parsedMessageOrNull);
-            String name = (docId.isBlank() ? "unknownDoc" : docId) + "_" + ts + ".json";
+  /* first landline phone (object) */
+  (SELECT VALUE p
+     FROM p IN c.phoneNumber
+     WHERE p.type = "landline"
+       AND IS_DEFINED(p.number1) AND p.number1 IS NOT NULL AND p.number1 != ""
+     OFFSET 0 LIMIT 1) AS phoneObj,
 
-            ObjectNode root = M.createObjectNode();
-            root.put("timestamp", Instant.now().toString());
-            root.put("reason", reason);
-            if (rawBody != null) root.put("rawBody", rawBody);
-            if (headers != null) root.putPOJO("headers", headers);
-            if (parsedMessageOrNull != null) root.putPOJO("message", parsedMessageOrNull);
+  /* agency scalars */
+  c.agency.agencyName   AS agencyName,
+  c.agency.agencyNumber AS agencyNumber
 
-            BlobClient blob = errorContainer.getBlobClient(name);
-            blob.upload(BinaryData.fromString(M.writeValueAsString(root)), true);
+FROM c
+WHERE c.agentId = @agentId
 
-            log.info("Error blob written: " + name + " (reason=" + reason + ")");
-        } catch (Exception e) {
-            log.log(Level.SEVERE, "Failed to write error blob", e);
+If agency is an array in your collection, use this line instead of the two agency lines above:
+
+(SELECT VALUE a FROM a IN c.agency OFFSET 0 LIMIT 1) AS agencyObj
+
+…and then map agencyObj.name, agencyObj.agencyNumber in outputs.
+
+⸻
+
+✅ Lookup JSON (copy-paste)
+
+(For the object form of agency above)
+
+{
+  "newBusiness_agent_agent": {
+    "entities": [
+      {
+        "name": "agentPreferred",
+        "database": "api_agents_db",
+        "container": "agent",
+        "query": "SELECT (SELECT VALUE CONCAT(n.lastName, \" \", n.firstName) FROM n IN c.name WHERE n.charactersetType = \"kanji\" AND IS_DEFINED(n.lastName) AND n.lastName IS NOT NULL AND IS_DEFINED(n.firstName) AND n.firstName IS NOT NULL OFFSET 0 LIMIT 1) AS kanjiName, (SELECT VALUE CONCAT(n.lastName, \" \", n.firstName) FROM n IN c.name WHERE n.charactersetType = \"kana\" AND IS_DEFINED(n.lastName) AND n.lastName IS NOT NULL AND IS_DEFINED(n.firstName) AND n.firstName IS NOT NULL OFFSET 0 LIMIT 1) AS kanaName, (SELECT VALUE CONCAT(n.lastName, \" \", n.firstName) FROM n IN c.name WHERE n.charactersetType = \"alphabet\" AND IS_DEFINED(n.lastName) AND n.lastName IS NOT NULL AND IS_DEFINED(n.firstName) AND n.firstName IS NOT NULL OFFSET 0 LIMIT 1) AS alphabetName, (SELECT VALUE e.address FROM e IN c.eMail WHERE e.addressValidated = true AND IS_DEFINED(e.address) AND e.address IS NOT NULL AND e.address != \"\" OFFSET 0 LIMIT 1) AS email, (SELECT VALUE p FROM p IN c.phoneNumber WHERE p.type = \"landline\" AND IS_DEFINED(p.number1) AND p.number1 IS NOT NULL AND p.number1 != \"\" OFFSET 0 LIMIT 1) AS phoneObj, c.agency.agencyName AS agencyName, c.agency.agencyNumber AS agencyNumber FROM c WHERE c.agentId = @agentId",
+        "params": {
+          "agentId": "agentId"
+        },
+        "outputs": {
+          "recipient.name.kanji": "kanjiName",
+          "recipient.name.kana": "kanaName",
+          "recipient.name.alphabet": "alphabetName",
+          "recipient.email": "email",
+          "recipient.phone": "phoneObj.number1",
+          "agency.agencyName": "agencyName",
+          "agency.agencyNumber": "agencyNumber"
         }
-    }
+      }
+    ]
+  }
+}
 
-    private static String safeDocId(Object msg) {
-        try {
-            if (msg == null) return "";
-            // Uses reflection to avoid hard coupling; replace with ((IncomingMessage)msg).getDocId() if you prefer.
-            var m = msg.getClass().getMethod("getDocId");
-            Object v = m.invoke(msg);
-            return v == null ? "" : v.toString();
-        } catch (Exception ignore) {
-            return "";
-        }
-    }
+If agency is an array, change the query part as noted and change outputs to:
+
+"agency.agencyName": "agencyObj.name",
+"agency.agencyNumber": "agencyObj.agencyNumber"
+
+
+⸻
+
+✅ Do you need extractor changes?
+
+No changes required if you use the JSON above:
+	•	Outputs are simple dot paths (e.g., phoneObj.number1) → your resolver already supports this.
+	•	No ?(@...) filters, no advanced JsonPath.
+	•	Arrays are handled inside SQL, so outputs are scalars or simple objects.
+
+Optional tiny improvement (not required): if you want extra safety when a projected field accidentally comes back as a single-element array, you can add the “auto-unwrap one-element array” line in your extractOutputs():
+
+if (valueNode != null && valueNode.isArray() && valueNode.size() == 1) {
+    valueNode = valueNode.get(0);
 }
 
 
 ⸻
 
-2) MessageValidator — checks mandatory fields on your IncomingMessage
+✅ Final tip (pick display name by language)
 
-package com.yourco.notification.validation;
+After executeLookupSteps, choose the display name once:
 
-import java.util.*;
+String display = firstNonBlank(
+    (String) context.get("recipient.name.kanji"),
+    (String) context.get("recipient.name.kana"),
+    (String) context.get("recipient.name.alphabet")
+);
+// Or swap order for English preference: alphabet -> kanji -> kana
+if (display != null) context.put("recipient.name", display);
 
-/** Stateless validator for IncomingMessage. */
-public final class MessageValidator {
-
-    private MessageValidator() {}
-
-    /**
-     * Return the list of missing fields (empty if valid).
-     * Field names are logical labels you can log (not JSONPath).
-     */
-    public static List<String> validateRequired(IncomingMessage msg) {
-        List<String> missing = new ArrayList<>();
-
-        mustHave(nonBlank(msg.getMessageId()),       "messageId", missing);
-        mustHave(nonBlank(msg.getCorrelationId()),   "correlationId", missing);
-        mustHave(nonBlank(msg.getContainer()),       "container", missing);
-        mustHave(nonBlank(msg.getDocId()),           "docId", missing);
-        mustHave(nonBlank(msg.getEventId()),         "eventId", missing);
-        mustHave(nonBlank(msg.getEventName()),       "eventName", missing);
-
-        // notify.*
-        if (msg.getNotify() == null) {
-            missing.add("notify.notificationType");
-            missing.add("notify.triggerType");
-        } else {
-            mustHave(nonBlank(msg.getNotify().getNotificationType()), "notify.notificationType", missing);
-            mustHave(nonBlank(msg.getNotify().getTriggerType()),      "notify.triggerType", missing);
-        }
-
-        // optional: extracted keys you consider mandatory for later steps
-        Map<String,String> extracted = msg.getExtractedFields();
-        if (extracted == null) {
-            // if you require at least one of them:
-            // missing.add("extractedFields");
-        } else {
-            // Example: require at least one business key
-            if (isBlank(extracted.get("applicationNumber")) &&
-                isBlank(extracted.get("policyId"))) {
-                missing.add("extractedFields.(applicationNumber|policyId)");
-            }
-        }
-
-        return missing;
-    }
-
-    private static void mustHave(boolean ok, String name, List<String> missing) {
-        if (!ok) missing.add(name);
-    }
-    private static boolean nonBlank(String s) { return s != null && !s.isBlank(); }
-    private static boolean isBlank(String s) { return s == null || s.isBlank(); }
-}
-
-Update the “extracted keys” part to match your real requirements.
-
-⸻
-
-3) Use it in your run method (no RuntimeException for non-recoverable issues)
-
-// step 1: parse
-IncomingMessage parsedMessage = null;
-try {
-    parsedMessage = NotificationParser.process(body, context, headers);
-} catch (Exception parseEx) {
-    // Non-recoverable parse error → write blob and stop
-    ErrorBlobWriter.write(
-        "parseFailed",
-        body,
-        null,
-        headers,
-        ERROR_CONTAINER,                  // BlobContainerClient
-        context.getLogger()
-    );
-    return; // STOP (no throw → no retry)
-}
-
-if (parsedMessage == null) {
-    // Defensive (shouldn’t happen if process throws on parse errors)
-    ErrorBlobWriter.write("parseReturnedNull", body, null, headers, ERROR_CONTAINER, context.getLogger());
-    return;
-}
-
-// step 1.1: validate mandatory fields
-var missing = MessageValidator.validateRequired(parsedMessage);
-if (!missing.isEmpty()) {
-    // Non-recoverable validation failure → write blob and stop
-    ErrorBlobWriter.write(
-        "validationFailed: " + String.join(", ", missing),
-        body,
-        parsedMessage,
-        headers,
-        ERROR_CONTAINER,
-        context.getLogger()
-    );
-    return; // STOP (no throw → no retry)
-}
-
-
-⸻
-
-When should you still throw?
-
-Keep throw new RuntimeException(...) only for transient problems where retry could fix it:
-	•	Cosmos DB/Service Bus/HTTP timeouts
-	•	Temporary throttling (429)
-	•	Network hiccups
-	•	Notification API returns 5xx and you have retry policy
-
-For all permanent problems (bad schema, missing required fields, invalid business rules), log to error blob and return.
-
-⸻
-
-If you want, I can fold the validation directly into NotificationParser.process(...) so it parses + validates + error-blob in one place; but the above separation keeps parsing, validation, and error persistence clean and testable.
+That’s it—you stay fully config-driven, with minimal Java changes and Cosmos-correct SQL.
