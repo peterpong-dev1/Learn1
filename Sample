@@ -1,126 +1,56 @@
-Awesome—here’s the Cosmos-DB–corrected query (using IS_DEFINED(..) + IS NOT NULL) and the lookup JSON that works with your current extractor (dot paths + optional [index] only). No JsonPath filters.
+Totally fair—let’s make this tiny and keep your current JSON + extractor as-is.
 
-⸻
+You already populate these keys in context:
+	•	recipient.name.kanji
+	•	recipient.name.kana
+	•	recipient.name.alphabet
 
-✅ Cosmos SQL (copy-paste)
+All we’ll do is compute one display name based on language and put it back as recipient.name. That’s it—no query changes, no extractor changes.
 
-If agency is an object (your latest screenshots show this):
+1) Drop-in helper (small + threadsafe)
 
-SELECT
-  /* name candidates as scalars */
-  (SELECT VALUE CONCAT(n.lastName, " ", n.firstName)
-     FROM n IN c.name
-     WHERE n.charactersetType = "kanji"
-       AND IS_DEFINED(n.lastName)  AND n.lastName  IS NOT NULL
-       AND IS_DEFINED(n.firstName) AND n.firstName IS NOT NULL
-     OFFSET 0 LIMIT 1) AS kanjiName,
-
-  (SELECT VALUE CONCAT(n.lastName, " ", n.firstName)
-     FROM n IN c.name
-     WHERE n.charactersetType = "kana"
-       AND IS_DEFINED(n.lastName)  AND n.lastName  IS NOT NULL
-       AND IS_DEFINED(n.firstName) AND n.firstName IS NOT NULL
-     OFFSET 0 LIMIT 1) AS kanaName,
-
-  (SELECT VALUE CONCAT(n.lastName, " ", n.firstName)
-     FROM n IN c.name
-     WHERE n.charactersetType = "alphabet"
-       AND IS_DEFINED(n.lastName)  AND n.lastName  IS NOT NULL
-       AND IS_DEFINED(n.firstName) AND n.firstName IS NOT NULL
-     OFFSET 0 LIMIT 1) AS alphabetName,
-
-  /* first validated email (scalar) */
-  (SELECT VALUE e.address
-     FROM e IN c.eMail
-     WHERE e.addressValidated = true
-       AND IS_DEFINED(e.address) AND e.address IS NOT NULL AND e.address != ""
-     OFFSET 0 LIMIT 1) AS email,
-
-  /* first landline phone (object) */
-  (SELECT VALUE p
-     FROM p IN c.phoneNumber
-     WHERE p.type = "landline"
-       AND IS_DEFINED(p.number1) AND p.number1 IS NOT NULL AND p.number1 != ""
-     OFFSET 0 LIMIT 1) AS phoneObj,
-
-  /* agency scalars */
-  c.agency.agencyName   AS agencyName,
-  c.agency.agencyNumber AS agencyNumber
-
-FROM c
-WHERE c.agentId = @agentId
-
-If agency is an array in your collection, use this line instead of the two agency lines above:
-
-(SELECT VALUE a FROM a IN c.agency OFFSET 0 LIMIT 1) AS agencyObj
-
-…and then map agencyObj.name, agencyObj.agencyNumber in outputs.
-
-⸻
-
-✅ Lookup JSON (copy-paste)
-
-(For the object form of agency above)
-
-{
-  "newBusiness_agent_agent": {
-    "entities": [
-      {
-        "name": "agentPreferred",
-        "database": "api_agents_db",
-        "container": "agent",
-        "query": "SELECT (SELECT VALUE CONCAT(n.lastName, \" \", n.firstName) FROM n IN c.name WHERE n.charactersetType = \"kanji\" AND IS_DEFINED(n.lastName) AND n.lastName IS NOT NULL AND IS_DEFINED(n.firstName) AND n.firstName IS NOT NULL OFFSET 0 LIMIT 1) AS kanjiName, (SELECT VALUE CONCAT(n.lastName, \" \", n.firstName) FROM n IN c.name WHERE n.charactersetType = \"kana\" AND IS_DEFINED(n.lastName) AND n.lastName IS NOT NULL AND IS_DEFINED(n.firstName) AND n.firstName IS NOT NULL OFFSET 0 LIMIT 1) AS kanaName, (SELECT VALUE CONCAT(n.lastName, \" \", n.firstName) FROM n IN c.name WHERE n.charactersetType = \"alphabet\" AND IS_DEFINED(n.lastName) AND n.lastName IS NOT NULL AND IS_DEFINED(n.firstName) AND n.firstName IS NOT NULL OFFSET 0 LIMIT 1) AS alphabetName, (SELECT VALUE e.address FROM e IN c.eMail WHERE e.addressValidated = true AND IS_DEFINED(e.address) AND e.address IS NOT NULL AND e.address != \"\" OFFSET 0 LIMIT 1) AS email, (SELECT VALUE p FROM p IN c.phoneNumber WHERE p.type = \"landline\" AND IS_DEFINED(p.number1) AND p.number1 IS NOT NULL AND p.number1 != \"\" OFFSET 0 LIMIT 1) AS phoneObj, c.agency.agencyName AS agencyName, c.agency.agencyNumber AS agencyNumber FROM c WHERE c.agentId = @agentId",
-        "params": {
-          "agentId": "agentId"
-        },
-        "outputs": {
-          "recipient.name.kanji": "kanjiName",
-          "recipient.name.kana": "kanaName",
-          "recipient.name.alphabet": "alphabetName",
-          "recipient.email": "email",
-          "recipient.phone": "phoneObj.number1",
-          "agency.agencyName": "agencyName",
-          "agency.agencyNumber": "agencyNumber"
-        }
-      }
-    ]
-  }
+/** Returns the first non-blank string from the arguments. */
+private static String firstNonBlank(String... vals) {
+    for (String v : vals) if (v != null && !v.isBlank()) return v;
+    return null;
 }
 
-If agency is an array, change the query part as noted and change outputs to:
+/**
+ * Choose display name based on language, using values already in context.
+ * language: "ja" -> prefer kanji, then kana, then alphabet
+ *           "en" -> prefer alphabet, then kanji, then kana
+ *           otherwise -> first non-blank among (kanji, kana, alphabet)
+ */
+private static void computeRecipientDisplayName(Map<String,Object> context, String language) {
+    String kanji    = (String) context.get("recipient.name.kanji");
+    String kana     = (String) context.get("recipient.name.kana");
+    String alphabet = (String) context.get("recipient.name.alphabet");
 
-"agency.agencyName": "agencyObj.name",
-"agency.agencyNumber": "agencyObj.agencyNumber"
-
-
-⸻
-
-✅ Do you need extractor changes?
-
-No changes required if you use the JSON above:
-	•	Outputs are simple dot paths (e.g., phoneObj.number1) → your resolver already supports this.
-	•	No ?(@...) filters, no advanced JsonPath.
-	•	Arrays are handled inside SQL, so outputs are scalars or simple objects.
-
-Optional tiny improvement (not required): if you want extra safety when a projected field accidentally comes back as a single-element array, you can add the “auto-unwrap one-element array” line in your extractOutputs():
-
-if (valueNode != null && valueNode.isArray() && valueNode.size() == 1) {
-    valueNode = valueNode.get(0);
+    String lang = language == null ? "" : language.trim().toLowerCase();
+    String chosen;
+    switch (lang) {
+        case "ja":
+            chosen = firstNonBlank(kanji, kana, alphabet);
+            break;
+        case "en":
+            chosen = firstNonBlank(alphabet, kanji, kana);
+            break;
+        default:
+            chosen = firstNonBlank(kanji, kana, alphabet);
+            break;
+    }
+    if (chosen != null) context.put("recipient.name", chosen);
 }
 
+2) Where to call it (one line in your flow)
 
-⸻
+Right after your lookup executor populates the context (and before you build the Notification API payload):
 
-✅ Final tip (pick display name by language)
+executor.executeLookupSteps(fieldsContext, rule);
 
-After executeLookupSteps, choose the display name once:
+// language source: pick what you already have (parsed message or headers)
+String language = parsedMessage.getLanguage(); // or from context/headers if you store it there
+computeRecipientDisplayName(fieldsContext, language);
 
-String display = firstNonBlank(
-    (String) context.get("recipient.name.kanji"),
-    (String) context.get("recipient.name.kana"),
-    (String) context.get("recipient.name.alphabet")
-);
-// Or swap order for English preference: alphabet -> kanji -> kana
-if (display != null) context.put("recipient.name", display);
-
-That’s it—you stay fully config-driven, with minimal Java changes and Cosmos-correct SQL.
+That’s all.
+You keep your current Cosmos query, lookup JSON, and extractOutputs unchanged; we just add a tiny post-step to set recipient.name appropriately.
