@@ -1,58 +1,253 @@
-import com.azure.storage.blob.BlobClient;
-import com.azure.storage.blob.BlobContainerClient;
-import com.azure.storage.blob.models.BlobStorageException;
+Awesome — here’s a clean, production-grade way to build the Notification API request with a dynamic placeholders bag and a simple call from your run method.
+
+The design is:
+	•	POJOs: NotificationRequest, Recipient, Agency
+	•	Builder: NotificationPayloadBuilder (stateless, thread-safe)
+	•	Serialization: Jackson ObjectMapper
+	•	Dynamic placeholders: either pass a Map<String,Object> in the context under placeholders, or prefix any context keys with ph. (e.g. ph.contractDate) and they’ll be auto-collected.
+
+⸻
+
+
+// ============ POJOs ============
+
+package com.yourco.notification.payload;
+
+import com.fasterxml.jackson.annotation.JsonInclude;
+import java.util.Map;
+
+/** Top-level payload sent to Notification API/queue. */
+@JsonInclude(JsonInclude.Include.NON_NULL)
+public class NotificationRequest {
+    private String notificationType;
+    private String triggerType;
+    private String messageType;
+    private String language;
+    private String applicationId;
+    private String policyId;
+    private Recipient recipient;
+    private Agency agency;
+    private Map<String, Object> placeholders; // dynamic key/value bag
+
+    // getters/setters
+    public String getNotificationType() { return notificationType; }
+    public void setNotificationType(String notificationType) { this.notificationType = notificationType; }
+    public String getTriggerType() { return triggerType; }
+    public void setTriggerType(String triggerType) { this.triggerType = triggerType; }
+    public String getMessageType() { return messageType; }
+    public void setMessageType(String messageType) { this.messageType = messageType; }
+    public String getLanguage() { return language; }
+    public void setLanguage(String language) { this.language = language; }
+    public String getApplicationId() { return applicationId; }
+    public void setApplicationId(String applicationId) { this.applicationId = applicationId; }
+    public String getPolicyId() { return policyId; }
+    public void setPolicyId(String policyId) { this.policyId = policyId; }
+    public Recipient getRecipient() { return recipient; }
+    public void setRecipient(Recipient recipient) { this.recipient = recipient; }
+    public Agency getAgency() { return agency; }
+    public void setAgency(Agency agency) { this.agency = agency; }
+    public Map<String, Object> getPlaceholders() { return placeholders; }
+    public void setPlaceholders(Map<String, Object> placeholders) { this.placeholders = placeholders; }
+}
+
+/** Nested recipient object. */
+@JsonInclude(JsonInclude.Include.NON_NULL)
+class Recipient {
+    private String name;
+    private String email;
+    private String phone;
+    private String lineId;
+
+    public String getName() { return name; }
+    public void setName(String name) { this.name = name; }
+    public String getEmail() { return email; }
+    public void setEmail(String email) { this.email = email; }
+    public String getPhone() { return phone; }
+    public void setPhone(String phone) { this.phone = phone; }
+    public String getLineId() { return lineId; }
+    public void setLineId(String lineId) { this.lineId = lineId; }
+}
+
+/** Nested agency object. */
+@JsonInclude(JsonInclude.Include.NON_NULL)
+class Agency {
+    private String agencyId;
+    private String agencyName;
+
+    public String getAgencyId() { return agencyId; }
+    public void setAgencyId(String agencyId) { this.agencyId = agencyId; }
+    public String getAgencyName() { return agencyName; }
+    public void setAgencyName(String agencyName) { this.agencyName = agencyName; }
+}
+
+
+// ============ Builder + Serializer ============
+
+package com.yourco.notification.payload;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 
-import java.nio.charset.StandardCharsets;
-import java.time.Instant;
-import java.time.format.DateTimeFormatter;
+import java.util.*;
+import java.util.logging.Logger;
 
-public class IgnoredTriggerLogger {
+/**
+ * Stateless, thread-safe builder for NotificationRequest.
+ * - Pulls fixed fields from parsed message and/or context.
+ * - Builds dynamic placeholders from:
+ *   (1) a Map under key "placeholders" in context, and/or
+ *   (2) any context entries whose key starts with "ph." (prefix is stripped).
+ */
+public final class NotificationPayloadBuilder {
+    private static final ObjectMapper M = new ObjectMapper();
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private NotificationPayloadBuilder() {}
 
     /**
-     * Logs a skipped trigger to Blob Storage in JSON format with timestamped filename.
+     * Build the NotificationRequest object.
      *
-     * @param container        The blob container client.
-     * @param docId            Unique document ID or trigger ID.
-     * @param notificationType The notification type.
-     * @param agencyId         The agency ID that caused the skip.
-     * @param reason           Human-readable reason for skipping.
+     * @param context map produced by your lookup executor (String -> Object)
+     * @param notificationType value from parsed message (e.g., "newBusiness")
+     * @param triggerType value from parsed message (e.g., "established")
+     * @param messageType channel ("email" / "line" / etc.)
+     * @param language ISO code (e.g., "ja")
+     * @param applicationId nullable
+     * @param policyId nullable
+     * @param log logger
      */
-    public static void logSkippedTrigger(
-            BlobContainerClient container,
-            String docId,
+    public static NotificationRequest build(
+            Map<String,Object> context,
             String notificationType,
-            String agencyId,
-            String reason
+            String triggerType,
+            String messageType,
+            String language,
+            String applicationId,
+            String policyId,
+            Logger log
     ) {
+        Objects.requireNonNull(context, "context");
+
+        NotificationRequest req = new NotificationRequest();
+        req.setNotificationType(notificationType);
+        req.setTriggerType(triggerType);
+        req.setMessageType(messageType);
+        req.setLanguage(language);
+        req.setApplicationId(applicationId);
+        req.setPolicyId(policyId);
+
+        // Recipient (safely pull from context)
+        Recipient rcpt = new Recipient();
+        rcpt.setName(str(context.get("recipient.name")));
+        rcpt.setEmail(str(context.get("recipient.email")));
+        rcpt.setPhone(str(context.get("recipient.phone")));
+        rcpt.setLineId(str(context.get("recipient.lineId")));
+        // If everything is null/blank, leave recipient null
+        if (anyNonBlank(rcpt.getName(), rcpt.getEmail(), rcpt.getPhone(), rcpt.getLineId())) {
+            req.setRecipient(rcpt);
+        }
+
+        // Agency
+        Agency agency = new Agency();
+        agency.setAgencyId(str(context.get("agency.agencyId")));
+        agency.setAgencyName(str(context.get("agency.agencyName")));
+        if (anyNonBlank(agency.getAgencyId(), agency.getAgencyName())) {
+            req.setAgency(agency);
+        }
+
+        // Dynamic placeholders:
+        // 1) If context contains a Map under key "placeholders", copy it.
+        Map<String,Object> placeholders = new LinkedHashMap<>();
+        Object phObj = context.get("placeholders");
+        if (phObj instanceof Map<?,?> m) {
+            for (Map.Entry<?,?> e : m.entrySet()) {
+                if (e.getKey() != null) placeholders.put(e.getKey().toString(), e.getValue());
+            }
+        }
+        // 2) Also collect all context entries with key prefix "ph."
+        for (Map.Entry<String,Object> e : context.entrySet()) {
+            String k = e.getKey();
+            if (k != null && k.startsWith("ph.")) {
+                placeholders.put(k.substring(3), e.getValue()); // strip "ph."
+            }
+        }
+        if (!placeholders.isEmpty()) {
+            req.setPlaceholders(placeholders);
+        }
+
+        // Basic mandatory checks (customize as needed)
+        if (isBlank(req.getNotificationType()) || isBlank(req.getTriggerType()) || isBlank(req.getMessageType())) {
+            throw new IllegalArgumentException("Missing mandatory fields: notificationType/triggerType/messageType");
+        }
+
+        log.info("Notification payload built.");
+        return req;
+    }
+
+    /** Serialize to JSON string. */
+    public static String toJson(NotificationRequest req) {
         try {
-            // Generate UTC timestamp
-            String timestamp = Instant.now().toString(); // e.g., 2025-08-26T12:00:00Z
-
-            // Create JSON object
-            ObjectNode logEntry = MAPPER.createObjectNode();
-            logEntry.put("timestamp", timestamp);
-            logEntry.put("notificationType", notificationType);
-            logEntry.put("agencyId", agencyId);
-            logEntry.put("reason", reason);
-
-            // Create filename
-            String fileName = docId + "_" + timestamp.replace(":", "-") + ".json";
-
-            // Upload as blob
-            BlobClient blobClient = container.getBlobClient(fileName);
-            byte[] jsonBytes = MAPPER.writeValueAsString(logEntry).getBytes(StandardCharsets.UTF_8);
-            blobClient.uploadBinaryContent(jsonBytes);
-
-            System.out.println("✅ Ignored trigger logged to blob: " + fileName);
-
-        } catch (BlobStorageException e) {
-            System.err.println("❌ Blob storage error while writing skipped log: " + e.getMessage());
-        } catch (Exception e) {
-            System.err.println("❌ Unexpected error during skipped trigger logging: " + e.getMessage());
+            return M.writeValueAsString(req);
+        } catch (JsonProcessingException e) {
+            throw new RuntimeException("Failed to serialize NotificationRequest", e);
         }
     }
+
+    // ---- helpers ----
+    private static String str(Object o) { return o == null ? null : String.valueOf(o); }
+    private static boolean isBlank(String s) { return s == null || s.isBlank(); }
+    private static boolean anyNonBlank(String... vals) {
+        for (String v : vals) if (!isBlank(v)) return true;
+        return false;
+    }
 }
+
+
+⸻
+
+How to call it from your run method
+
+Right after your allowed-agency check succeeds, build the payload and serialize it. (You’ll enqueue it later.)
+
+// inside your ServiceBusProcessorFunction.run(...)
+try {
+    // ... after parsing, lookups, and allow-list checks
+
+    Map<String,Object> ctx = recipientMapFromCosmosDb;  // your context produced by LookupExecutor
+    // You can also enrich ctx here if needed:
+    // ctx.put("recipient.email", someValueFromLookups);
+    // ctx.put("ph.contractDate", "2025-08-24"); // auto-collected into placeholders
+
+    var req = NotificationPayloadBuilder.build(
+            ctx,
+            parsedMessage.getNotify().getNotificationType(),  // notificationType
+            parsedMessage.getNotify().getTriggerType(),       // triggerType
+            "email",                                          // messageType (decide per channel)
+            "ja",                                             // language (from context or rules)
+            strOrNull(parsedMessage.getKeys().get("applicationId")),
+            strOrNull(parsedMessage.getKeys().get("policyId")),
+            log
+    );
+
+    String json = NotificationPayloadBuilder.toJson(req);
+    log.info("Notification JSON: " + json);
+
+    // TODO next step: enqueue 'json' to your notification-request queue
+
+} catch (Exception ex) {
+    log.severe("Failed to build notification payload: " + ex.getMessage());
+    throw new RuntimeException(ex); // let Functions retry / DLQ
+}
+
+// helper:
+private static String strOrNull(Object o) { return o == null ? null : o.toString(); }
+
+
+⸻
+
+Why this works well
+	•	Thread-safe: builder is stateless; ObjectMapper is reused safely.
+	•	Dynamic placeholders: pass a map (placeholders) or just prefix context keys with ph. — no if/else per event.
+	•	Extensible: add more fields in context (e.g., recipient.nameKana) and wire them into POJO later.
+	•	Minimal mandatory checks to fail fast and push to DLQ when payload cannot be built.
+
+If you want me to wire this directly to your Service Bus enqueue code next, send your queue name and connection setting key and I’ll drop in the exact function-safe snippet.
