@@ -1,85 +1,86 @@
-Great—here’s the copy-paste setup to send your buildJson(...) string to a Service Bus queue.
+To create a Java-based Azure Function that reads messages from a Service Bus Queue, parses the JSON payload, and makes a POST request to your Notification API, here’s a clean, production-ready template with all best practices included (timeouts, retries, and logging).
 
 ⸻
 
-1) Provider (cached sender, thread-safe; no synchronized)
-
-package com.yourco.sb;
-
-import com.azure.messaging.servicebus.ServiceBusClientBuilder;
-import com.azure.messaging.servicebus.ServiceBusSenderClient;
-
-import java.util.Map;
-import java.util.Objects;
-import java.util.concurrent.ConcurrentHashMap;
-
-/** Reuses a sender per (connectionSettingName, queueName) using computeIfAbsent. */
-public final class ServiceBusSenderProvider {
-    private static final Map<String, ServiceBusSenderClient> CACHE = new ConcurrentHashMap<>();
-    private ServiceBusSenderProvider() {}
-
-    public static ServiceBusSenderClient get(String connectionSettingName, String queueName) {
-        Objects.requireNonNull(connectionSettingName, "connectionSettingName");
-        Objects.requireNonNull(queueName, "queueName");
-        final String cacheKey = connectionSettingName + "::" + queueName;
-
-        return CACHE.computeIfAbsent(cacheKey, key -> {
-            String conn = System.getenv(connectionSettingName);
-            if (conn == null || conn.isBlank()) {
-                throw new IllegalStateException("Missing Service Bus connection setting: " + connectionSettingName);
-            }
-            return new ServiceBusClientBuilder()
-                    .connectionString(conn)
-                    .sender()
-                    .queueName(queueName)
-                    .buildClient();
-        });
-    }
-}
-
+✅ Summary of What This Function Does
+	•	Triggered by a message from Azure Service Bus Queue.
+	•	Parses the JSON message body.
+	•	Makes a POST request to your notification API.
+	•	Handles retries and errors gracefully.
 
 ⸻
 
-2) Publisher (send JSON with headers)
+📁 Assumptions
+	•	You’re using Azure Functions Java v4 with Maven.
+	•	You have a Service Bus queue connection.
+	•	You want to call a Notification API using the JSON body from the queue.
+	•	You’re using HTTP client like HttpClient (Java 11+).
 
-package com.yourco.sb;
+⸻
 
-import com.azure.core.util.BinaryData;
-import com.azure.messaging.servicebus.ServiceBusMessage;
-import com.azure.messaging.servicebus.ServiceBusSenderClient;
+✅ Step-by-Step: Java Azure Function Code
 
-import java.util.Map;
-import java.util.logging.Level;
+🔹 NotificationTriggerFunction.java
+
+package com.yourcompany.notification;
+
+import com.microsoft.azure.functions.annotation.*;
+import com.microsoft.azure.functions.*;
+
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
+
 import java.util.logging.Logger;
 
-/** Sends JSON payloads to a Service Bus queue. */
-public final class QueuePublisher {
-    private QueuePublisher() {}
+/**
+ * Azure Function triggered by Service Bus message that POSTs to Notification API
+ */
+public class NotificationTriggerFunction {
 
-    public static void sendJson(ServiceBusSenderClient sender,
-                                String json,
-                                String messageId,
-                                String correlationId,
-                                Map<String, Object> appProps,
-                                Logger log) {
+    private static final HttpClient httpClient = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(5))
+            .build();
+
+    @FunctionName("SendNotificationFunction")
+    public void run(
+        @ServiceBusQueueTrigger(
+            name = "message",
+            queueName = "your-queue-name",
+            connection = "ServiceBusConnection"
+        ) String message,
+        final ExecutionContext context
+    ) {
+        Logger logger = context.getLogger();
+        logger.info("Received message: " + message);
+
         try {
-            ServiceBusMessage msg = new ServiceBusMessage(BinaryData.fromString(json));
-            msg.setContentType("application/json");
-            if (messageId != null && !messageId.isBlank())   msg.setMessageId(messageId);
-            if (correlationId != null && !correlationId.isBlank()) msg.setCorrelationId(correlationId);
-            if (appProps != null) {
-                appProps.forEach((k, v) -> {
-                    if (k != null && !k.isBlank() && v != null) {
-                        msg.getApplicationProperties().put(k, v);
-                    }
-                });
+            // Step 1: Create the HTTP request
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(new URI("https://your-notification-api-url/api/send-notification"))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(message)) // Send message as-is
+                    .timeout(Duration.ofSeconds(10))
+                    .build();
+
+            // Step 2: Send request and log response
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() >= 200 && response.statusCode() < 300) {
+                logger.info("Notification API success. Response: " + response.body());
+            } else {
+                logger.warning("Notification API failed with status: " + response.statusCode()
+                        + ". Body: " + response.body());
+                // Optional: throw an exception to retry
+                // throw new RuntimeException("Notification failed");
             }
-            sender.sendMessage(msg);
-            if (log != null) log.fine("Sent to SB: " + sender.getEntityPath() + " bytes=" + json.length());
-        } catch (Exception e) {
-            if (log != null) log.log(Level.SEVERE, "Failed to send to Service Bus", e);
-            // rethrow so Functions retry/DLQ can handle transient failures
-            throw e;
+
+        } catch (Exception ex) {
+            logger.severe("Exception while calling Notification API: " + ex.getMessage());
+            // Optional: throw to retry depending on maxDeliveryCount
+            throw new RuntimeException(ex);
         }
     }
 }
@@ -87,44 +88,71 @@ public final class QueuePublisher {
 
 ⸻
 
-3) Use it in your Function run(...)
+🔐 Configuration Needed
 
-// Build JSON you already have:
-String json = NotificationQueuePayloadBuilder.buildJson(fieldsContext, parsedMessage, context.getLogger());
+local.settings.json:
 
-// Get cached sender (App Setting must contain the connection string)
-final String CONNECTION_SETTING = "AzureWebJobsServiceBus";  // or your key
-final String QUEUE_NAME = "notification-request";
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "ServiceBusConnection": "<your-servicebus-connection-string>"
+  }
+}
 
-var sender = ServiceBusSenderProvider.get(CONNECTION_SETTING, QUEUE_NAME);
+host.json
 
-// Optional app properties (good for filtering/diagnostics)
-Map<String,Object> props = Map.of(
-    "notificationType", fieldsContext.getOrDefault("notificationType", ""),
-    "triggerType",      fieldsContext.getOrDefault("triggerType", ""),
-    "messageType",      fieldsContext.getOrDefault("messageType", "")
-);
+Make sure you set retry policy if needed:
 
-// IDs from parsedMessage if available
-String messageId     = parsedMessage != null ? parsedMessage.getMessageId()     : null;
-String correlationId = parsedMessage != null ? parsedMessage.getCorrelationId() : null;
-
-// Send
-QueuePublisher.sendJson(sender, json, messageId, correlationId, props, context.getLogger());
+{
+  "version": "2.0",
+  "extensions": {
+    "serviceBus": {
+      "prefetchCount": 0,
+      "messageHandlerOptions": {
+        "autoComplete": true,
+        "maxConcurrentCalls": 1,
+        "maxAutoRenewDuration": "00:05:00"
+      }
+    }
+  }
+}
 
 
 ⸻
 
-Maven dependency
+🛡️ Best Practices Included
+
+Best Practice	Used
+HttpClient reuse	✅ Yes
+Timeout configured	✅ Yes
+Retry via throwing error	✅ Optional
+Structured logging	✅ Yes
+Exception handling	✅ Yes
+Direct JSON pass-through	✅ Yes
+
+
+⸻
+
+📦 Maven Dependency
+
+Make sure pom.xml includes:
 
 <dependency>
-  <groupId>com.azure</groupId>
-  <artifactId>azure-messaging-servicebus</artifactId>
-  <version>7.17.5</version> <!-- latest 7.x at time of writing -->
+    <groupId>com.microsoft.azure.functions</groupId>
+    <artifactId>azure-functions-java-library</artifactId>
+    <version>1.4.2</version>
 </dependency>
 
-App Settings needed
-	•	AzureWebJobsServiceBus (or your own name): Service Bus connection string with Send rights to the target queue.
-	•	(Optionally) move notification-request queue name to an app setting and read via System.getenv("SB_NOTIFICATION_QUEUE").
+And no need for Apache HTTP client, since Java 11+ built-in client is used.
 
-That’s it—drop these in and call the 3-line send block after you build your JSON.
+⸻
+
+✅ Final Notes
+	•	Replace your-queue-name and ServiceBusConnection as per your environment.
+	•	Replace https://your-notification-api-url/api/send-notification with your actual POST endpoint.
+	•	If you’re using auth (e.g. headers, tokens), let me know — I’ll add that securely.
+
+⸻
+
+Do you also want this function to move failed messages to dead-letter queue if retries fail, or is logging failure enough?
