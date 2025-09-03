@@ -1,221 +1,130 @@
-Awesome — here’s a copy-paste utility that builds the Notification API JSON directly from your context map and your parsedMessage (no POJO needed). It treats placeholders as dynamic and also collects any ph.* keys automatically.
+Great—here’s the copy-paste setup to send your buildJson(...) string to a Service Bus queue.
 
-It’s stateless, thread-safe, with JavaDocs, comments, and basic error handling.
+⸻
 
-package com.yourco.notification.queue;
+1) Provider (cached sender, thread-safe; no synchronized)
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+package com.yourco.sb;
 
-import java.util.Locale;
+import com.azure.messaging.servicebus.ServiceBusClientBuilder;
+import com.azure.messaging.servicebus.ServiceBusSenderClient;
+
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
+
+/** Reuses a sender per (connectionSettingName, queueName) using computeIfAbsent. */
+public final class ServiceBusSenderProvider {
+    private static final Map<String, ServiceBusSenderClient> CACHE = new ConcurrentHashMap<>();
+    private ServiceBusSenderProvider() {}
+
+    public static ServiceBusSenderClient get(String connectionSettingName, String queueName) {
+        Objects.requireNonNull(connectionSettingName, "connectionSettingName");
+        Objects.requireNonNull(queueName, "queueName");
+        final String cacheKey = connectionSettingName + "::" + queueName;
+
+        return CACHE.computeIfAbsent(cacheKey, key -> {
+            String conn = System.getenv(connectionSettingName);
+            if (conn == null || conn.isBlank()) {
+                throw new IllegalStateException("Missing Service Bus connection setting: " + connectionSettingName);
+            }
+            return new ServiceBusClientBuilder()
+                    .connectionString(conn)
+                    .sender()
+                    .queueName(queueName)
+                    .buildClient();
+        });
+    }
+}
+
+
+⸻
+
+2) Publisher (send JSON with headers)
+
+package com.yourco.sb;
+
+import com.azure.core.util.BinaryData;
+import com.azure.messaging.servicebus.ServiceBusMessage;
+import com.azure.messaging.servicebus.ServiceBusSenderClient;
+
 import java.util.Map;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-/**
- * Builds the Notification API request JSON (as String) directly from:
- *  - parsedMessage (your inbound model)
- *  - context Map<String,Object> (populated by your lookup steps)
- *
- * Design:
- *  - No POJO/records required on the producer side.
- *  - Dynamic placeholders supported via:
- *      (1) a nested Map under key "placeholders" in context, and/or
- *      (2) any context entries whose key starts with "ph." (prefix is stripped).
- *  - Only non-blank/non-null fields are emitted.
- *
- * Thread-safety: stateless; ObjectMapper is safe for concurrent read/serialize usage.
- */
-public final class NotificationQueuePayloadBuilder {
+/** Sends JSON payloads to a Service Bus queue. */
+public final class QueuePublisher {
+    private QueuePublisher() {}
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
-    private static final JsonNodeFactory F = JsonNodeFactory.instance;
-
-    private NotificationQueuePayloadBuilder() {}
-
-    /**
-     * Create the Notification API payload JSON string for enqueueing.
-     *
-     * Expected keys in context (optional; only present ones are emitted):
-     *   recipient.name, recipient.email, recipient.phone, recipient.lineId
-     *   agency.agencyId, agency.agencyName
-     *   messageType, language, applicationId, policyId
-     *   placeholders (Map<String,Object>) and/or any "ph.*" prefixed entries
-     *
-     * Fields pulled from parsedMessage (if available):
-     *   notify.notificationType, notify.triggerType
-     *
-     * @param context       lookup/population context (String -> Object)
-     * @param parsedMessage your parsed Service Bus message (has notify/container/docId/etc.)
-     * @param log           logger (optional; can be null)
-     * @return JSON string ready to send to the queue
-     */
-    public static String buildJson(Map<String, Object> context, IncomingMessage parsedMessage, Logger log) {
+    public static void sendJson(ServiceBusSenderClient sender,
+                                String json,
+                                String messageId,
+                                String correlationId,
+                                Map<String, Object> appProps,
+                                Logger log) {
         try {
-            ObjectNode root = F.objectNode();
-
-            // ---- Top-level scalars (prefer context override if present, else from parsedMessage) ----
-            putIfNotBlank(root, "notificationType",
-                    strOr(context.get("notificationType"),
-                    parsedMessage != null && parsedMessage.getNotify() != null
-                            ? parsedMessage.getNotify().getNotificationType() : null));
-
-            putIfNotBlank(root, "triggerType",
-                    strOr(context.get("triggerType"),
-                    parsedMessage != null && parsedMessage.getNotify() != null
-                            ? parsedMessage.getNotify().getTriggerType() : null));
-
-            putIfNotBlank(root, "messageType",  strOr(context.get("messageType"), null));
-            putIfNotBlank(root, "language",     strOr(context.get("language"), null));
-            putIfNotBlank(root, "applicationId",strOr(context.get("applicationId"), null));
-            putIfNotBlank(root, "policyId",     strOr(context.get("policyId"), null));
-
-            // ---- Recipient ----
-            ObjectNode recipient = F.objectNode();
-            putIfNotBlank(recipient, "name",   strOr(context.get("recipient.name"), null));
-            putIfNotBlank(recipient, "email",  strOr(context.get("recipient.email"), null));
-            putIfNotBlank(recipient, "phone",  strOr(context.get("recipient.phone"), null));
-            putIfNotBlank(recipient, "lineId", strOr(context.get("recipient.lineId"), null));
-            if (!recipient.isEmpty()) {
-                root.set("recipient", recipient);
-            }
-
-            // ---- Agency ----
-            ObjectNode agency = F.objectNode();
-            putIfNotBlank(agency, "agencyId",   strOr(context.get("agency.agencyId"), null));
-            putIfNotBlank(agency, "agencyName", strOr(context.get("agency.agencyName"), null));
-            if (!agency.isEmpty()) {
-                root.set("agency", agency);
-            }
-
-            // ---- Placeholders (dynamic) ----
-            ObjectNode placeholders = F.objectNode();
-
-            // (1) Map under "placeholders"
-            Object phObj = context.get("placeholders");
-            if (phObj instanceof Map<?, ?> phMap) {
-                for (Map.Entry<?, ?> e : phMap.entrySet()) {
-                    if (e.getKey() == null) continue;
-                    String k = e.getKey().toString();
-                    Object v = e.getValue();
-                    // serialize primitive-as-text or generic as JSON string
-                    if (v == null) continue;
-                    if (isSimple(v)) {
-                        placeholders.put(k, String.valueOf(v));
-                    } else {
-                        placeholders.putPOJO(k, v); // let Jackson handle nested objects/arrays
+            ServiceBusMessage msg = new ServiceBusMessage(BinaryData.fromString(json));
+            msg.setContentType("application/json");
+            if (messageId != null && !messageId.isBlank())   msg.setMessageId(messageId);
+            if (correlationId != null && !correlationId.isBlank()) msg.setCorrelationId(correlationId);
+            if (appProps != null) {
+                appProps.forEach((k, v) -> {
+                    if (k != null && !k.isBlank() && v != null) {
+                        msg.getApplicationProperties().put(k, v);
                     }
-                }
+                });
             }
-
-            // (2) Any context entries with "ph." prefix
-            for (Map.Entry<String, Object> e : context.entrySet()) {
-                String k = e.getKey();
-                if (k == null) continue;
-                if (k.startsWith("ph.")) {
-                    String phKey = k.substring(3); // strip "ph."
-                    Object v = e.getValue();
-                    if (v == null) continue;
-                    if (isSimple(v)) {
-                        placeholders.put(phKey, String.valueOf(v));
-                    } else {
-                        placeholders.putPOJO(phKey, v);
-                    }
-                }
-            }
-
-            if (!placeholders.isEmpty()) {
-                root.set("placeholders", placeholders);
-            }
-
-            // ---- Correlation / tracing (optional but useful) ----
-            if (parsedMessage != null) {
-                putIfNotBlank(root, "messageId",     parsedMessage.getMessageId());
-                putIfNotBlank(root, "correlationId", parsedMessage.getCorrelationId());
-                putIfNotBlank(root, "container",     parsedMessage.getContainer());
-                putIfNotBlank(root, "docId",         parsedMessage.getDocId());
-                putIfNotBlank(root, "eventId",       parsedMessage.getEventId());
-                putIfNotBlank(root, "eventName",     parsedMessage.getEventName());
-            }
-
-            String json = MAPPER.writeValueAsString(root);
-            if (log != null) log.fine("Notification payload built (" + json.length() + " bytes)");
-            return json;
-
-        } catch (JsonProcessingException e) {
-            if (log != null) log.log(Level.SEVERE, "Failed to serialize notification payload", e);
-            // Return a minimal JSON with the error message so the caller can still DLQ/log it if needed.
-            return "{\"error\":\"payload-serialization-failed\"}";
+            sender.sendMessage(msg);
+            if (log != null) log.fine("Sent to SB: " + sender.getEntityPath() + " bytes=" + json.length());
         } catch (Exception e) {
-            if (log != null) log.log(Level.SEVERE, "Unexpected error building notification payload", e);
-            return "{\"error\":\"payload-build-failed\"}";
+            if (log != null) log.log(Level.SEVERE, "Failed to send to Service Bus", e);
+            // rethrow so Functions retry/DLQ can handle transient failures
+            throw e;
         }
     }
-
-    // ---------- helpers ----------
-
-    private static void putIfNotBlank(ObjectNode node, String field, String value) {
-        if (value != null && !value.isBlank()) {
-            node.put(field, value);
-        }
-    }
-
-    private static String strOr(Object a, Object b) {
-        String s = a == null ? null : String.valueOf(a);
-        if (s != null && !s.isBlank()) return s;
-        String t = b == null ? null : String.valueOf(b);
-        return (t != null && !t.isBlank()) ? t : null;
-    }
-
-    private static boolean isSimple(Object v) {
-        return v instanceof CharSequence
-            || v instanceof Number
-            || v instanceof Boolean;
-    }
-
-    // ---- (Optional) language helper if you want to compute display name here ----
-    // Call this BEFORE buildJson and put the chosen name into context as "recipient.name".
-    public static void computeRecipientDisplayName(Map<String,Object> context, String language) {
-        String kanji    = asString(context.get("recipient.name.kanji"));
-        String kana     = asString(context.get("recipient.name.kana"));
-        String alphabet = asString(context.get("recipient.name.alphabet"));
-
-        String lang = language == null ? "" : language.trim().toLowerCase(Locale.ROOT);
-        String chosen = switch (lang) {
-            case "ja" -> firstNonBlank(kanji, kana, alphabet);
-            case "en" -> firstNonBlank(alphabet, kanji, kana);
-            default   -> firstNonBlank(kanji, kana, alphabet);
-        };
-        if (chosen != null) {
-            context.put("recipient.name", chosen);
-        }
-    }
-
-    private static String firstNonBlank(String... vals) {
-        if (vals == null) return null;
-        for (String v : vals) if (v != null && !v.isBlank()) return v;
-        return null;
-    }
-
-    private static String asString(Object o) { return o == null ? null : String.valueOf(o); }
 }
 
-How to use it in your run method (super short)
 
-// 1) After lookups populated `fieldsContext` and you know the language:
-NotificationQueuePayloadBuilder.computeRecipientDisplayName(fieldsContext,
-        (String) fieldsContext.getOrDefault("language", "en"));
+⸻
 
-// 2) Build JSON to enqueue:
+3) Use it in your Function run(...)
+
+// Build JSON you already have:
 String json = NotificationQueuePayloadBuilder.buildJson(fieldsContext, parsedMessage, context.getLogger());
 
-// 3) Send 'json' to your "notification-request" queue (you said you’ll wire this later)
+// Get cached sender (App Setting must contain the connection string)
+final String CONNECTION_SETTING = "AzureWebJobsServiceBus";  // or your key
+final String QUEUE_NAME = "notification-request";
 
-Notes
-	•	Dynamic placeholders: either put a whole Map into context.put("placeholders", map) or sprinkle keys like context.put("ph.contractDate","2025-09-03"). Both get merged.
-	•	If some fields aren’t present, they’re simply omitted from the JSON.
-	•	If you later decide to add strict validation, you can check required keys before calling buildJson and write to the error blob instead.
+var sender = ServiceBusSenderProvider.get(CONNECTION_SETTING, QUEUE_NAME);
 
-If you want, I can also give you a minimal validator for required payload fields (e.g., notificationType, triggerType, and at least one of recipient.email/phone/lineId).
+// Optional app properties (good for filtering/diagnostics)
+Map<String,Object> props = Map.of(
+    "notificationType", fieldsContext.getOrDefault("notificationType", ""),
+    "triggerType",      fieldsContext.getOrDefault("triggerType", ""),
+    "messageType",      fieldsContext.getOrDefault("messageType", "")
+);
+
+// IDs from parsedMessage if available
+String messageId     = parsedMessage != null ? parsedMessage.getMessageId()     : null;
+String correlationId = parsedMessage != null ? parsedMessage.getCorrelationId() : null;
+
+// Send
+QueuePublisher.sendJson(sender, json, messageId, correlationId, props, context.getLogger());
+
+
+⸻
+
+Maven dependency
+
+<dependency>
+  <groupId>com.azure</groupId>
+  <artifactId>azure-messaging-servicebus</artifactId>
+  <version>7.17.5</version> <!-- latest 7.x at time of writing -->
+</dependency>
+
+App Settings needed
+	•	AzureWebJobsServiceBus (or your own name): Service Bus connection string with Send rights to the target queue.
+	•	(Optionally) move notification-request queue name to an app setting and read via System.getenv("SB_NOTIFICATION_QUEUE").
+
+That’s it—drop these in and call the 3-line send block after you build your JSON.
