@@ -1,158 +1,88 @@
-To create a Java-based Azure Function that reads messages from a Service Bus Queue, parses the JSON payload, and makes a POST request to your Notification API, here’s a clean, production-ready template with all best practices included (timeouts, retries, and logging).
-
-⸻
-
-✅ Summary of What This Function Does
-	•	Triggered by a message from Azure Service Bus Queue.
-	•	Parses the JSON message body.
-	•	Makes a POST request to your notification API.
-	•	Handles retries and errors gracefully.
-
-⸻
-
-📁 Assumptions
-	•	You’re using Azure Functions Java v4 with Maven.
-	•	You have a Service Bus queue connection.
-	•	You want to call a Notification API using the JSON body from the queue.
-	•	You’re using HTTP client like HttpClient (Java 11+).
-
-⸻
-
-✅ Step-by-Step: Java Azure Function Code
-
-🔹 NotificationTriggerFunction.java
-
 package com.yourcompany.notification;
 
 import com.microsoft.azure.functions.annotation.*;
 import com.microsoft.azure.functions.*;
 
 import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
+import java.net.http.*;
 import java.time.Duration;
-
+import java.util.UUID;
 import java.util.logging.Logger;
 
 /**
- * Azure Function triggered by Service Bus message that POSTs to Notification API
+ * Azure Function that listens to Service Bus queue and triggers an HTTP POST request to a Notification API.
  */
-public class NotificationTriggerFunction {
+public class ServiceBusTrigForNotifyApiFunction {
 
+    // Create a reusable HttpClient with timeout settings
     private static final HttpClient httpClient = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(5))
-            .build();
+        .connectTimeout(Duration.ofSeconds(5))
+        .build();
 
+    /**
+     * Azure Function triggered by messages from Service Bus Queue
+     */
     @FunctionName("SendNotificationFunction")
     public void run(
         @ServiceBusQueueTrigger(
             name = "message",
-            queueName = "your-queue-name",
-            connection = "ServiceBusConnection"
+            queueName = "your-queue-name", // Replace with your actual queue name
+            connection = "ServiceBusConnection" // From local.settings.json
         ) String message,
         final ExecutionContext context
     ) {
         Logger logger = context.getLogger();
-        logger.info("Received message: " + message);
+        logger.info("Received Service Bus message: " + message);
 
+        // Step 1: Prepare the POST request
+        String requestId = UUID.randomUUID().toString();
+        HttpRequest request;
         try {
-            // Step 1: Create the HTTP request
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(new URI("https://your-notification-api-url/api/send-notification"))
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(message)) // Send message as-is
-                    .timeout(Duration.ofSeconds(10))
-                    .build();
+            request = HttpRequest.newBuilder()
+                .uri(new URI("http://localhost:8080/v1/common/financialInstitution")) // Replace with your endpoint
+                .header("Content-Type", "application/json")
+                .header("X-Request-ID", requestId)
+                .POST(HttpRequest.BodyPublishers.ofString(message))
+                .timeout(Duration.ofSeconds(10))
+                .build();
+        } catch (Exception e) {
+            logger.severe("Failed to build request: " + e.getMessage());
+            throw new RuntimeException(e);
+        }
 
-            // Step 2: Send request and log response
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        // Step 2: Send the request with retry logic
+        int maxRetries = 3;
+        int attempt = 0;
+        long backoffMillis = 1000; // Start with 1 second
 
-            if (response.statusCode() >= 200 && response.statusCode() < 300) {
-                logger.info("Notification API success. Response: " + response.body());
-            } else {
-                logger.warning("Notification API failed with status: " + response.statusCode()
-                        + ". Body: " + response.body());
-                // Optional: throw an exception to retry
-                // throw new RuntimeException("Notification failed");
+        while (attempt < maxRetries) {
+            try {
+                attempt++;
+                HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+                int statusCode = response.statusCode();
+
+                if (statusCode >= 200 && statusCode < 300) {
+                    logger.info("Notification sent successfully. Status: " + statusCode + ". Body: " + response.body());
+                    return;
+                } else {
+                    logger.warning("Attempt " + attempt + ": Notification failed with status " + statusCode + ". Retrying...");
+                }
+
+            } catch (Exception ex) {
+                logger.warning("Attempt " + attempt + ": Exception sending request: " + ex.getMessage());
             }
 
-        } catch (Exception ex) {
-            logger.severe("Exception while calling Notification API: " + ex.getMessage());
-            // Optional: throw to retry depending on maxDeliveryCount
-            throw new RuntimeException(ex);
+            try {
+                Thread.sleep(backoffMillis);
+                backoffMillis *= 2; // Exponential backoff
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                logger.severe("Retry interrupted");
+                throw new RuntimeException("Retry interrupted", ie);
+            }
         }
+
+        logger.severe("Notification failed after " + maxRetries + " attempts.");
+        throw new RuntimeException("Notification failed after retries.");
     }
 }
-
-
-⸻
-
-🔐 Configuration Needed
-
-local.settings.json:
-
-{
-  "IsEncrypted": false,
-  "Values": {
-    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
-    "ServiceBusConnection": "<your-servicebus-connection-string>"
-  }
-}
-
-host.json
-
-Make sure you set retry policy if needed:
-
-{
-  "version": "2.0",
-  "extensions": {
-    "serviceBus": {
-      "prefetchCount": 0,
-      "messageHandlerOptions": {
-        "autoComplete": true,
-        "maxConcurrentCalls": 1,
-        "maxAutoRenewDuration": "00:05:00"
-      }
-    }
-  }
-}
-
-
-⸻
-
-🛡️ Best Practices Included
-
-Best Practice	Used
-HttpClient reuse	✅ Yes
-Timeout configured	✅ Yes
-Retry via throwing error	✅ Optional
-Structured logging	✅ Yes
-Exception handling	✅ Yes
-Direct JSON pass-through	✅ Yes
-
-
-⸻
-
-📦 Maven Dependency
-
-Make sure pom.xml includes:
-
-<dependency>
-    <groupId>com.microsoft.azure.functions</groupId>
-    <artifactId>azure-functions-java-library</artifactId>
-    <version>1.4.2</version>
-</dependency>
-
-And no need for Apache HTTP client, since Java 11+ built-in client is used.
-
-⸻
-
-✅ Final Notes
-	•	Replace your-queue-name and ServiceBusConnection as per your environment.
-	•	Replace https://your-notification-api-url/api/send-notification with your actual POST endpoint.
-	•	If you’re using auth (e.g. headers, tokens), let me know — I’ll add that securely.
-
-⸻
-
-Do you also want this function to move failed messages to dead-letter queue if retries fail, or is logging failure enough?
