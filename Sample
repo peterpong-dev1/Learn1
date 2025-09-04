@@ -1,100 +1,194 @@
+perfect — here’s a single-pass utility that:
+	•	parses the template JSON once
+	•	extracts subject & body
+	•	finds {{placeholders}} used in them
+	•	validates against your payload map
+	•	renders and returns subject/body (no second read)
+
+It’s stateless, thread-safe, and has clear errors.
+
 package jp.co.neofirst.api.common.template;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-import java.util.Map;
+import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Parses a template JSON and renders subject/body with {{placeholders}} replaced from a map.
+ * One-shot template processor:
+ *  - Parse template JSON (once)
+ *  - Extract subject/body
+ *  - Validate {{placeholders}} against provided map
+ *  - Render and return subject/body
  *
- * Expected JSON (primary):
+ * Expected JSON (any of these):
  * {
- *   "content": {
- *     "subject": "Hello {{userName}}",
- *     "body": "契約日: {{contractDate}}"
- *   }
+ *   "content": { "subject": "...", "body": "..." }
  * }
- *
- * Also tolerated:
- * - subject at root:         { "subject": "...", "body": "..." }
- * - bodyText/bodyHtml forms: { "content": { "bodyText": "...", "bodyHtml": "..." } }
+ * or
+ * { "subject": "...", "body": "..." }
+ * or bodyText/bodyHtml alternatives inside "content".
  */
-public final class TemplateRenderer {
+public final class TemplateProcessor {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
-    // Matches {{key}} allowing letters, digits, dot, underscore, and hyphen in keys
+    private static final ObjectMapper M = new ObjectMapper();
+    // {{ key }} ; keys allow letters, digits, dot, underscore, hyphen
     private static final Pattern PH_PATTERN = Pattern.compile("\\{\\{\\s*([A-Za-z0-9._-]+)\\s*}}");
 
-    private TemplateRenderer() {}
+    private TemplateProcessor() {}
 
-    /** Result object after rendering. */
-    public static final class RenderedTemplate {
+    /** Result after processing. */
+    public static final class Result {
         private final String subject;
         private final String body;
 
-        public RenderedTemplate(String subject, String body) {
-            this.subject = subject;
-            this.body = body;
+        public Result(String subject, String body) {
+            this.subject = subject == null ? "" : subject;
+            this.body = body == null ? "" : body;
         }
         public String getSubject() { return subject; }
         public String getBody() { return body; }
         @Override public String toString() {
-            return "RenderedTemplate{subject='" + subject + "', body='" + body + "'}";
+            return "Result{subject='" + subject + "', body='" + body + "'}";
         }
     }
 
+    /** Thrown when required placeholders are missing/blank in strict mode. */
+    public static final class MissingPlaceholdersException extends RuntimeException {
+        private final List<String> missingKeys;
+        public MissingPlaceholdersException(String msg, List<String> missingKeys) {
+            super(msg);
+            this.missingKeys = List.copyOf(missingKeys);
+        }
+        public List<String> getMissingKeys() { return missingKeys; }
+    }
+
+    /** Thrown when template JSON cannot be parsed. */
+    public static final class TemplateParseException extends RuntimeException {
+        public TemplateParseException(String msg, Throwable cause) { super(msg, cause); }
+    }
+
     /**
-     * Parse the template JSON and render subject/body by replacing {{placeholders}}.
+     * Process the template in a single pass.
      *
-     * @param templateJson Full JSON string of the template blob
-     * @param placeholders Map of placeholder -> value (e.g., "userName" -> "山田 太郎")
-     * @return RenderedTemplate with subject and body (never null; may be empty strings)
-     * @throws Exception if the JSON is malformed
+     * @param templateJson  full template JSON string
+     * @param placeholders  map from payload (keys must match tokens)
+     * @param strict        if true, throws when any required placeholder is missing/blank;
+     *                      if false, missing placeholders become empty strings
+     * @return subject and body rendered
      */
-    public static RenderedTemplate render(String templateJson, Map<String, ?> placeholders) throws Exception {
-        JsonNode root = MAPPER.readTree(templateJson);
-        JsonNode content = root.path("content");
+    public static Result process(String templateJson, Map<String, ?> placeholders, boolean strict) {
+        Objects.requireNonNull(templateJson, "templateJson must not be null");
+        final Map<String, ?> values = (placeholders == null) ? Map.of() : placeholders;
 
-        // Extract subject from content.subject or root.subject
-        String subject = textOrEmpty(content.path("subject"));
-        if (subject.isEmpty()) subject = textOrEmpty(root.path("subject"));
+        final String subject;
+        final String body;
 
-        // Extract body (prefer content.body; fallbacks for bodyText/bodyHtml)
-        String body = textOrEmpty(content.path("body"));
-        if (body.isEmpty()) body = textOrEmpty(content.path("bodyText"));
-        if (body.isEmpty()) body = textOrEmpty(content.path("bodyHtml"));
-        if (body.isEmpty()) body = textOrEmpty(root.path("body"));
+        try {
+            JsonNode root = M.readTree(templateJson);
+            JsonNode content = root.path("content");
 
-        // Do placeholder replacement
-        subject = replacePlaceholders(subject, placeholders);
-        body    = replacePlaceholders(body, placeholders);
+            subject = textFirstNonBlank(
+                    content.path("subject"),
+                    root.path("subject")
+            );
 
-        return new RenderedTemplate(subject, body);
+            String bodyCandidate = textFirstNonBlank(
+                    content.path("body"),
+                    content.path("bodyText"),
+                    content.path("bodyHtml"),
+                    root.path("body")
+            );
+
+            // collect required placeholders from subject/body only once
+            Set<String> required = new LinkedHashSet<>();
+            collect(required, subject);
+            collect(required, bodyCandidate);
+
+            // validate or be lenient
+            if (strict) {
+                List<String> missing = findMissing(required, values);
+                if (!missing.isEmpty()) {
+                    throw new MissingPlaceholdersException("Missing placeholders: " + String.join(", ", missing), missing);
+                }
+            }
+
+            // render (replace {{key}} with value or empty if missing)
+            String renderedSubject = replace(subject, values);
+            String renderedBody    = replace(bodyCandidate, values);
+
+            return new Result(renderedSubject, renderedBody);
+
+        } catch (MissingPlaceholdersException e) {
+            throw e; // bubble 400-style error
+        } catch (Exception e) {
+            throw new TemplateParseException("Failed to parse or process template JSON", e);
+        }
     }
 
-    // --------------- helpers ---------------
+    // ---------------- helpers ----------------
 
-    private static String textOrEmpty(JsonNode node) {
-        return (node != null && !node.isMissingNode() && !node.isNull()) ? node.asText("") : "";
+    private static String textFirstNonBlank(JsonNode... nodes) {
+        for (JsonNode n : nodes) {
+            if (n != null && !n.isMissingNode() && !n.isNull()) {
+                String v = n.asText("");
+                if (!v.isBlank()) return v;
+            }
+        }
+        return "";
     }
 
-    private static String replacePlaceholders(String template, Map<String, ?> values) {
-        if (template == null || template.isEmpty() || values == null || values.isEmpty()) return template;
+    private static void collect(Set<String> keys, String text) {
+        if (text == null || text.isEmpty()) return;
+        Matcher m = PH_PATTERN.matcher(text);
+        while (m.find()) keys.add(m.group(1));
+    }
 
+    private static List<String> findMissing(Set<String> required, Map<String, ?> values) {
+        if (required.isEmpty()) return List.of();
+        List<String> missing = new ArrayList<>();
+        for (String k : required) {
+            Object v = values.get(k);
+            if (v == null || v.toString().trim().isEmpty()) {
+                missing.add(k);
+            }
+        }
+        return missing;
+    }
+
+    private static String replace(String template, Map<String, ?> values) {
+        if (template == null || template.isEmpty() || values.isEmpty()) return template;
         Matcher m = PH_PATTERN.matcher(template);
         StringBuffer sb = new StringBuffer();
         while (m.find()) {
             String key = m.group(1);
             Object val = values.get(key);
-            String replacement = (val == null) ? "" : String.valueOf(val);
-            // Escape backslashes and dollars for regex replacement
-            replacement = replacement.replace("\\", "\\\\").replace("$", "\\$");
-            m.appendReplacement(sb, replacement);
+            String repl = (val == null) ? "" : String.valueOf(val);
+            // escape for regex
+            repl = repl.replace("\\", "\\\\").replace("$", "\\$");
+            m.appendReplacement(sb, repl);
         }
         m.appendTail(sb);
         return sb.toString();
     }
 }
+
+How to call it from your service (single read → validate → render)
+
+String templateJson = blobTemplateClient.readAsString(templateBlobName);
+
+// strict = true → 400 if any required placeholder missing
+TemplateProcessor.Result rendered =
+        TemplateProcessor.process(templateJson, request.getPlaceholders(), true);
+
+String subject = rendered.getSubject();
+String body    = rendered.getBody();
+// → build email payload and dispatch
+
+Why this fits your ask
+	•	One method call, one parse, one pass.
+	•	Returns the rendered subject/body directly; you don’t re-parse.
+	•	Toggle strict to choose fail-fast vs. lenient behavior.
+	•	Clear exceptions for handler/@ControllerAdvice to map to 400.
