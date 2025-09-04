@@ -1,112 +1,38 @@
-got it — here are the Lombok-style DTOs matching your format.
+package jp.co.neofirst.api.common.config;
 
-package jp.co.neofirst.api.common.dto;
-
-import com.fasterxml.jackson.annotation.JsonInclude;
-import lombok.AllArgsConstructor;
-import lombok.Getter;
-import lombok.NoArgsConstructor;
-import lombok.Setter;
-
-import javax.validation.Valid;
-import javax.validation.constraints.NotBlank;
-import javax.validation.constraints.NotNull;
-import java.util.Map;
+import java.net.http.HttpClient;
+import java.time.Duration;
 
 /**
- * Incoming Notification request payload.
- * - placeholders is dynamic (Map<String,Object>)
- * - metadata is optional but recommended for tracing
+ * Provides a thread-safe, singleton HttpClient instance.
+ * 
+ * Uses Java's built-in java.net.http.HttpClient (Java 11+).
+ * The client is configured with reasonable defaults (timeouts, redirect policy).
  */
-@Getter @Setter
-@AllArgsConstructor @NoArgsConstructor
-@JsonInclude(JsonInclude.Include.NON_NULL)
-public class NotificationRequest {
-    @NotBlank private String notificationType;   // newBusiness | transaction | policyMaintenance | unpaid
-    @NotBlank private String triggerType;        // established | received | ...
-    @NotBlank private String messageType;        // email | sms | line
-    @NotBlank private String language;           // ja | en | ...
+public final class HttpClientProvider {
 
-    private String applicationId;                // required conditionally
-    private String policyId;                     // required conditionally
+    // Private constructor to prevent instantiation
+    private HttpClientProvider() {
+    }
 
-    @NotNull @Valid private Recipient recipient;
-    @NotNull @Valid private Agency agency;
+    /**
+     * Holder class for lazy-loaded singleton instance.
+     * JVM guarantees thread-safety and initialization-on-demand.
+     */
+    private static final class Holder {
+        private static final HttpClient CLIENT = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(10)) // connection timeout
+                .followRedirects(HttpClient.Redirect.NORMAL) // allow redirects
+                .version(HttpClient.Version.HTTP_2) // prefer HTTP/2
+                .build();
+    }
 
-    private Map<String, Object> placeholders;    // dynamic key/value for template merge
-    @Valid private Metadata metadata;            // tracing / extra info
+    /**
+     * Returns a shared HttpClient instance.
+     * 
+     * @return singleton HttpClient
+     */
+    public static HttpClient getClient() {
+        return Holder.CLIENT;
+    }
 }
-
-package jp.co.neofirst.api.common.dto;
-
-import com.fasterxml.jackson.annotation.JsonInclude;
-import lombok.AllArgsConstructor;
-import lombok.Getter;
-import lombok.NoArgsConstructor;
-import lombok.Setter;
-
-import javax.validation.constraints.Email;
-import javax.validation.constraints.NotBlank;
-
-/** Recipient block. */
-@Getter @Setter
-@AllArgsConstructor @NoArgsConstructor
-@JsonInclude(JsonInclude.Include.NON_NULL)
-public class Recipient {
-    @NotBlank private String name;
-    @Email   private String email;
-    private String phone;
-    private String lineId;
-}
-
-package jp.co.neofirst.api.common.dto;
-
-import com.fasterxml.jackson.annotation.JsonInclude;
-import lombok.AllArgsConstructor;
-import lombok.Getter;
-import lombok.NoArgsConstructor;
-import lombok.Setter;
-
-import javax.validation.constraints.NotBlank;
-
-/** Agency info used for template resolution & audit. */
-@Getter @Setter
-@AllArgsConstructor @NoArgsConstructor
-@JsonInclude(JsonInclude.Include.NON_NULL)
-public class Agency {
-    @NotBlank private String agencyId;   // e.g., PRU001 or "default"
-    private String agencyName;
-}
-
-package jp.co.neofirst.api.common.dto;
-
-import com.fasterxml.jackson.annotation.JsonInclude;
-import lombok.AllArgsConstructor;
-import lombok.Getter;
-import lombok.NoArgsConstructor;
-import lombok.Setter;
-
-import java.time.OffsetDateTime;
-import java.util.Map;
-
-/**
- * Optional metadata for correlation/tracing.
- * Add whatever you need in `extra`.
- */
-@Getter @Setter
-@AllArgsConstructor @NoArgsConstructor
-@JsonInclude(JsonInclude.Include.NON_NULL)
-public class Metadata {
-    private String correlationId;
-    private String messageId;
-
-    private String container;
-    private String docId;
-    private String eventId;
-    private String eventName;
-    private OffsetDateTime createdAtUtc;
-
-    private Map<String, Object> extra;  // extensible bag
-}
-
-These mirror your previous project style (@Getter/@Setter/@AllArgsConstructor/@NoArgsConstructor) and remain Jackson/validation friendly. If you also want a simple controller method signature to bind this DTO (@PostMapping), say the word and I’ll drop that stub too.
