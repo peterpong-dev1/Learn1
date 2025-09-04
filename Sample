@@ -1,279 +1,112 @@
-got it — here’s a clean, cache-free, thread-safe utility you can drop in:
-	•	You pass an existing BlobContainerClient (so it plugs into your code).
-	•	It builds the blob name from inputs, applies your fallback order, reads the blob, and maps to a POJO.
-	•	If the blob content is JSON, it maps to TemplateDocument (subject/bodyHtml/bodyText/metadata).
-If it’s plain text, it still returns a TemplateDocument with bodyText filled.
+got it — here are the Lombok-style DTOs matching your format.
 
-⸻
+package jp.co.neofirst.api.common.dto;
 
-Template resolver (copy-paste)
-
-package com.yourco.templates;
-
-import com.azure.storage.blob.BlobClient;
-import com.azure.storage.blob.BlobContainerClient;
-import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.fasterxml.jackson.annotation.JsonInclude;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.AllArgsConstructor;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.Setter;
 
-import java.nio.charset.StandardCharsets;
-import java.util.*;
+import javax.validation.Valid;
+import javax.validation.constraints.NotBlank;
+import javax.validation.constraints.NotNull;
+import java.util.Map;
 
 /**
- * Resolves a template blob name using a deterministic fallback order and loads it from Azure Blob Storage.
- * No in-memory cache. Thread-safe (stateless; no synchronization).
- *
- * Fallback order (most → least specific):
- *  1) n_t_{agencyId}_{language}_{messageType}.json
- *  2) n_t_default_{language}_{messageType}.json
- *  3) n_t_{agencyId}_{fallbackLanguage(language)}_{messageType}.json   (e.g., ja → en)
- *  4) n_t_default_{fallbackLanguage(language)}_{messageType}.json
- *
- * File layout in container (example):
- *   templates/
- *     newbusiness_established_pru001_ja_email.json
- *     newbusiness_established_default_ja_email.json
- *     newbusiness_established_pru001_en_email.json
- *     newbusiness_established_default_en_email.json
- *
- * Content:
- *   - If JSON: { "subject": "...", "bodyHtml": "...", "bodyText": "...", ... }
- *   - If plain text: whole content becomes bodyText.
+ * Incoming Notification request payload.
+ * - placeholders is dynamic (Map<String,Object>)
+ * - metadata is optional but recommended for tracing
  */
-public final class TemplateResolver {
+@Getter @Setter
+@AllArgsConstructor @NoArgsConstructor
+@JsonInclude(JsonInclude.Include.NON_NULL)
+public class NotificationRequest {
+    @NotBlank private String notificationType;   // newBusiness | transaction | policyMaintenance | unpaid
+    @NotBlank private String triggerType;        // established | received | ...
+    @NotBlank private String messageType;        // email | sms | line
+    @NotBlank private String language;           // ja | en | ...
 
-    private static final ObjectMapper M = new ObjectMapper();
+    private String applicationId;                // required conditionally
+    private String policyId;                     // required conditionally
 
-    private final BlobContainerClient container;
-    private final String basePath; // e.g. "templates/" (can be empty, but end with "/" if non-empty)
+    @NotNull @Valid private Recipient recipient;
+    @NotNull @Valid private Agency agency;
 
-    /**
-     * @param container an already-initialized BlobContainerClient (managed identity or connection string)
-     * @param basePath  folder prefix inside container, e.g. "templates/"; may be "" or null for root
-     */
-    public TemplateResolver(BlobContainerClient container, String basePath) {
-        this.container = Objects.requireNonNull(container, "container");
-        this.basePath = (basePath == null || basePath.isBlank())
-                ? ""
-                : (basePath.endsWith("/") ? basePath : basePath + "/");
-    }
-
-    /**
-     * Resolve the best-matching template and load it as a TemplateDocument.
-     *
-     * @throws TemplateNotFoundException if none of the candidates exist
-     * @throws StorageAccessException    on I/O issues while reading blobs
-     * @throws TemplateParseException    if JSON is malformed
-     */
-    public TemplateDocument resolveAndLoad(String notificationType,
-                                           String triggerType,
-                                           String agencyId,
-                                           String language,         // accepts "ja" or "ja-JP" (we use primary subtag)
-                                           String messageType) {
-
-        // normalize inputs (lowercase + trim; language primary subtag)
-        final String n = norm(notificationType, "notificationType");
-        final String t = norm(triggerType,      "triggerType");
-        final String a = normOrDefault(agencyId, "default");
-        final String l = primaryLang(normOrDefault(language, "en"));
-        final String m = norm(messageType,      "messageType");
-
-        final String lf = langFallback(l); // e.g., ja -> en
-
-        // candidate file names (without basePath)
-        final String[] candidates = new String[] {
-                key(n,t,a,l,m),
-                key(n,t,"default",l,m),
-                key(n,t,a,lf,m),
-                key(n,t,"default",lf,m)
-        };
-
-        Exception lastIo = null;
-
-        for (String name : candidates) {
-            String blobName = basePath + name + ".json";
-            BlobClient blob = container.getBlobClient(blobName);
-            try {
-                if (blob.exists()) {
-                    byte[] bytes = blob.downloadContent().toBytes();
-                    String content = new String(bytes, StandardCharsets.UTF_8);
-                    return toTemplateDocument(content, blobName);
-                }
-            } catch (Exception e) {
-                // keep trying next candidate; remember last I/O error for diagnostics if all fail
-                lastIo = e;
-            }
-        }
-
-        if (lastIo != null) {
-            throw new StorageAccessException("Failed to probe/read template candidates", lastIo);
-        }
-        throw new TemplateNotFoundException("No template found. Inputs=" + Map.of(
-                "notificationType", n, "triggerType", t, "agencyId", a, "language", l, "messageType", m));
-    }
-
-    // ---------- helpers ----------
-
-    private static String key(String n, String t, String a, String l, String m) {
-        return String.join("_", n, t, a, l, m);
-    }
-
-    private static String norm(String s, String name) {
-        if (s == null) throw new IllegalArgumentException(name + " is required");
-        String v = s.trim().toLowerCase(Locale.ROOT);
-        if (v.isBlank()) throw new IllegalArgumentException(name + " is blank");
-        return v;
-    }
-
-    private static String normOrDefault(String s, String def) {
-        if (s == null) return def;
-        String v = s.trim().toLowerCase(Locale.ROOT);
-        return v.isBlank() ? def : v;
-    }
-
-    /** Take primary subtag ("ja-JP" -> "ja"). */
-    private static String primaryLang(String lang) {
-        int i = lang.indexOf('-');
-        return (i > 0) ? lang.substring(0, i) : lang;
-    }
-
-    /** Minimal, configurable fallback. Extend via config if needed. */
-    private static String langFallback(String lang) {
-        return switch (lang) {
-            case "ja" -> "en";
-            default -> "en";
-        };
-    }
-
-    private static TemplateDocument toTemplateDocument(String content, String sourceBlobName) {
-        // Try JSON first; if not JSON, treat as plaintext template (bodyText).
-        String trimmed = content.stripLeading();
-        if (!trimmed.isEmpty() && (trimmed.charAt(0) == '{' || trimmed.charAt(0) == '[')) {
-            try {
-                JsonNode root = M.readTree(content);
-                TemplateDocument doc = new TemplateDocument();
-                doc.setSourceBlob(sourceBlobName);
-                doc.setRaw(content);
-
-                // mapping (all optional)
-                JsonNode subject = root.get("subject");
-                JsonNode bodyHtml = root.get("bodyHtml");
-                JsonNode bodyText = root.get("bodyText");
-                if (subject != null && !subject.isNull()) doc.setSubject(subject.asText());
-                if (bodyHtml != null && !bodyHtml.isNull()) doc.setBodyHtml(bodyHtml.asText());
-                if (bodyText != null && !bodyText.isNull()) doc.setBodyText(bodyText.asText());
-
-                // capture extra fields into metadata map (e.g., headers, layout hints)
-                root.fields().forEachRemaining(e -> {
-                    String k = e.getKey();
-                    if (!Set.of("subject","bodyHtml","bodyText").contains(k)) {
-                        doc.putExtra(k, e.getValue());
-                    }
-                });
-                return doc;
-            } catch (JsonProcessingException jpe) {
-                throw new TemplateParseException("Template JSON parsing failed for " + sourceBlobName, jpe);
-            }
-        } else {
-            TemplateDocument doc = new TemplateDocument();
-            doc.setSourceBlob(sourceBlobName);
-            doc.setBodyText(content);
-            doc.setRaw(content);
-            return doc;
-        }
-    }
-
-    // ---------- DTO & Exceptions ----------
-
-    /**
-     * POJO for a template. Flexible: supports JSON or plain-text files.
-     * If JSON, recognized fields are subject/bodyHtml/bodyText; everything else lands in "extras".
-     */
-    @JsonInclude(JsonInclude.Include.NON_NULL)
-    public static final class TemplateDocument {
-        private String subject;
-        private String bodyHtml;
-        private String bodyText;
-
-        // handy for diagnostics
-        private String sourceBlob;
-        private String raw;
-
-        // dynamic fields from JSON templates (headers, layout hints, etc.)
-        private final Map<String, Object> extras = new LinkedHashMap<>();
-
-        public String getSubject() { return subject; }
-        public void setSubject(String subject) { this.subject = subject; }
-        public String getBodyHtml() { return bodyHtml; }
-        public void setBodyHtml(String bodyHtml) { this.bodyHtml = bodyHtml; }
-        public String getBodyText() { return bodyText; }
-        public void setBodyText(String bodyText) { this.bodyText = bodyText; }
-        public String getSourceBlob() { return sourceBlob; }
-        public void setSourceBlob(String sourceBlob) { this.sourceBlob = sourceBlob; }
-        public String getRaw() { return raw; }
-        public void setRaw(String raw) { this.raw = raw; }
-
-        @JsonAnySetter
-        public void putExtra(String key, Object value) {
-            extras.put(key, value);
-        }
-        public Map<String, Object> getExtras() { return Collections.unmodifiableMap(extras); }
-    }
-
-    /** Thrown when no candidate blob exists. */
-    public static final class TemplateNotFoundException extends RuntimeException {
-        public TemplateNotFoundException(String msg) { super(msg); }
-    }
-
-    /** I/O or network-level errors when accessing storage. */
-    public static final class StorageAccessException extends RuntimeException {
-        public StorageAccessException(String msg, Throwable cause) { super(msg, cause); }
-    }
-
-    /** JSON malformed in a template that should be JSON. */
-    public static final class TemplateParseException extends RuntimeException {
-        public TemplateParseException(String msg, Throwable cause) { super(msg, cause); }
-    }
+    private Map<String, Object> placeholders;    // dynamic key/value for template merge
+    @Valid private Metadata metadata;            // tracing / extra info
 }
 
+package jp.co.neofirst.api.common.dto;
 
-⸻
+import com.fasterxml.jackson.annotation.JsonInclude;
+import lombok.AllArgsConstructor;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.Setter;
 
-Example usage (inside your Function or service)
+import javax.validation.constraints.Email;
+import javax.validation.constraints.NotBlank;
 
-// You already build this elsewhere; pass it in:
-BlobContainerClient container = /* your code to create client */;
+/** Recipient block. */
+@Getter @Setter
+@AllArgsConstructor @NoArgsConstructor
+@JsonInclude(JsonInclude.Include.NON_NULL)
+public class Recipient {
+    @NotBlank private String name;
+    @Email   private String email;
+    private String phone;
+    private String lineId;
+}
 
-// Create resolver (basePath = "templates/")
-TemplateResolver resolver = new TemplateResolver(container, "templates");
+package jp.co.neofirst.api.common.dto;
 
-// Resolve + load
-TemplateResolver.TemplateDocument tpl = resolver.resolveAndLoad(
-        parsed.getNotificationType(),  // e.g., "newBusiness"
-        parsed.getTriggerType(),       // e.g., "established"
-        parsed.getAgencyId(),          // e.g., "pru001" or null → default
-        parsed.getLanguage(),          // e.g., "ja-JP"
-        parsed.getMessageType()        // e.g., "email"
-);
+import com.fasterxml.jackson.annotation.JsonInclude;
+import lombok.AllArgsConstructor;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.Setter;
 
-// Hand off to your email service
-String subject = tpl.getSubject();     // may be null if plain-text template
-String html    = tpl.getBodyHtml();    // may be null
-String text    = tpl.getBodyText();    // guaranteed if plain-text; optional for JSON
-Map<String,Object> extras = tpl.getExtras(); // optional hints
+import javax.validation.constraints.NotBlank;
 
+/** Agency info used for template resolution & audit. */
+@Getter @Setter
+@AllArgsConstructor @NoArgsConstructor
+@JsonInclude(JsonInclude.Include.NON_NULL)
+public class Agency {
+    @NotBlank private String agencyId;   // e.g., PRU001 or "default"
+    private String agencyName;
+}
 
-⸻
+package jp.co.neofirst.api.common.dto;
 
-Notes / small ops checklist
-	•	Enable Blob Versioning on the container so overwrites keep history (no code changes needed).
-	•	Keep your filenames strictly lowercase and underscore-separated to match the resolver.
-	•	If you need a different language fallback (e.g., zh → en), extend langFallback or read from config.
-	•	Error handling:
-	•	TemplateNotFoundException → treat as configuration/content issue (log + stop or DLQ).
-	•	StorageAccessException → transient I/O (your caller can retry).
-	•	TemplateParseException → bad JSON content (log + fix the blob).
+import com.fasterxml.jackson.annotation.JsonInclude;
+import lombok.AllArgsConstructor;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.Setter;
 
-If you want the resolver to also return blob ETag / Last-Modified for telemetry, I can add those fields in TemplateDocument—just say the word.
+import java.time.OffsetDateTime;
+import java.util.Map;
+
+/**
+ * Optional metadata for correlation/tracing.
+ * Add whatever you need in `extra`.
+ */
+@Getter @Setter
+@AllArgsConstructor @NoArgsConstructor
+@JsonInclude(JsonInclude.Include.NON_NULL)
+public class Metadata {
+    private String correlationId;
+    private String messageId;
+
+    private String container;
+    private String docId;
+    private String eventId;
+    private String eventName;
+    private OffsetDateTime createdAtUtc;
+
+    private Map<String, Object> extra;  // extensible bag
+}
+
+These mirror your previous project style (@Getter/@Setter/@AllArgsConstructor/@NoArgsConstructor) and remain Jackson/validation friendly. If you also want a simple controller method signature to bind this DTO (@PostMapping), say the word and I’ll drop that stub too.
