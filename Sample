@@ -1,38 +1,4 @@
-package jp.co.neofirst.api.common.config;
-
-import java.net.http.HttpClient;
-import java.time.Duration;
-
-/**
- * Provides a thread-safe, singleton HttpClient instance.
- * 
- * Uses Java's built-in java.net.http.HttpClient (Java 11+).
- * The client is configured with reasonable defaults (timeouts, redirect policy).
- */
-public final class HttpClientProvider {
-
-    // Private constructor to prevent instantiation
-    private HttpClientProvider() {
-    }
-
-    /**
-     * Holder class for lazy-loaded singleton instance.
-     * JVM guarantees thread-safety and initialization-on-demand.
-     */
-    private static final class Holder {
-        private static final HttpClient CLIENT = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(10)) // connection timeout
-                .followRedirects(HttpClient.Redirect.NORMAL) // allow redirects
-                .version(HttpClient.Version.HTTP_2) // prefer HTTP/2
-                .build();
-    }
-
-    /**
-     * Returns a shared HttpClient instance.
-     * 
-     * @return singleton HttpClient
-     */
-    public static HttpClient getClient() {
-        return Holder.CLIENT;
-    }
+"content": {
+  "subject": "【証券取消のお知らせ】",
+  "body": "お客様 {{userName}} 様のご契約（証券番号: {{policyId}}）は取消されました。"
 }
