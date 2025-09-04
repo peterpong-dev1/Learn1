@@ -1,4 +1,4 @@
 "content": {
-  "subject": "【証券取消のお知らせ】",
-  "body": "お客様 {{userName}} 様のご契約（証券番号: {{policyId}}）は取消されました。"
+  "subject": "【契約取消のお知らせ】",
+  "body": "{{customerName}}様の契約（証券番号: {{policyId}}）が取消されました。"
 }
