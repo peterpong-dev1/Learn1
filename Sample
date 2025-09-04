@@ -1,4 +1,100 @@
-"content": {
-  "subject": "【契約取消のお知らせ】",
-  "body": "{{customerName}}様の契約（証券番号: {{policyId}}）が取消されました。"
+package jp.co.neofirst.api.common.template;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+/**
+ * Parses a template JSON and renders subject/body with {{placeholders}} replaced from a map.
+ *
+ * Expected JSON (primary):
+ * {
+ *   "content": {
+ *     "subject": "Hello {{userName}}",
+ *     "body": "契約日: {{contractDate}}"
+ *   }
+ * }
+ *
+ * Also tolerated:
+ * - subject at root:         { "subject": "...", "body": "..." }
+ * - bodyText/bodyHtml forms: { "content": { "bodyText": "...", "bodyHtml": "..." } }
+ */
+public final class TemplateRenderer {
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+    // Matches {{key}} allowing letters, digits, dot, underscore, and hyphen in keys
+    private static final Pattern PH_PATTERN = Pattern.compile("\\{\\{\\s*([A-Za-z0-9._-]+)\\s*}}");
+
+    private TemplateRenderer() {}
+
+    /** Result object after rendering. */
+    public static final class RenderedTemplate {
+        private final String subject;
+        private final String body;
+
+        public RenderedTemplate(String subject, String body) {
+            this.subject = subject;
+            this.body = body;
+        }
+        public String getSubject() { return subject; }
+        public String getBody() { return body; }
+        @Override public String toString() {
+            return "RenderedTemplate{subject='" + subject + "', body='" + body + "'}";
+        }
+    }
+
+    /**
+     * Parse the template JSON and render subject/body by replacing {{placeholders}}.
+     *
+     * @param templateJson Full JSON string of the template blob
+     * @param placeholders Map of placeholder -> value (e.g., "userName" -> "山田 太郎")
+     * @return RenderedTemplate with subject and body (never null; may be empty strings)
+     * @throws Exception if the JSON is malformed
+     */
+    public static RenderedTemplate render(String templateJson, Map<String, ?> placeholders) throws Exception {
+        JsonNode root = MAPPER.readTree(templateJson);
+        JsonNode content = root.path("content");
+
+        // Extract subject from content.subject or root.subject
+        String subject = textOrEmpty(content.path("subject"));
+        if (subject.isEmpty()) subject = textOrEmpty(root.path("subject"));
+
+        // Extract body (prefer content.body; fallbacks for bodyText/bodyHtml)
+        String body = textOrEmpty(content.path("body"));
+        if (body.isEmpty()) body = textOrEmpty(content.path("bodyText"));
+        if (body.isEmpty()) body = textOrEmpty(content.path("bodyHtml"));
+        if (body.isEmpty()) body = textOrEmpty(root.path("body"));
+
+        // Do placeholder replacement
+        subject = replacePlaceholders(subject, placeholders);
+        body    = replacePlaceholders(body, placeholders);
+
+        return new RenderedTemplate(subject, body);
+    }
+
+    // --------------- helpers ---------------
+
+    private static String textOrEmpty(JsonNode node) {
+        return (node != null && !node.isMissingNode() && !node.isNull()) ? node.asText("") : "";
+    }
+
+    private static String replacePlaceholders(String template, Map<String, ?> values) {
+        if (template == null || template.isEmpty() || values == null || values.isEmpty()) return template;
+
+        Matcher m = PH_PATTERN.matcher(template);
+        StringBuffer sb = new StringBuffer();
+        while (m.find()) {
+            String key = m.group(1);
+            Object val = values.get(key);
+            String replacement = (val == null) ? "" : String.valueOf(val);
+            // Escape backslashes and dollars for regex replacement
+            replacement = replacement.replace("\\", "\\\\").replace("$", "\\$");
+            m.appendReplacement(sb, replacement);
+        }
+        m.appendTail(sb);
+        return sb.toString();
+    }
 }
