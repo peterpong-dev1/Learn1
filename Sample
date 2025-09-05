@@ -1,137 +1,47 @@
-Perfect — if you want to keep it simple and just produce a JSON string (without creating DTO objects), we can build it directly. Below is a production-grade, thread-safe utility that:
-	•	Takes in your inputs (subject, body, recipients, etc.)
-	•	Uses Jackson ObjectMapper (thread-safe if reused as a static final)
-	•	Handles nulls gracefully
-	•	Returns the JSON String
+Got it 👍 You don’t need a separate utility class, just a single method inside your service or resolver.
+Here’s a simple generic method that checks required fields and throws if any are missing:
 
-⸻
+private void validateMandatoryFields(Map<String, ?> fields) {
+    List<String> missing = new ArrayList<>();
 
-EmailPayloadBuilder.java
+    for (Map.Entry<String, ?> entry : fields.entrySet()) {
+        String name = entry.getKey();
+        Object val  = entry.getValue();
 
-package jp.co.neofirst.api.common.util;
+        boolean invalid = (val == null) ||
+                          (val instanceof CharSequence && ((CharSequence) val).toString().trim().isEmpty());
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.fasterxml.jackson.databind.node.ArrayNode;
-
-import java.util.List;
-import java.util.Map;
-
-/**
- * Utility to build JSON payloads for Email Service.
- * Thread-safe (uses static final ObjectMapper).
- */
-public final class EmailPayloadBuilder {
-
-    // Thread-safe ObjectMapper instance
-    private static final ObjectMapper MAPPER = new ObjectMapper();
-
-    // Prevent instantiation
-    private EmailPayloadBuilder() {}
-
-    /**
-     * Builds JSON payload string for Email Service.
-     *
-     * @param requestId   unique id (UUID or correlationId)
-     * @param fromAddress sender email
-     * @param fromName    sender display name
-     * @param replyAddress reply-to email
-     * @param subject     rendered subject
-     * @param bodyText    plain text body
-     * @param bodyHtml    html body (can be null)
-     * @param deliveryMailAddressPropertyName key in deliveryData for recipient address
-     * @param recipients  list of recipient maps (each map contains required and optional fields)
-     * @param oneClickUnsub true/false
-     * @return JSON string ready to POST
-     * @throws Exception if building fails
-     */
-    public static String buildEmailPayload(String requestId,
-                                           String fromAddress,
-                                           String fromName,
-                                           String replyAddress,
-                                           String subject,
-                                           String bodyText,
-                                           String bodyHtml,
-                                           String deliveryMailAddressPropertyName,
-                                           List<Map<String, Object>> recipients,
-                                           boolean oneClickUnsub) throws Exception {
-        try {
-            ObjectNode root = MAPPER.createObjectNode();
-
-            root.put("requestId", requestId);
-            root.put("fromAddress", fromAddress);
-            root.put("fromName", fromName);
-            root.put("replyAddress", replyAddress);
-            root.put("subject", subject);
-            root.put("bodyText", bodyText);
-            if (bodyHtml != null) {
-                root.put("bodyHtml", bodyHtml);
-            }
-            root.put("deliveryMailAddressPropertyName", deliveryMailAddressPropertyName);
-            root.put("count", recipients != null ? recipients.size() : 0);
-            root.put("oneClickUnsubscriptionReady", oneClickUnsub);
-
-            // Recipients array
-            ArrayNode deliveryData = MAPPER.createArrayNode();
-            if (recipients != null) {
-                for (Map<String, Object> r : recipients) {
-                    deliveryData.add(MAPPER.valueToTree(r));
-                }
-            }
-            root.set("deliveryData", deliveryData);
-
-            return MAPPER.writeValueAsString(root);
-
-        } catch (Exception e) {
-            // Log error (use your logger instead of printStackTrace in real code)
-            System.err.println("Failed to build Email payload: " + e.getMessage());
-            throw e;
+        if (invalid) {
+            missing.add(name);
         }
     }
-}
 
-
-⸻
-
-Example Usage
-
-import java.util.*;
-
-public class TestEmailPayload {
-    public static void main(String[] args) throws Exception {
-        // Example recipient
-        Map<String, Object> rec = new HashMap<>();
-        rec.put("Customer.synergyid", 1);
-        rec.put("Customer.mailaddress", "foo@example.com");
-        rec.put("Customer.name", "山田 太郎");
-
-        List<Map<String, Object>> recipients = List.of(rec);
-
-        String payload = EmailPayloadBuilder.buildEmailPayload(
-                UUID.randomUUID().toString(),      // requestId
-                "support@example.com",             // from
-                "カスタマーサポート",                 // fromName
-                "reply@example.com",               // reply
-                "ご契約成立のお知らせ",                // subject
-                "お客様の契約が成立しました。",          // bodyText
-                null,                              // bodyHtml (optional)
-                "Customer.mailaddress",            // deliveryMailAddressPropertyName
-                recipients,
-                true                               // oneClickUnsubscriptionReady
-        );
-
-        System.out.println(payload);
+    if (!missing.isEmpty()) {
+        String msg = "Missing or blank mandatory fields: " + String.join(", ", missing);
+        logger.error(msg); // use your logger
+        throw new CustomValidationException(msg);
     }
 }
 
 
 ⸻
 
-✅ Thread-safe → ObjectMapper is static final
-✅ Error handled → Catches exception, logs, rethrows
-✅ Simple → No DTOs, returns JSON string only
-✅ Flexible → Recipients accept any dynamic fields
+Example usage:
+
+validateMandatoryFields(Map.of(
+    "notificationType", notificationType,
+    "triggerType",      triggerType,
+    "messageType",      messageType,
+    "language",         language,
+    "agencyNumber",     agencyNumber
+));
+
 
 ⸻
 
-Do you want me to also add validation here (e.g., throw if recipients list is empty or missing the mail property), or just keep it free-form and let the email service handle invalid payloads?
+This way:
+	•	✅ Only one method in your class.
+	•	✅ Works for any field list you pass.
+	•	✅ Logs and throws error with missing field names.
+
+Do you want me to also make this method return the validated (trimmed) values map, so you can directly use them without re-checking?
