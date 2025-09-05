@@ -1,194 +1,137 @@
-perfect — here’s a single-pass utility that:
-	•	parses the template JSON once
-	•	extracts subject & body
-	•	finds {{placeholders}} used in them
-	•	validates against your payload map
-	•	renders and returns subject/body (no second read)
+Perfect — if you want to keep it simple and just produce a JSON string (without creating DTO objects), we can build it directly. Below is a production-grade, thread-safe utility that:
+	•	Takes in your inputs (subject, body, recipients, etc.)
+	•	Uses Jackson ObjectMapper (thread-safe if reused as a static final)
+	•	Handles nulls gracefully
+	•	Returns the JSON String
 
-It’s stateless, thread-safe, and has clear errors.
+⸻
 
-package jp.co.neofirst.api.common.template;
+EmailPayloadBuilder.java
 
-import com.fasterxml.jackson.databind.JsonNode;
+package jp.co.neofirst.api.common.util;
+
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 
-import java.util.*;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+import java.util.List;
+import java.util.Map;
 
 /**
- * One-shot template processor:
- *  - Parse template JSON (once)
- *  - Extract subject/body
- *  - Validate {{placeholders}} against provided map
- *  - Render and return subject/body
- *
- * Expected JSON (any of these):
- * {
- *   "content": { "subject": "...", "body": "..." }
- * }
- * or
- * { "subject": "...", "body": "..." }
- * or bodyText/bodyHtml alternatives inside "content".
+ * Utility to build JSON payloads for Email Service.
+ * Thread-safe (uses static final ObjectMapper).
  */
-public final class TemplateProcessor {
+public final class EmailPayloadBuilder {
 
-    private static final ObjectMapper M = new ObjectMapper();
-    // {{ key }} ; keys allow letters, digits, dot, underscore, hyphen
-    private static final Pattern PH_PATTERN = Pattern.compile("\\{\\{\\s*([A-Za-z0-9._-]+)\\s*}}");
+    // Thread-safe ObjectMapper instance
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    private TemplateProcessor() {}
-
-    /** Result after processing. */
-    public static final class Result {
-        private final String subject;
-        private final String body;
-
-        public Result(String subject, String body) {
-            this.subject = subject == null ? "" : subject;
-            this.body = body == null ? "" : body;
-        }
-        public String getSubject() { return subject; }
-        public String getBody() { return body; }
-        @Override public String toString() {
-            return "Result{subject='" + subject + "', body='" + body + "'}";
-        }
-    }
-
-    /** Thrown when required placeholders are missing/blank in strict mode. */
-    public static final class MissingPlaceholdersException extends RuntimeException {
-        private final List<String> missingKeys;
-        public MissingPlaceholdersException(String msg, List<String> missingKeys) {
-            super(msg);
-            this.missingKeys = List.copyOf(missingKeys);
-        }
-        public List<String> getMissingKeys() { return missingKeys; }
-    }
-
-    /** Thrown when template JSON cannot be parsed. */
-    public static final class TemplateParseException extends RuntimeException {
-        public TemplateParseException(String msg, Throwable cause) { super(msg, cause); }
-    }
+    // Prevent instantiation
+    private EmailPayloadBuilder() {}
 
     /**
-     * Process the template in a single pass.
+     * Builds JSON payload string for Email Service.
      *
-     * @param templateJson  full template JSON string
-     * @param placeholders  map from payload (keys must match tokens)
-     * @param strict        if true, throws when any required placeholder is missing/blank;
-     *                      if false, missing placeholders become empty strings
-     * @return subject and body rendered
+     * @param requestId   unique id (UUID or correlationId)
+     * @param fromAddress sender email
+     * @param fromName    sender display name
+     * @param replyAddress reply-to email
+     * @param subject     rendered subject
+     * @param bodyText    plain text body
+     * @param bodyHtml    html body (can be null)
+     * @param deliveryMailAddressPropertyName key in deliveryData for recipient address
+     * @param recipients  list of recipient maps (each map contains required and optional fields)
+     * @param oneClickUnsub true/false
+     * @return JSON string ready to POST
+     * @throws Exception if building fails
      */
-    public static Result process(String templateJson, Map<String, ?> placeholders, boolean strict) {
-        Objects.requireNonNull(templateJson, "templateJson must not be null");
-        final Map<String, ?> values = (placeholders == null) ? Map.of() : placeholders;
-
-        final String subject;
-        final String body;
-
+    public static String buildEmailPayload(String requestId,
+                                           String fromAddress,
+                                           String fromName,
+                                           String replyAddress,
+                                           String subject,
+                                           String bodyText,
+                                           String bodyHtml,
+                                           String deliveryMailAddressPropertyName,
+                                           List<Map<String, Object>> recipients,
+                                           boolean oneClickUnsub) throws Exception {
         try {
-            JsonNode root = M.readTree(templateJson);
-            JsonNode content = root.path("content");
+            ObjectNode root = MAPPER.createObjectNode();
 
-            subject = textFirstNonBlank(
-                    content.path("subject"),
-                    root.path("subject")
-            );
+            root.put("requestId", requestId);
+            root.put("fromAddress", fromAddress);
+            root.put("fromName", fromName);
+            root.put("replyAddress", replyAddress);
+            root.put("subject", subject);
+            root.put("bodyText", bodyText);
+            if (bodyHtml != null) {
+                root.put("bodyHtml", bodyHtml);
+            }
+            root.put("deliveryMailAddressPropertyName", deliveryMailAddressPropertyName);
+            root.put("count", recipients != null ? recipients.size() : 0);
+            root.put("oneClickUnsubscriptionReady", oneClickUnsub);
 
-            String bodyCandidate = textFirstNonBlank(
-                    content.path("body"),
-                    content.path("bodyText"),
-                    content.path("bodyHtml"),
-                    root.path("body")
-            );
-
-            // collect required placeholders from subject/body only once
-            Set<String> required = new LinkedHashSet<>();
-            collect(required, subject);
-            collect(required, bodyCandidate);
-
-            // validate or be lenient
-            if (strict) {
-                List<String> missing = findMissing(required, values);
-                if (!missing.isEmpty()) {
-                    throw new MissingPlaceholdersException("Missing placeholders: " + String.join(", ", missing), missing);
+            // Recipients array
+            ArrayNode deliveryData = MAPPER.createArrayNode();
+            if (recipients != null) {
+                for (Map<String, Object> r : recipients) {
+                    deliveryData.add(MAPPER.valueToTree(r));
                 }
             }
+            root.set("deliveryData", deliveryData);
 
-            // render (replace {{key}} with value or empty if missing)
-            String renderedSubject = replace(subject, values);
-            String renderedBody    = replace(bodyCandidate, values);
+            return MAPPER.writeValueAsString(root);
 
-            return new Result(renderedSubject, renderedBody);
-
-        } catch (MissingPlaceholdersException e) {
-            throw e; // bubble 400-style error
         } catch (Exception e) {
-            throw new TemplateParseException("Failed to parse or process template JSON", e);
+            // Log error (use your logger instead of printStackTrace in real code)
+            System.err.println("Failed to build Email payload: " + e.getMessage());
+            throw e;
         }
-    }
-
-    // ---------------- helpers ----------------
-
-    private static String textFirstNonBlank(JsonNode... nodes) {
-        for (JsonNode n : nodes) {
-            if (n != null && !n.isMissingNode() && !n.isNull()) {
-                String v = n.asText("");
-                if (!v.isBlank()) return v;
-            }
-        }
-        return "";
-    }
-
-    private static void collect(Set<String> keys, String text) {
-        if (text == null || text.isEmpty()) return;
-        Matcher m = PH_PATTERN.matcher(text);
-        while (m.find()) keys.add(m.group(1));
-    }
-
-    private static List<String> findMissing(Set<String> required, Map<String, ?> values) {
-        if (required.isEmpty()) return List.of();
-        List<String> missing = new ArrayList<>();
-        for (String k : required) {
-            Object v = values.get(k);
-            if (v == null || v.toString().trim().isEmpty()) {
-                missing.add(k);
-            }
-        }
-        return missing;
-    }
-
-    private static String replace(String template, Map<String, ?> values) {
-        if (template == null || template.isEmpty() || values.isEmpty()) return template;
-        Matcher m = PH_PATTERN.matcher(template);
-        StringBuffer sb = new StringBuffer();
-        while (m.find()) {
-            String key = m.group(1);
-            Object val = values.get(key);
-            String repl = (val == null) ? "" : String.valueOf(val);
-            // escape for regex
-            repl = repl.replace("\\", "\\\\").replace("$", "\\$");
-            m.appendReplacement(sb, repl);
-        }
-        m.appendTail(sb);
-        return sb.toString();
     }
 }
 
-How to call it from your service (single read → validate → render)
 
-String templateJson = blobTemplateClient.readAsString(templateBlobName);
+⸻
 
-// strict = true → 400 if any required placeholder missing
-TemplateProcessor.Result rendered =
-        TemplateProcessor.process(templateJson, request.getPlaceholders(), true);
+Example Usage
 
-String subject = rendered.getSubject();
-String body    = rendered.getBody();
-// → build email payload and dispatch
+import java.util.*;
 
-Why this fits your ask
-	•	One method call, one parse, one pass.
-	•	Returns the rendered subject/body directly; you don’t re-parse.
-	•	Toggle strict to choose fail-fast vs. lenient behavior.
-	•	Clear exceptions for handler/@ControllerAdvice to map to 400.
+public class TestEmailPayload {
+    public static void main(String[] args) throws Exception {
+        // Example recipient
+        Map<String, Object> rec = new HashMap<>();
+        rec.put("Customer.synergyid", 1);
+        rec.put("Customer.mailaddress", "foo@example.com");
+        rec.put("Customer.name", "山田 太郎");
+
+        List<Map<String, Object>> recipients = List.of(rec);
+
+        String payload = EmailPayloadBuilder.buildEmailPayload(
+                UUID.randomUUID().toString(),      // requestId
+                "support@example.com",             // from
+                "カスタマーサポート",                 // fromName
+                "reply@example.com",               // reply
+                "ご契約成立のお知らせ",                // subject
+                "お客様の契約が成立しました。",          // bodyText
+                null,                              // bodyHtml (optional)
+                "Customer.mailaddress",            // deliveryMailAddressPropertyName
+                recipients,
+                true                               // oneClickUnsubscriptionReady
+        );
+
+        System.out.println(payload);
+    }
+}
+
+
+⸻
+
+✅ Thread-safe → ObjectMapper is static final
+✅ Error handled → Catches exception, logs, rethrows
+✅ Simple → No DTOs, returns JSON string only
+✅ Flexible → Recipients accept any dynamic fields
+
+⸻
+
+Do you want me to also add validation here (e.g., throw if recipients list is empty or missing the mail property), or just keep it free-form and let the email service handle invalid payloads?
