@@ -1,4 +1,8 @@
-Here’s a compact, production-friendly way to POST JSON with RestTemplate, with clear error handling and timeouts (works on Spring Boot 3.4.x, using the RestTemplate bean you already wired).
+Got it—no custom exception. Here’s a tiny, production-friendly helper that:
+	•	POSTs a JSON string with RestTemplate
+	•	Returns a Map<String,Object> like: {"ok": true, "statusCode": 200, "body": ""}
+	•	Treats any 2xx as success; 400/500 (or any non-2xx) as error (but still returns the map)
+	•	Catches timeouts/IO and unexpected errors cleanly
 
 package jp.co.neofirst.api.common.http;
 
@@ -8,13 +12,12 @@ import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestTemplate;
 
+import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Minimal HTTP client for POSTing JSON payloads using RestTemplate.
- * - Thread-safe via constructor-injected RestTemplate bean.
- * - Converts non-2xx responses into a checked exception with status & body.
- * - Distinguishes timeouts/connection errors from server errors.
+ * Minimal JSON POST client using RestTemplate.
+ * Returns a simple result map instead of throwing custom exceptions.
  */
 @Service
 public class HttpJsonClient {
@@ -22,125 +25,86 @@ public class HttpJsonClient {
     private final RestTemplate restTemplate;
 
     public HttpJsonClient(RestTemplate restTemplate) {
-        this.restTemplate = restTemplate;
+        this.restTemplate = restTemplate; // thread-safe bean you already configured
     }
 
     /**
-     * POSTs a JSON string to a target URL and returns the response body (String).
-     *
-     * @param url        target endpoint
-     * @param jsonBody   request body as a JSON string
-     * @param headersMap optional extra headers (e.g., X-Request-Id). May be null.
-     * @return response body as String (empty string if none)
-     * @throws DownstreamServiceException when any non-2xx or client/network error occurs
+     * POST a JSON string and return a compact result map:
+     *  - ok: boolean  (true if 2xx)
+     *  - statusCode: int
+     *  - body: String (response body if present, else "")
+     *  - error: String (present only on failures/timeouts/unexpected)
      */
-    public String postJson(String url, String jsonBody, Map<String, String> headersMap)
-            throws DownstreamServiceException {
+    public Map<String, Object> postJson(String url, String jsonBody, Map<String, String> extraHeaders) {
+        Map<String, Object> result = new HashMap<>();
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.setAccept(java.util.List.of(MediaType.APPLICATION_JSON));
-        if (headersMap != null) {
-            headersMap.forEach(headers::set);
-        }
+        if (extraHeaders != null) extraHeaders.forEach(headers::set);
 
         HttpEntity<String> entity = new HttpEntity<>(jsonBody, headers);
 
         try {
-            ResponseEntity<String> resp =
-                    restTemplate.exchange(url, HttpMethod.POST, entity, String.class);
+            ResponseEntity<String> resp = restTemplate.exchange(url, HttpMethod.POST, entity, String.class);
 
-            // Accept only 2xx
-            if (resp.getStatusCode().is2xxSuccessful()) {
-                return resp.getBody() != null ? resp.getBody() : "";
-            }
-            // Should not reach here because exchange would not throw for 3xx;
-            // treat any non-2xx as failure.
-            throw new DownstreamServiceException(
-                    resp.getStatusCode().value(),
-                    "Non-success HTTP status: " + resp.getStatusCode(),
-                    resp.getBody()
-            );
+            boolean ok = resp.getStatusCode().is2xxSuccessful();
+            result.put("ok", ok);
+            result.put("statusCode", resp.getStatusCode().value());
+            result.put("body", resp.getBody() == null ? "" : resp.getBody());
+            return result;
 
         } catch (HttpStatusCodeException e) {
-            // Server returned 4xx/5xx; capture status + error body for diagnostics
-            throw new DownstreamServiceException(
-                    e.getRawStatusCode(),
-                    "HTTP error while calling downstream: " + e.getStatusText(),
-                    e.getResponseBodyAsString(),
-                    e
-            );
+            // Downstream returned 4xx/5xx
+            result.put("ok", false);
+            result.put("statusCode", e.getRawStatusCode());
+            result.put("body", e.getResponseBodyAsString() == null ? "" : e.getResponseBodyAsString());
+            result.put("error", "HTTP " + e.getRawStatusCode() + " " + e.getStatusText());
+            return result;
+
         } catch (ResourceAccessException e) {
-            // Timeouts / connection problems
-            throw new DownstreamServiceException(
-                    504, // represent as gateway-timeout-ish
-                    "I/O error (timeout or connection issue) calling downstream",
-                    null,
-                    e
-            );
+            // Timeouts / DNS / connection issues
+            result.put("ok", false);
+            result.put("statusCode", 504); // represent as timeout-ish
+            result.put("body", "");
+            result.put("error", "I/O error (timeout/connection): " + e.getMessage());
+            return result;
+
         } catch (Exception e) {
-            // Anything else
-            throw new DownstreamServiceException(
-                    500,
-                    "Unexpected error calling downstream service",
-                    null,
-                    e
-            );
+            // Any unexpected error
+            result.put("ok", false);
+            result.put("statusCode", 500);
+            result.put("body", "");
+            result.put("error", "Unexpected error: " + e.getMessage());
+            return result;
         }
     }
 }
 
-Custom exception (simple & informative)
-
-package jp.co.neofirst.api.common.http;
-
-/**
- * Wraps downstream HTTP failures with status code and (optional) response body.
- */
-public class DownstreamServiceException extends Exception {
-    private final int statusCode;
-    private final String responseBody;
-
-    public DownstreamServiceException(int statusCode, String message, String responseBody) {
-        super(message);
-        this.statusCode = statusCode;
-        this.responseBody = responseBody;
-    }
-
-    public DownstreamServiceException(int statusCode, String message, String responseBody, Throwable cause) {
-        super(message, cause);
-        this.statusCode = statusCode;
-        this.responseBody = responseBody;
-    }
-
-    public int getStatusCode()     { return statusCode; }
-    public String getResponseBody(){ return responseBody; }
-}
-
-How to use it (example from a service)
+How you’d call it
 
 @Service
 public class NotificationDispatcher {
-
     private final HttpJsonClient http;
 
     public NotificationDispatcher(HttpJsonClient http) {
         this.http = http;
     }
 
-    public String sendEmailRequest(String emailApiUrl, String payloadJson, String requestId)
-            throws DownstreamServiceException {
-
-        Map<String, String> headers = Map.of(
-                "X-Request-Id", requestId,
-                "X-Correlation-Id", requestId
+    public void send(String url, String payloadJson, String requestId) {
+        Map<String, Object> res = http.postJson(
+            url,
+            payloadJson,
+            Map.of("X-Request-Id", requestId, "X-Correlation-Id", requestId)
         );
 
-        // Will throw DownstreamServiceException on any error; caller can catch and decide (retry / DLQ / etc.)
-        return http.postJson(emailApiUrl, payloadJson, headers);
+        // simple handling
+        if (!(Boolean) res.get("ok")) {
+            // log + decide retry/DLQ
+            System.err.println("Downstream failed: status=" + res.get("statusCode")
+                    + " error=" + res.getOrDefault("error","") );
+        }
     }
 }
 
-Notes:
-	•	Timeouts are controlled by your RestTemplate bean (SimpleClientHttpRequestFactory), so this code stays clean.
-	•	If you want to treat specific HTTP codes differently (e.g., 400 vs 500), catch DownstreamServiceException and inspect getStatusCode() / getResponseBody().
+This keeps it simple, thread-safe (shared RestTemplate bean), and easy to branch on success vs. error without custom exceptions.
