@@ -1,47 +1,172 @@
-Got it 👍 You don’t need a separate utility class, just a single method inside your service or resolver.
-Here’s a simple generic method that checks required fields and throws if any are missing:
+Here you go—copy-paste ready. It gives you:
+	1.	A RestTemplate bean with sane timeouts
+	2.	A tiny HttpPostClient service that does a blocking POST, returns body on 200 OK, and throws for 4xx/5xx/timeouts—with clear logging.
 
-private void validateMandatoryFields(Map<String, ?> fields) {
-    List<String> missing = new ArrayList<>();
+⸻
 
-    for (Map.Entry<String, ?> entry : fields.entrySet()) {
-        String name = entry.getKey();
-        Object val  = entry.getValue();
+1) RestClientConfig.java — Bean
 
-        boolean invalid = (val == null) ||
-                          (val instanceof CharSequence && ((CharSequence) val).toString().trim().isEmpty());
+package your.pkg.config;
 
-        if (invalid) {
-            missing.add(name);
-        }
-    }
+import org.springframework.boot.web.client.RestTemplateBuilder;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.web.client.RestTemplate;
 
-    if (!missing.isEmpty()) {
-        String msg = "Missing or blank mandatory fields: " + String.join(", ", missing);
-        logger.error(msg); // use your logger
-        throw new CustomValidationException(msg);
+import java.time.Duration;
+
+/**
+ * Provides a shared RestTemplate bean with conservative production defaults.
+ * Thread-safe to reuse across services.
+ */
+@Configuration
+public class RestClientConfig {
+
+    @Bean
+    public RestTemplate restTemplate(RestTemplateBuilder builder) {
+        return builder
+                .setConnectTimeout(Duration.ofSeconds(3))  // TCP connect timeout
+                .setReadTimeout(Duration.ofSeconds(10))    // server response timeout
+                .build();
     }
 }
 
 
 ⸻
 
-Example usage:
+2) HttpPostClient.java — Service to call POST and wait for response
 
-validateMandatoryFields(Map.of(
-    "notificationType", notificationType,
-    "triggerType",      triggerType,
-    "messageType",      messageType,
-    "language",         language,
-    "agencyNumber",     agencyNumber
-));
+package your.pkg.http;
+
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.*;
+import org.springframework.stereotype.Service;
+import org.springframework.web.client.HttpStatusCodeException;
+import org.springframework.web.client.ResourceAccessException;
+import org.springframework.web.client.RestTemplate;
+
+import java.util.Map;
+import java.util.Objects;
+
+/**
+ * Minimal blocking POST client.
+ * - Sends JSON payload
+ * - Waits for response
+ * - Returns body on 2xx
+ * - Throws descriptive exceptions for 4xx/5xx/timeouts
+ */
+@Service
+@RequiredArgsConstructor
+@Slf4j
+public class HttpPostClient {
+
+    private final RestTemplate restTemplate;
+
+    /**
+     * POST JSON and return response body if HTTP 2xx, otherwise throw.
+     *
+     * @param url       absolute URL of the target endpoint
+     * @param jsonBody  JSON string to send
+     * @param headers   optional extra headers (may be null)
+     * @return          response body as String (never null if 2xx)
+     * @throws RuntimeException on non-2xx or connectivity errors
+     */
+    public String postJson(String url, String jsonBody, Map<String, String> headers) {
+        Objects.requireNonNull(url, "url must not be null");
+        Objects.requireNonNull(jsonBody, "jsonBody must not be null");
+
+        HttpHeaders httpHeaders = new HttpHeaders();
+        httpHeaders.setContentType(MediaType.APPLICATION_JSON);
+        if (headers != null) {
+            headers.forEach(httpHeaders::add);
+        }
+
+        HttpEntity<String> entity = new HttpEntity<>(jsonBody, httpHeaders);
+
+        try {
+            ResponseEntity<String> resp = restTemplate.postForEntity(url, entity, String.class);
+
+            if (resp.getStatusCode().is2xxSuccessful()) {
+                String body = resp.getBody();
+                // Return empty string rather than null to keep callers simple
+                return (body == null) ? "" : body;
+            }
+
+            // Non-2xx without HttpStatusCodeException (rare, but be explicit)
+            String msg = "POST " + url + " returned non-2xx: " + resp.getStatusCode();
+            log.error(msg);
+            throw new RuntimeException(msg);
+
+        } catch (HttpStatusCodeException e) {
+            // Server returned 4xx/5xx. Include response body for diagnostics.
+            String msg = "POST " + url + " failed: " + e.getStatusCode()
+                       + " body=" + safeSnippet(e.getResponseBodyAsString());
+            log.error(msg);
+            throw new RuntimeException(msg, e);
+
+        } catch (ResourceAccessException e) {
+            // Timeouts, DNS, connection refused, etc.
+            String msg = "POST " + url + " connectivity error: " + e.getMessage();
+            log.error(msg);
+            throw new RuntimeException(msg, e);
+
+        } catch (Exception e) {
+            // Catch-all to avoid leaking unchecked details to callers
+            String msg = "POST " + url + " unexpected error: " + e.getMessage();
+            log.error(msg, e);
+            throw new RuntimeException(msg, e);
+        }
+    }
+
+    /** Trim very long server error bodies to keep logs readable. */
+    private static String safeSnippet(String s) {
+        if (s == null) return "null";
+        final int LIMIT = 2_000;
+        return s.length() <= LIMIT ? s : s.substring(0, LIMIT) + "...(truncated)";
+    }
+}
 
 
 ⸻
 
-This way:
-	•	✅ Only one method in your class.
-	•	✅ Works for any field list you pass.
-	•	✅ Logs and throws error with missing field names.
+3) Example usage (any @Service or @Controller)
 
-Do you want me to also make this method return the validated (trimmed) values map, so you can directly use them without re-checking?
+import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Service;
+
+import java.util.Map;
+
+@Service
+@RequiredArgsConstructor
+public class SomeBusinessService {
+
+    private final your.pkg.http.HttpPostClient http;
+
+    public void callExternalApi() {
+        String url = "https://api.example.com/v1/process";
+        String json = """
+            {
+              "foo": "bar",
+              "count": 1
+            }
+            """;
+
+        // Optional headers (add correlation-id, auth, etc.)
+        Map<String, String> hdrs = Map.of(
+            "X-Correlation-Id", java.util.UUID.randomUUID().toString()
+        );
+
+        // This will block until response arrives.
+        // If HTTP 2xx -> returns body; else -> throws RuntimeException.
+        String responseBody = http.postJson(url, json, hdrs);
+
+        // Continue on success...
+        System.out.println("OK: " + responseBody);
+    }
+}
+
+Notes
+	•	Thread-safe: RestTemplate is stateless and reused; method has no shared mutable state.
+	•	Error handling: 4xx/5xx/timeouts produce clear exceptions with log entries.
+	•	If you later need retries/circuit breakers, wrap http.postJson(...) with Resilience4j.
