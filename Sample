@@ -1,61 +1,7 @@
-Below is your same flow (1) get token → (2) POST delivery → (3) poll status, now with Spring Cache + Caffeine (production-grade, no synchronized/volatile). Copy-paste as is.
+package jp.co.neo.notification.service.notification.impl;
 
-pom.xml (add caching deps)
-
-<dependencies>
-  <!-- your existing deps -->
-
-  <!-- Spring Cache starter -->
-  <dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-cache</artifactId>
-  </dependency>
-
-  <!-- Caffeine cache -->
-  <dependency>
-    <groupId>com.github.ben-manes.caffeine</groupId>
-    <artifactId>caffeine</artifactId>
-  </dependency>
-</dependencies>
-
-Enable caching (once)
-
-// e.g., in your Spring Boot application class
-import org.springframework.cache.annotation.EnableCaching;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
-
-@EnableCaching
-@SpringBootApplication
-public class NotificationApiApplication { }
-
-CacheConfig (TTL ~59m so we refresh before 1h expiry)
-
-package jp.co.neo.notification.config;
-
-import com.github.benmanes.caffeine.cache.Caffeine;
-import org.springframework.cache.CacheManager;
-import org.springframework.cache.caffeine.CaffeineCacheManager;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-
-import java.util.concurrent.TimeUnit;
-
-@Configuration
-public class CacheConfig {
-  @Bean
-  public CacheManager cacheManager() {
-    CaffeineCacheManager manager = new CaffeineCacheManager("emailToken");
-    manager.setCaffeine(Caffeine.newBuilder()
-        .maximumSize(100)
-        .expireAfterWrite(59, TimeUnit.MINUTES)); // refresh ~1m before 1h expiry
-    return manager;
-  }
-}
-
-TokenClient (calls OAuth token endpoint)
-
-package jp.co.neo.notification.notificationapi;
-
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.*;
 import org.springframework.stereotype.Component;
 import org.springframework.util.LinkedMultiValueMap;
@@ -70,341 +16,80 @@ import java.util.Map;
 
 @Component
 public class TokenClient {
-  private final RestTemplate rest;
-  public TokenClient(RestTemplate rest) { this.rest = rest; }
 
-  public TokenResponse fetchToken(String authUrl,
-                                  String clientId,
-                                  String clientSecret,
-                                  String scope,
-                                  String audience) {
+    private final RestTemplate rest;
 
-    String basic = Base64.getEncoder()
-        .encodeToString((clientId + ":" + clientSecret).getBytes(StandardCharsets.UTF_8));
+    // Option A: keep these in application.yml and inject
+    @Value("${email.auth.clientId}")
+    private String clientId;
 
-    HttpHeaders headers = new HttpHeaders();
-    headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
-    headers.setAccept(java.util.List.of(MediaType.APPLICATION_JSON));
-    headers.set(HttpHeaders.AUTHORIZATION, "Basic " + basic);
+    @Value("${email.auth.clientSecret}")
+    private String clientSecret;
 
-    MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
-    form.add("grant_type", "client_credentials");
-    if (scope != null && !scope.isBlank()) form.add("scope", scope);
-    if (audience != null && !audience.isBlank()) form.add("audience", audience);
+    @Value("${email.auth.scope}")     // e.g. "mail:send mail:result"
+    private String scope;
 
-    HttpEntity<MultiValueMap<String, String>> req = new HttpEntity<>(form, headers);
+    @Value("${email.auth.audience}")  // e.g. "https://mail.paas.crmstyle.com"
+    private String audience;
 
-    try {
-      ResponseEntity<Map> resp = rest.postForEntity(authUrl, req, Map.class);
-      if (!resp.getStatusCode().is2xxSuccessful() || resp.getBody() == null) {
-        throw new IllegalStateException("Token HTTP " + resp.getStatusCodeValue());
-      }
-      Object at = resp.getBody().get("access_token");
-      Object exp = resp.getBody().get("expires_in");
-      if (!(at instanceof String)) throw new IllegalStateException("No access_token in token response");
-      int expiresIn = (exp instanceof Number) ? ((Number) exp).intValue() : 3600;
-      return new TokenResponse((String) at, expiresIn);
-    } catch (HttpStatusCodeException e) {
-      throw new IllegalStateException("Token HTTP " + e.getRawStatusCode() + ": " + e.getResponseBodyAsString(), e);
-    } catch (ResourceAccessException e) {
-      throw new IllegalStateException("Token I/O: " + e.getMessage(), e);
+    public TokenClient(RestTemplate restTemplate) {
+        this.rest = restTemplate;
     }
-  }
 
-  public static final class TokenResponse {
-    public final String accessToken;
-    public final int expiresInSeconds;
-    public TokenResponse(String accessToken, int expiresInSeconds) {
-      this.accessToken = accessToken;
-      this.expiresInSeconds = expiresInSeconds;
-    }
-  }
-}
+    /**
+     * Fetch OAuth token using client_credentials.
+     * Reads clientId/secret/scope/audience from properties above.
+     *
+     * @param authUrl e.g. https://auth.paas.crmstyle.com/oauth2/token
+     */
+    public TokenResponse fetchToken(String authUrl) {
+        // Authorization: Basic base64(clientId:clientSecret)
+        String basic = clientId + ":" + clientSecret;
+        String basicB64 = Base64.getEncoder()
+                                .encodeToString(basic.getBytes(StandardCharsets.UTF_8));
 
-TokenService (Spring Cache wrapper; no manual locking)
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("Authorization", "Basic " + basicB64);
+        headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
+        headers.setAccept(java.util.List.of(MediaType.APPLICATION_JSON));
 
-package jp.co.neo.notification.notificationapi;
+        MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
+        form.add("grant_type", "client_credentials");
+        if (scope != null && !scope.isBlank())     form.add("scope", scope);
+        if (audience != null && !audience.isBlank()) form.add("audience", audience);
 
-import org.springframework.cache.annotation.CacheEvict;
-import org.springframework.cache.annotation.Cacheable;
-import org.springframework.stereotype.Service;
+        HttpEntity<MultiValueMap<String, String>> req = new HttpEntity<>(form, headers);
 
-@Service
-public class TokenService {
-  private final TokenClient tokenClient;
-  public TokenService(TokenClient tokenClient) { this.tokenClient = tokenClient; }
+        try {
+            ResponseEntity<Map<String, Object>> resp = rest.exchange(
+                authUrl, HttpMethod.POST, req,
+                new ParameterizedTypeReference<Map<String, Object>>() {}
+            );
 
-  /** Cache key kept constant for single client. If you have multiple clients, include clientId in key. */
-  @Cacheable(value = "emailToken", key = "'bearer'")
-  public String getBearerToken(String authUrl,
-                               String clientId,
-                               String clientSecret,
-                               String scope,
-                               String audience) {
-    TokenClient.TokenResponse t = tokenClient.fetchToken(authUrl, clientId, clientSecret, scope, audience);
-    return "Bearer " + t.accessToken; // cached ~59m by Caffeine
-  }
+            if (!resp.getStatusCode().is2xxSuccessful() || resp.getBody() == null) {
+                throw new IllegalStateException("Token HTTP " + resp.getStatusCode());
+            }
 
-  /** Invalidate after a 401 to force refresh. */
-  @CacheEvict(value = "emailToken", key = "'bearer'")
-  public void evictBearer() { /* no-op */ }
-}
+            Map<String, Object> body = resp.getBody();
+            Object at  = body.get("access_token");
+            Object exp = body.get("expires_in");
 
-EmailGateway (same flow, now using cached token + 401 retry)
+            if (!(at instanceof String)) {
+                throw new IllegalStateException("No access_token in token response");
+            }
+            int expiresIn = (exp instanceof Number) ? ((Number) exp).intValue() : 3600;
 
-package jp.co.neo.notification.notificationapi;
+            return new TokenResponse((String) at, expiresIn);
 
-import org.springframework.http.*;
-import org.springframework.stereotype.Component;
-import org.springframework.web.client.HttpStatusCodeException;
-import org.springframework.web.client.ResourceAccessException;
-import org.springframework.web.client.RestTemplate;
-
-import java.nio.charset.StandardCharsets;
-import java.time.Duration;
-import java.time.Instant;
-import java.util.Base64;
-import java.util.HashMap;
-import java.util.Map;
-
-@Component
-public class EmailGateway {
-
-  private final RestTemplate rest;
-  private final TokenService tokenService;
-
-  public EmailGateway(RestTemplate restTemplate, TokenService tokenService) {
-    this.rest = restTemplate;
-    this.tokenService = tokenService;
-  }
-
-  public Map<String, Object> deliverEmail(
-      String authUrl, String mailBaseUrl, String userPathSegment,
-      String clientId, String clientSecret,
-      String scope, String audience,
-      String emailPayloadJson,
-      Duration pollEvery, Duration maxWait
-  ) {
-    Map<String, Object> result = new HashMap<>();
-    result.put("ok", false);
-
-    // 1) token (from cache)
-    String bearer = tokenService.getBearerToken(authUrl, clientId, clientSecret, scope, audience);
-
-    // 2) send email
-    Map<String, Object> send = sendEmail(mailBaseUrl, userPathSegment, bearer, emailPayloadJson);
-
-    // 401 -> evict + retry once
-    if (!(Boolean) send.get("ok") && ((Number) send.getOrDefault("statusCode", 0)).intValue() == 401) {
-      tokenService.evictBearer();
-      bearer = tokenService.getBearerToken(authUrl, clientId, clientSecret, scope, audience);
-      send = sendEmail(mailBaseUrl, userPathSegment, bearer, emailPayloadJson);
-    }
-    if (!(Boolean) send.get("ok")) {
-      result.put("stage", "send");
-      result.putAll(send);
-      return result;
-    }
-    int deliveryTaskId = (Integer) send.get("deliveryTaskId");
-
-    // 3) poll status
-    Map<String, Object> poll = pollDeliveryStatus(mailBaseUrl, userPathSegment, bearer,
-        deliveryTaskId, pollEvery, maxWait);
-
-    result.put("stage", "done");
-    result.putAll(poll);
-    return result;
-  }
-
-  public Map<String, Object> fetchAccessToken( // unchanged helper if you still want it public
-      String authUrl, String clientId, String clientSecret, String scope, String audience) {
-    Map<String, Object> out = new HashMap<>();
-    out.put("ok", false);
-
-    String basic = clientId + ":" + clientSecret;
-    String basicB64 = Base64.getEncoder().encodeToString(basic.getBytes(StandardCharsets.UTF_8));
-
-    HttpHeaders headers = new HttpHeaders();
-    headers.set("Authorization", "Basic " + basicB64);
-    headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
-    headers.setAccept(java.util.List.of(MediaType.APPLICATION_JSON));
-
-    String form = "grant_type=client_credentials"
-        + "&scope=" + urlEncode(scope)
-        + "&audience=" + urlEncode(audience);
-
-    HttpEntity<String> entity = new HttpEntity<>(form, headers);
-
-    try {
-      ResponseEntity<Map> resp = rest.exchange(authUrl, HttpMethod.POST, entity, Map.class);
-      boolean ok = resp.getStatusCode().is2xxSuccessful();
-      out.put("statusCode", resp.getStatusCodeValue());
-      if (!ok || resp.getBody() == null) { out.put("error", "Token call failed"); return out; }
-
-      Object at = resp.getBody().get("access_token");
-      Object typ = resp.getBody().get("token_type");
-      Object exp = resp.getBody().get("expires_in");
-
-      if (at == null || typ == null) { out.put("error", "Missing access_token/token_type"); return out; }
-
-      out.put("ok", true);
-      out.put("accessToken", at.toString());
-      out.put("tokenType", typ.toString());
-      out.put("expiresInSec", exp instanceof Number ? ((Number) exp).intValue() : null);
-      return out;
-
-    } catch (HttpStatusCodeException e) {
-      out.put("statusCode", e.getStatusCode().value());
-      out.put("error", "HTTP " + e.getStatusCode().value() + " token: " + safeBody(e));
-      return out;
-    } catch (ResourceAccessException e) {
-      out.put("statusCode", 0);
-      out.put("error", "IO token: " + e.getMessage());
-      return out;
-    } catch (Exception e) {
-      out.put("statusCode", 0);
-      out.put("error", "Unexpected token: " + e.getMessage());
-      return out;
-    }
-  }
-
-  public Map<String, Object> sendEmail(
-      String mailBaseUrl, String userPathSegment, String bearerToken, String emailPayloadJson) {
-
-    Map<String, Object> out = new HashMap<>();
-    out.put("ok", false);
-
-    String url = trimSlash(mailBaseUrl) + "/e/tymail/v1/" + trimSlash(userPathSegment) + "/mail/deliveries";
-
-    HttpHeaders headers = new HttpHeaders();
-    headers.setBearerAuth(bearerToken.replaceFirst("(?i)^Bearer\\s+", "").trim());
-    headers.setContentType(MediaType.APPLICATION_JSON);
-    headers.setAccept(java.util.List.of(MediaType.APPLICATION_JSON));
-
-    HttpEntity<String> entity = new HttpEntity<>(emailPayloadJson, headers);
-
-    try {
-      ResponseEntity<Map> resp = rest.exchange(url, HttpMethod.POST, entity, Map.class);
-      out.put("statusCode", resp.getStatusCodeValue());
-
-      if (!resp.getStatusCode().is2xxSuccessful() || resp.getBody() == null) {
-        out.put("error", "Send call failed");
-        return out;
-      }
-
-      Object dt = resp.getBody().get("deliveryTaskId");
-      if (!(dt instanceof Number)) {
-        out.put("error", "Missing deliveryTaskId");
-        return out;
-      }
-
-      out.put("ok", true);
-      out.put("deliveryTaskId", ((Number) dt).intValue());
-      out.put("raw", resp.getBody());
-      return out;
-
-    } catch (HttpStatusCodeException e) {
-      out.put("statusCode", e.getStatusCode().value());
-      out.put("error", "HTTP " + e.getStatusCode().value() + " send: " + safeBody(e));
-      return out;
-    } catch (ResourceAccessException e) {
-      out.put("statusCode", 0);
-      out.put("error", "IO send: " + e.getMessage());
-      return out;
-    } catch (Exception e) {
-      out.put("statusCode", 0);
-      out.put("error", "Unexpected send: " + e.getMessage());
-      return out;
-    }
-  }
-
-  public Map<String, Object> pollDeliveryStatus(
-      String mailBaseUrl, String userPathSegment, String bearerToken,
-      int deliveryTaskId, Duration pollEvery, Duration maxWait) {
-
-    Map<String, Object> out = new HashMap<>();
-    out.put("ok", false);
-    out.put("deliveryTaskId", deliveryTaskId);
-
-    String url = trimSlash(mailBaseUrl) + "/e/tymail/v1/" + trimSlash(userPathSegment)
-        + "/mail/deliveries/" + deliveryTaskId;
-
-    HttpHeaders headers = new HttpHeaders();
-    headers.setBearerAuth(bearerToken.replaceFirst("(?i)^Bearer\\s+", "").trim());
-    headers.setAccept(java.util.List.of(MediaType.APPLICATION_JSON));
-
-    Instant deadline = Instant.now().plus(maxWait);
-    int attempts = 0;
-    Map lastBody = null;
-    int lastCode = 0;
-
-    while (Instant.now().isBefore(deadline)) {
-      attempts++;
-      try {
-        ResponseEntity<Map> resp = rest.exchange(url, HttpMethod.GET, new HttpEntity<>(headers), Map.class);
-        lastCode = resp.getStatusCodeValue();
-
-        if (!resp.getStatusCode().is2xxSuccessful() || resp.getBody() == null) {
-          // transient; wait and retry
-        } else {
-          lastBody = resp.getBody();
-          String status = stringOrNull(lastBody.get("status")); // SENDING | COMPLETED | RESERVED | ERROR
-          if ("COMPLETED".equalsIgnoreCase(status)) {
-            out.put("ok", true);
-            out.put("finalStatus", status);
-            out.put("attempts", attempts);
-            out.put("lastBody", lastBody);
-            out.put("statusCode", lastCode);
-            return out;
-          }
-          if ("ERROR".equalsIgnoreCase(status)) {
-            out.put("ok", false);
-            out.put("finalStatus", status);
-            out.put("attempts", attempts);
-            out.put("lastBody", lastBody);
-            out.put("statusCode", lastCode);
-            out.put("error", "Delivery ended in ERROR");
-            return out;
-          }
+        } catch (HttpStatusCodeException e) {
+            throw new IllegalStateException(
+                "Token HTTP " + e.getStatusCode().value() + ": " + safeBody(e), e);
+        } catch (ResourceAccessException e) {
+            throw new IllegalStateException("Token I/O: " + e.getMessage(), e);
         }
-      } catch (HttpStatusCodeException e) {
-        lastCode = e.getStatusCode().value(); // 429/backoff handled by sleep
-      } catch (ResourceAccessException e) {
-        // network hiccup; keep polling
-      } catch (Exception e) {
-        // unexpected; keep polling until timeout
-      }
-
-      sleepQuietly(pollEvery);
     }
 
-    out.put("ok", false);
-    out.put("finalStatus", "TIMEOUT");
-    out.put("attempts", attempts);
-    out.put("lastBody", lastBody);
-    out.put("statusCode", lastCode);
-    out.put("error", "Polling timed out");
-    return out;
-  }
-
-  // helpers
-  private static String urlEncode(String s) {
-    try { return java.net.URLEncoder.encode(s, StandardCharsets.UTF_8); }
-    catch (Exception e) { return s; }
-  }
-  private static String trimSlash(String s) {
-    if (s == null) return "";
-    String t = s.trim();
-    while (t.endsWith("/")) t = t.substring(0, t.length() - 1);
-    return t;
-  }
-  private static String safeBody(HttpStatusCodeException e) {
-    try { return e.getResponseBodyAsString(); } catch (Exception ex) { return ""; }
-  }
-  private static void sleepQuietly(Duration d) {
-    try { Thread.sleep(Math.max(1, d.toMillis())); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
-  }
-  private static String stringOrNull(Object o) { return o == null ? null : String.valueOf(o); }
+    private static String safeBody(HttpStatusCodeException e) {
+        try { return e.getResponseBodyAsString(); } catch (Exception ignore) { return ""; }
+    }
 }
-
-This keeps your original design intact, adds Spring Boot–compatible caching for the token (with a safe ~59-minute TTL), and retries once after a 401 by evicting the cache and fetching a fresh token.
