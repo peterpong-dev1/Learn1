@@ -1,297 +1,78 @@
-Here’s the refactored class that:
-	•	keeps the same behavior and method signatures,
-	•	builds URLs with String.format(...) (no ad-hoc concatenation),
-	•	supports config-driven base URLs via an optional properties bean (if you wire it), while still accepting method params (so you don’t have to change your callers).
+Here are concise JavaDoc blocks you can paste directly above each method.
 
-package jp.co.neo.notification.notificationapi;
+/**
+ * Orchestrates the full email-delivery flow against the external Email API.
+ * <ol>
+ *   <li>Obtains an OAuth access token via {@link TokenService} (uses cache if enabled).</li>
+ *   <li>POSTs the email payload to the “deliveries” endpoint and retrieves a deliveryTaskId.</li>
+ *   <li>Polls the delivery-status endpoint until it reaches COMPLETED/ERROR or times out.</li>
+ * </ol>
+ *
+ * Thread-safety: stateless; safe to call concurrently.
+ *
+ * @param userName          path segment required by the Email API (tenant/user/agent id).
+ * @param emailPayloadJson  JSON payload to send to the Email API.
+ * @param customProperties  configuration object that provides base URLs and timing.
+ * @param tokenService      service used to fetch/cached OAuth bearer token.
+ * @param restTemplate      HTTP client used for all calls.
+ * @return result map with keys:
+ *         <ul>
+ *           <li><b>ok</b> (Boolean): overall success (true only if polling reached COMPLETED).</li>
+ *           <li><b>stage</b> (String): "send" on send failure, "done" after polling.</li>
+ *           <li><b>statusCode</b> (Integer): last HTTP status observed.</li>
+ *           <li><b>deliveryTaskId</b> (Integer): task id when available.</li>
+ *           <li><b>finalStatus</b> (String): COMPLETED | ERROR | TIMEOUT (when polled).</li>
+ *           <li><b>error</b> (String): error message when <b>ok</b> is false.</li>
+ *           <li><b>lastBody</b> (Map): last response body from status polling (when available).</li>
+ *         </ul>
+ */
 
-import org.springframework.http.*;
-import org.springframework.stereotype.Component;
-import org.springframework.web.client.HttpStatusCodeException;
-import org.springframework.web.client.ResourceAccessException;
-import org.springframework.web.client.RestTemplate;
+/**
+ * Sends an email by calling:
+ * <pre>
+ *   POST {mailBaseUrl}/e/tymail/v1/{userPathSegment}/mail/deliveries
+ * </pre>
+ * Requires a valid Bearer token. Does not retry internally (caller handles 401→token refresh).
+ *
+ * @param mailBaseUrl       Email API base URL (e.g., https://mail.paas.crmstyle.com).
+ * @param userPathSegment   path segment (tenant/user/agent id).
+ * @param bearerToken       OAuth access token (with or without "Bearer " prefix).
+ * @param emailPayloadJson  JSON body per provider spec.
+ * @param deliveryUrl       format string for the deliveries URL (e.g., "/e/tymail/v1/%s/mail/deliveries").
+ * @param rest              RestTemplate to use.
+ * @return map with keys:
+ *         <ul>
+ *           <li><b>ok</b> (Boolean): true if 2xx and deliveryTaskId present.</li>
+ *           <li><b>statusCode</b> (Integer): HTTP status.</li>
+ *           <li><b>deliveryTaskId</b> (Integer): task id when successful.</li>
+ *           <li><b>raw</b> (Map): raw response body on success.</li>
+ *           <li><b>error</b> (String): error description on failure.</li>
+ *         </ul>
+ */
 
-import java.nio.charset.StandardCharsets;
-import java.time.Duration;
-import java.time.Instant;
-import java.util.HashMap;
-import java.util.Map;
-
-@Component
-public class EmailServiceClient {
-
-  private final RestTemplate rest;
-  private final TokenService tokenService;
-
-  // Optional config-driven defaults (wire via constructor if you want)
-  private final String defaultMailBaseUrl; // e.g., https://mail.paas.crmstyle.com
-  private final String defaultUserPath;    // e.g., your-tenant-or-user
-
-  // URL templates (distinct, readable)
-  private static final String DELIVERIES_URL_TPL      = "%s/e/tymail/v1/%s/mail/deliveries";
-  private static final String DELIVERY_STATUS_URL_TPL = "%s/e/tymail/v1/%s/mail/deliveries/%d";
-
-  public EmailServiceClient(RestTemplate restTemplate,
-                            TokenService tokenService) {
-    this(restTemplate, tokenService, null, null);
-  }
-
-  public EmailServiceClient(RestTemplate restTemplate,
-                            TokenService tokenService,
-                            String defaultMailBaseUrl,
-                            String defaultUserPathSegment) {
-    this.rest = restTemplate;
-    this.tokenService = tokenService;
-    this.defaultMailBaseUrl = defaultMailBaseUrl; // can be null; then use method args
-    this.defaultUserPath = defaultUserPathSegment; // can be null; then use method args
-  }
-
-  public Map<String, Object> deliverEmail(
-      String authUrl, String mailBaseUrl, String userPathSegment,
-      String clientId, String clientSecret,
-      String scope, String audience,
-      String emailPayloadJson,
-      Duration pollEvery, Duration maxWait
-  ) {
-    Map<String, Object> result = new HashMap<>();
-    result.put("ok", false);
-
-    // resolve base/user from config if caller passed null/blank
-    String base = pickBaseUrl(mailBaseUrl);
-    String user = pickUserPath(userPathSegment);
-
-    // 1) token (from cache)
-    String bearer = tokenService.getBearerToken(authUrl, clientId, clientSecret, scope, audience);
-
-    // 2) send email
-    Map<String, Object> send = sendEmail(base, user, bearer, emailPayloadJson);
-
-    // 401 -> evict + retry once
-    if (Boolean.FALSE.equals(send.get("ok"))
-        && ((Number) send.getOrDefault("statusCode", 0)).intValue() == 401) {
-      tokenService.evictBearer();
-      bearer = tokenService.getBearerToken(authUrl, clientId, clientSecret, scope, audience);
-      send = sendEmail(base, user, bearer, emailPayloadJson);
-    }
-
-    if (Boolean.FALSE.equals(send.get("ok"))) {
-      result.put("stage", "send");
-      result.putAll(send);
-      return result;
-    }
-
-    int deliveryTaskId = ((Number) send.get("deliveryTaskId")).intValue();
-
-    // 3) poll status
-    Map<String, Object> poll = pollDeliveryStatus(base, user, bearer, deliveryTaskId, pollEvery, maxWait);
-
-    result.put("stage", "done");
-    result.putAll(poll);
-    return result;
-  }
-
-  /** POST /e/tymail/v1/{user}/mail/deliveries */
-  public Map<String, Object> sendEmail(
-      String mailBaseUrl, String userPathSegment, String bearerToken, String emailPayloadJson) {
-
-    Map<String, Object> out = new HashMap<>();
-    out.put("ok", false);
-
-    String url = String.format(DELIVERIES_URL_TPL, trimSlash(mailBaseUrl), trimSlash(userPathSegment));
-
-    HttpHeaders headers = new HttpHeaders();
-    headers.setBearerAuth(stripBearerPrefix(bearerToken));
-    headers.setContentType(MediaType.APPLICATION_JSON);
-    headers.setAccept(java.util.List.of(MediaType.APPLICATION_JSON));
-
-    HttpEntity<String> entity = new HttpEntity<>(emailPayloadJson, headers);
-
-    try {
-      ResponseEntity<Map<String, Object>> resp =
-          rest.exchange(url, HttpMethod.POST, entity, responseType());
-
-      out.put("statusCode", resp.getStatusCodeValue());
-
-      Map<String, Object> body = resp.getBody();
-      if (!resp.getStatusCode().is2xxSuccessful() || body == null) {
-        out.put("error", "Send call failed");
-        return out;
-      }
-
-      Integer taskId = asInt(body.get("deliveryTaskId"));
-      if (taskId == null) {
-        out.put("error", "Missing deliveryTaskId");
-        return out;
-      }
-
-      out.put("ok", true);
-      out.put("deliveryTaskId", taskId);
-      out.put("raw", body);
-      return out;
-
-    } catch (HttpStatusCodeException e) {
-      out.put("statusCode", e.getStatusCode().value());
-      out.put("error", "HTTP " + e.getStatusCode().value() + " send: " + safeBody(e));
-      return out;
-    } catch (ResourceAccessException e) {
-      out.put("statusCode", 0);
-      out.put("error", "IO send: " + e.getMessage());
-      return out;
-    } catch (Exception e) {
-      out.put("statusCode", 0);
-      out.put("error", "Unexpected send: " + e.getMessage());
-      return out;
-    }
-  }
-
-  /** GET /e/tymail/v1/{user}/mail/deliveries/{deliveryTaskId} with polling */
-  public Map<String, Object> pollDeliveryStatus(
-      String mailBaseUrl, String userPathSegment, String bearerToken,
-      int deliveryTaskId, Duration pollEvery, Duration maxWait) {
-
-    Map<String, Object> out = new HashMap<>();
-    out.put("ok", false);
-    out.put("deliveryTaskId", deliveryTaskId);
-
-    String url = String.format(DELIVERY_STATUS_URL_TPL,
-        trimSlash(mailBaseUrl), trimSlash(userPathSegment), deliveryTaskId);
-
-    HttpHeaders headers = new HttpHeaders();
-    headers.setBearerAuth(stripBearerPrefix(bearerToken));
-    headers.setAccept(java.util.List.of(MediaType.APPLICATION_JSON));
-
-    Instant deadline = Instant.now().plus(maxWait);
-    int attempts = 0;
-    Map<String, Object> lastBody = null;
-    int lastCode = 0;
-
-    while (Instant.now().isBefore(deadline)) {
-      attempts++;
-      try {
-        ResponseEntity<Map<String, Object>> resp =
-            rest.exchange(url, HttpMethod.GET, new HttpEntity<>(headers), responseType());
-        lastCode = resp.getStatusCodeValue();
-
-        Map<String, Object> body = resp.getBody();
-        if (resp.getStatusCode().is2xxSuccessful() && body != null) {
-          lastBody = body;
-          String status = asString(body.get("status")); // SENDING | COMPLETED | RESERVED | ERROR
-          if ("COMPLETED".equalsIgnoreCase(status)) {
-            out.put("ok", true);
-            out.put("finalStatus", status);
-            out.put("attempts", attempts);
-            out.put("lastBody", lastBody);
-            out.put("statusCode", lastCode);
-            return out;
-          }
-          if ("ERROR".equalsIgnoreCase(status)) {
-            out.put("ok", false);
-            out.put("finalStatus", status);
-            out.put("attempts", attempts);
-            out.put("lastBody", lastBody);
-            out.put("statusCode", lastCode);
-            out.put("error", "Delivery ended in ERROR");
-            return out;
-          }
-        }
-      } catch (HttpStatusCodeException e) {
-        lastCode = e.getStatusCode().value(); // 429/backoff handled by sleep
-      } catch (ResourceAccessException e) {
-        // network hiccup; keep polling
-      } catch (Exception e) {
-        // unexpected; keep polling until timeout
-      }
-
-      sleepQuietly(pollEvery);
-    }
-
-    out.put("ok", false);
-    out.put("finalStatus", "TIMEOUT");
-    out.put("attempts", attempts);
-    out.put("lastBody", lastBody);
-    out.put("statusCode", lastCode);
-    out.put("error", "Polling timed out");
-    return out;
-  }
-
-  // ---------- helpers (typed + null-safe) ----------
-
-  private static org.springframework.core.ParameterizedTypeReference<Map<String, Object>> responseType() {
-    return new org.springframework.core.ParameterizedTypeReference<>() {};
-  }
-
-  private static String stripBearerPrefix(String token) {
-    if (token == null) return "";
-    return token.replaceFirst("(?i)^Bearer\\s+", "").trim();
-  }
-
-  private static Integer asInt(Object o) {
-    if (o instanceof Number n) return n.intValue();
-    if (o instanceof String s) {
-      try { return Integer.parseInt(s.trim()); } catch (NumberFormatException ignore) { }
-    }
-    return null;
-  }
-
-  private static String asString(Object o) {
-    return (o == null) ? null : String.valueOf(o);
-  }
-
-  private static String trimSlash(String s) {
-    if (s == null) return "";
-    String t = s.trim();
-    while (t.endsWith("/")) t = t.substring(0, t.length() - 1);
-    return t;
-  }
-
-  private static void sleepQuietly(Duration d) {
-    try { Thread.sleep(Math.max(1, d.toMillis())); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
-  }
-
-  private static String safeBody(HttpStatusCodeException e) {
-    try { return e.getResponseBodyAsString(); } catch (Exception ex) { return ""; }
-  }
-
-  private String pickBaseUrl(String candidate) {
-    return (candidate != null && !candidate.isBlank()) ? candidate : (defaultMailBaseUrl != null ? defaultMailBaseUrl : "");
-  }
-
-  private String pickUserPath(String candidate) {
-    return (candidate != null && !candidate.isBlank()) ? candidate : (defaultUserPath != null ? defaultUserPath : "");
-  }
-}
-
-(Optional) make base URLs config-driven
-
-If you want to avoid passing mailBaseUrl/userPathSegment from callers, add a small properties class and wire it into the constructor that accepts defaults:
-
-// EmailApiProperties.java
-package jp.co.neo.notification.notificationapi;
-
-import lombok.Getter;
-import lombok.Setter;
-import org.springframework.boot.context.properties.ConfigurationProperties;
-import org.springframework.context.annotation.Configuration;
-
-@Getter @Setter
-@Configuration
-@ConfigurationProperties(prefix = "email.api")
-public class EmailApiProperties {
-  private String mailBaseUrl;     // https://mail.paas.crmstyle.com
-  private String userPathSegment; // your-tenant-or-user
-}
-
-# application.yml
-email:
-  api:
-    mailBaseUrl: "https://mail.paas.crmstyle.com"
-    userPathSegment: "your-tenant"
-
-// Wire into EmailServiceClient (e.g., via @Autowired)
-public EmailServiceClient(RestTemplate restTemplate,
-                          TokenService tokenService,
-                          EmailApiProperties props) {
-  this(restTemplate, tokenService, props.getMailBaseUrl(), props.getUserPathSegment());
-}
-
-This preserves all previous logic, fixes URL building, and lets you drive base URLs from config.
+/**
+ * Polls delivery status by calling:
+ * <pre>
+ *   GET {mailBaseUrl}/e/tymail/v1/{userPathSegment}/mail/deliveries/{deliveryTaskId}
+ * </pre>
+ * until the response field "status" becomes COMPLETED or ERROR, or until {@code maxWait} elapses.
+ * Handles transient HTTP/network issues by waiting {@code pollEvery} between attempts.
+ *
+ * @param mailBaseUrl       Email API base URL.
+ * @param userPathSegment   path segment (tenant/user/agent id).
+ * @param bearerToken       OAuth access token (with or without "Bearer " prefix).
+ * @param deliveryTaskId    id returned by the send call.
+ * @param pollEvery         delay between polls (e.g., Duration.ofSeconds(3)).
+ * @param maxWait           overall timeout for polling (e.g., Duration.ofSeconds(90)).
+ * @param deliveryStatusUrl format string for the status URL (e.g., "/e/tymail/v1/%s/mail/deliveries/%d").
+ * @param rest              RestTemplate to use.
+ * @return map with keys:
+ *         <ul>
+ *           <li><b>ok</b> (Boolean): true only if finalStatus == COMPLETED.</li>
+ *           <li><b>finalStatus</b> (String): COMPLETED | ERROR | TIMEOUT.</li>
+ *           <li><b>attempts</b> (Integer): number of polls performed.</li>
+ *           <li><b>lastBody</b> (Map): last response body seen (may be null).</li>
+ *           <li><b>statusCode</b> (Integer): last HTTP status seen.</li>
+ *           <li><b>error</b> (String): error detail when <b>ok</b> is false.</li>
+ *         </ul>
+ */
