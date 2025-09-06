@@ -1,95 +1,228 @@
-package jp.co.neo.notification.service.notification.impl;
+package jp.co.neo.notification.notificationapi;
 
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.*;
 import org.springframework.stereotype.Component;
-import org.springframework.util.LinkedMultiValueMap;
-import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestTemplate;
 
 import java.nio.charset.StandardCharsets;
-import java.util.Base64;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.HashMap;
 import java.util.Map;
 
 @Component
-public class TokenClient {
+public class EmailServiceClient {
 
-    private final RestTemplate rest;
+  private final RestTemplate rest;
+  private final TokenService tokenService;
 
-    // Option A: keep these in application.yml and inject
-    @Value("${email.auth.clientId}")
-    private String clientId;
+  public EmailServiceClient(RestTemplate restTemplate, TokenService tokenService) {
+    this.rest = restTemplate;
+    this.tokenService = tokenService;
+  }
 
-    @Value("${email.auth.clientSecret}")
-    private String clientSecret;
+  public Map<String, Object> deliverEmail(
+      String authUrl, String mailBaseUrl, String userPathSegment,
+      String clientId, String clientSecret,
+      String scope, String audience,
+      String emailPayloadJson,
+      Duration pollEvery, Duration maxWait
+  ) {
+    Map<String, Object> result = new HashMap<>();
+    result.put("ok", false);
 
-    @Value("${email.auth.scope}")     // e.g. "mail:send mail:result"
-    private String scope;
+    // 1) token (from cache)
+    String bearer = tokenService.getBearerToken(authUrl, clientId, clientSecret, scope, audience);
 
-    @Value("${email.auth.audience}")  // e.g. "https://mail.paas.crmstyle.com"
-    private String audience;
+    // 2) send email
+    Map<String, Object> send = sendEmail(mailBaseUrl, userPathSegment, bearer, emailPayloadJson);
 
-    public TokenClient(RestTemplate restTemplate) {
-        this.rest = restTemplate;
+    // 401 -> evict + retry once
+    if (Boolean.FALSE.equals(send.get("ok"))
+        && ((Number) send.getOrDefault("statusCode", 0)).intValue() == 401) {
+      tokenService.evictBearer();
+      bearer = tokenService.getBearerToken(authUrl, clientId, clientSecret, scope, audience);
+      send = sendEmail(mailBaseUrl, userPathSegment, bearer, emailPayloadJson);
     }
 
-    /**
-     * Fetch OAuth token using client_credentials.
-     * Reads clientId/secret/scope/audience from properties above.
-     *
-     * @param authUrl e.g. https://auth.paas.crmstyle.com/oauth2/token
-     */
-    public TokenResponse fetchToken(String authUrl) {
-        // Authorization: Basic base64(clientId:clientSecret)
-        String basic = clientId + ":" + clientSecret;
-        String basicB64 = Base64.getEncoder()
-                                .encodeToString(basic.getBytes(StandardCharsets.UTF_8));
+    if (Boolean.FALSE.equals(send.get("ok"))) {
+      result.put("stage", "send");
+      result.putAll(send);
+      return result;
+    }
 
-        HttpHeaders headers = new HttpHeaders();
-        headers.set("Authorization", "Basic " + basicB64);
-        headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
-        headers.setAccept(java.util.List.of(MediaType.APPLICATION_JSON));
+    int deliveryTaskId = ((Number) send.get("deliveryTaskId")).intValue();
 
-        MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
-        form.add("grant_type", "client_credentials");
-        if (scope != null && !scope.isBlank())     form.add("scope", scope);
-        if (audience != null && !audience.isBlank()) form.add("audience", audience);
+    // 3) poll status
+    Map<String, Object> poll = pollDeliveryStatus(
+        mailBaseUrl, userPathSegment, bearer, deliveryTaskId, pollEvery, maxWait);
 
-        HttpEntity<MultiValueMap<String, String>> req = new HttpEntity<>(form, headers);
+    result.put("stage", "done");
+    result.putAll(poll);
+    return result;
+  }
 
-        try {
-            ResponseEntity<Map<String, Object>> resp = rest.exchange(
-                authUrl, HttpMethod.POST, req,
-                new ParameterizedTypeReference<Map<String, Object>>() {}
-            );
+  /** POST /.../mail/deliveries */
+  public Map<String, Object> sendEmail(
+      String mailBaseUrl, String userPathSegment, String bearerToken, String emailPayloadJson) {
 
-            if (!resp.getStatusCode().is2xxSuccessful() || resp.getBody() == null) {
-                throw new IllegalStateException("Token HTTP " + resp.getStatusCode());
-            }
+    Map<String, Object> out = new HashMap<>();
+    out.put("ok", false);
 
-            Map<String, Object> body = resp.getBody();
-            Object at  = body.get("access_token");
-            Object exp = body.get("expires_in");
+    String url = trimSlash(mailBaseUrl) + "/e/tymail/v1/" + trimSlash(userPathSegment) + "/mail/deliveries";
 
-            if (!(at instanceof String)) {
-                throw new IllegalStateException("No access_token in token response");
-            }
-            int expiresIn = (exp instanceof Number) ? ((Number) exp).intValue() : 3600;
+    HttpHeaders headers = new HttpHeaders();
+    headers.setBearerAuth(stripBearerPrefix(bearerToken));
+    headers.setContentType(MediaType.APPLICATION_JSON);
+    headers.setAccept(java.util.List.of(MediaType.APPLICATION_JSON));
 
-            return new TokenResponse((String) at, expiresIn);
+    HttpEntity<String> entity = new HttpEntity<>(emailPayloadJson, headers);
 
-        } catch (HttpStatusCodeException e) {
-            throw new IllegalStateException(
-                "Token HTTP " + e.getStatusCode().value() + ": " + safeBody(e), e);
-        } catch (ResourceAccessException e) {
-            throw new IllegalStateException("Token I/O: " + e.getMessage(), e);
+    try {
+      ResponseEntity<Map<String, Object>> resp =
+          rest.exchange(url, HttpMethod.POST, entity, responseType());
+
+      out.put("statusCode", resp.getStatusCodeValue());
+
+      Map<String, Object> body = resp.getBody();
+      if (!resp.getStatusCode().is2xxSuccessful() || body == null) {
+        out.put("error", "Send call failed");
+        return out;
+      }
+
+      Integer taskId = asInt(body.get("deliveryTaskId"));
+      if (taskId == null) {
+        out.put("error", "Missing deliveryTaskId");
+        return out;
+      }
+
+      out.put("ok", true);
+      out.put("deliveryTaskId", taskId);
+      out.put("raw", body);
+      return out;
+
+    } catch (HttpStatusCodeException e) {
+      out.put("statusCode", e.getStatusCode().value());
+      out.put("error", "HTTP " + e.getStatusCode().value() + " send: " + safeBody(e));
+      return out;
+    } catch (ResourceAccessException e) {
+      out.put("statusCode", 0);
+      out.put("error", "IO send: " + e.getMessage());
+      return out;
+    } catch (Exception e) {
+      out.put("statusCode", 0);
+      out.put("error", "Unexpected send: " + e.getMessage());
+      return out;
+    }
+  }
+
+  /** GET /.../mail/deliveries/{deliveryTaskId} with polling */
+  public Map<String, Object> pollDeliveryStatus(
+      String mailBaseUrl, String userPathSegment, String bearerToken,
+      int deliveryTaskId, Duration pollEvery, Duration maxWait) {
+
+    Map<String, Object> out = new HashMap<>();
+    out.put("ok", false);
+    out.put("deliveryTaskId", deliveryTaskId);
+
+    String url = trimSlash(mailBaseUrl) + "/e/tymail/v1/" + trimSlash(userPathSegment)
+        + "/mail/deliveries/" + deliveryTaskId;
+
+    HttpHeaders headers = new HttpHeaders();
+    headers.setBearerAuth(stripBearerPrefix(bearerToken));
+    headers.setAccept(java.util.List.of(MediaType.APPLICATION_JSON));
+
+    Instant deadline = Instant.now().plus(maxWait);
+    int attempts = 0;
+    Map<String, Object> lastBody = null;
+    int lastCode = 0;
+
+    while (Instant.now().isBefore(deadline)) {
+      attempts++;
+      try {
+        ResponseEntity<Map<String, Object>> resp =
+            rest.exchange(url, HttpMethod.GET, new HttpEntity<>(headers), responseType());
+        lastCode = resp.getStatusCodeValue();
+
+        Map<String, Object> body = resp.getBody();
+        if (resp.getStatusCode().is2xxSuccessful() && body != null) {
+          lastBody = body;
+          String status = asString(body.get("status")); // SENDING | COMPLETED | RESERVED | ERROR
+          if ("COMPLETED".equalsIgnoreCase(status)) {
+            out.put("ok", true);
+            out.put("finalStatus", status);
+            out.put("attempts", attempts);
+            out.put("lastBody", lastBody);
+            out.put("statusCode", lastCode);
+            return out;
+          }
+          if ("ERROR".equalsIgnoreCase(status)) {
+            out.put("ok", false);
+            out.put("finalStatus", status);
+            out.put("attempts", attempts);
+            out.put("lastBody", lastBody);
+            out.put("statusCode", lastCode);
+            out.put("error", "Delivery ended in ERROR");
+            return out;
+          }
         }
+      } catch (HttpStatusCodeException e) {
+        lastCode = e.getStatusCode().value(); // keep polling unless timeout
+      } catch (ResourceAccessException e) {
+        // network hiccup; keep polling
+      } catch (Exception e) {
+        // unexpected; keep polling
+      }
+
+      sleepQuietly(pollEvery);
     }
 
-    private static String safeBody(HttpStatusCodeException e) {
-        try { return e.getResponseBodyAsString(); } catch (Exception ignore) { return ""; }
+    out.put("ok", false);
+    out.put("finalStatus", "TIMEOUT");
+    out.put("attempts", attempts);
+    out.put("lastBody", lastBody);
+    out.put("statusCode", lastCode);
+    out.put("error", "Polling timed out");
+    return out;
+  }
+
+  // ---------- helpers (typed + null-safe) ----------
+
+  private static ParameterizedTypeReference<Map<String, Object>> responseType() {
+    return new ParameterizedTypeReference<>() {};
+  }
+
+  private static String stripBearerPrefix(String token) {
+    if (token == null) return "";
+    return token.replaceFirst("(?i)^Bearer\\s+", "").trim();
+  }
+
+  private static Integer asInt(Object o) {
+    if (o instanceof Number n) return n.intValue();
+    if (o instanceof String s) {
+      try { return Integer.parseInt(s.trim()); } catch (NumberFormatException ignore) { }
     }
+    return null;
+  }
+
+  private static String asString(Object o) {
+    return (o == null) ? null : String.valueOf(o);
+  }
+
+  private static String trimSlash(String s) {
+    if (s == null) return "";
+    String t = s.trim();
+    while (t.endsWith("/")) t = t.substring(0, t.length() - 1);
+    return t;
+  }
+
+  private static void sleepQuietly(Duration d) {
+    try { Thread.sleep(Math.max(1, d.toMillis())); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+  }
+
+  private static String safeBody(HttpStatusCodeException e) {
+    try { return e.getResponseBodyAsString(); } catch (Exception ex) { return ""; }
+  }
 }
