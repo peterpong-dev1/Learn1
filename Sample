@@ -1,3 +1,8 @@
+Here’s the refactored class that:
+	•	keeps the same behavior and method signatures,
+	•	builds URLs with String.format(...) (no ad-hoc concatenation),
+	•	supports config-driven base URLs via an optional properties bean (if you wire it), while still accepting method params (so you don’t have to change your callers).
+
 package jp.co.neo.notification.notificationapi;
 
 import org.springframework.http.*;
@@ -18,9 +23,27 @@ public class EmailServiceClient {
   private final RestTemplate rest;
   private final TokenService tokenService;
 
-  public EmailServiceClient(RestTemplate restTemplate, TokenService tokenService) {
+  // Optional config-driven defaults (wire via constructor if you want)
+  private final String defaultMailBaseUrl; // e.g., https://mail.paas.crmstyle.com
+  private final String defaultUserPath;    // e.g., your-tenant-or-user
+
+  // URL templates (distinct, readable)
+  private static final String DELIVERIES_URL_TPL      = "%s/e/tymail/v1/%s/mail/deliveries";
+  private static final String DELIVERY_STATUS_URL_TPL = "%s/e/tymail/v1/%s/mail/deliveries/%d";
+
+  public EmailServiceClient(RestTemplate restTemplate,
+                            TokenService tokenService) {
+    this(restTemplate, tokenService, null, null);
+  }
+
+  public EmailServiceClient(RestTemplate restTemplate,
+                            TokenService tokenService,
+                            String defaultMailBaseUrl,
+                            String defaultUserPathSegment) {
     this.rest = restTemplate;
     this.tokenService = tokenService;
+    this.defaultMailBaseUrl = defaultMailBaseUrl; // can be null; then use method args
+    this.defaultUserPath = defaultUserPathSegment; // can be null; then use method args
   }
 
   public Map<String, Object> deliverEmail(
@@ -33,18 +56,22 @@ public class EmailServiceClient {
     Map<String, Object> result = new HashMap<>();
     result.put("ok", false);
 
+    // resolve base/user from config if caller passed null/blank
+    String base = pickBaseUrl(mailBaseUrl);
+    String user = pickUserPath(userPathSegment);
+
     // 1) token (from cache)
     String bearer = tokenService.getBearerToken(authUrl, clientId, clientSecret, scope, audience);
 
     // 2) send email
-    Map<String, Object> send = sendEmail(mailBaseUrl, userPathSegment, bearer, emailPayloadJson);
+    Map<String, Object> send = sendEmail(base, user, bearer, emailPayloadJson);
 
     // 401 -> evict + retry once
     if (Boolean.FALSE.equals(send.get("ok"))
         && ((Number) send.getOrDefault("statusCode", 0)).intValue() == 401) {
       tokenService.evictBearer();
       bearer = tokenService.getBearerToken(authUrl, clientId, clientSecret, scope, audience);
-      send = sendEmail(mailBaseUrl, userPathSegment, bearer, emailPayloadJson);
+      send = sendEmail(base, user, bearer, emailPayloadJson);
     }
 
     if (Boolean.FALSE.equals(send.get("ok"))) {
@@ -56,22 +83,21 @@ public class EmailServiceClient {
     int deliveryTaskId = ((Number) send.get("deliveryTaskId")).intValue();
 
     // 3) poll status
-    Map<String, Object> poll = pollDeliveryStatus(
-        mailBaseUrl, userPathSegment, bearer, deliveryTaskId, pollEvery, maxWait);
+    Map<String, Object> poll = pollDeliveryStatus(base, user, bearer, deliveryTaskId, pollEvery, maxWait);
 
     result.put("stage", "done");
     result.putAll(poll);
     return result;
   }
 
-  /** POST /.../mail/deliveries */
+  /** POST /e/tymail/v1/{user}/mail/deliveries */
   public Map<String, Object> sendEmail(
       String mailBaseUrl, String userPathSegment, String bearerToken, String emailPayloadJson) {
 
     Map<String, Object> out = new HashMap<>();
     out.put("ok", false);
 
-    String url = trimSlash(mailBaseUrl) + "/e/tymail/v1/" + trimSlash(userPathSegment) + "/mail/deliveries";
+    String url = String.format(DELIVERIES_URL_TPL, trimSlash(mailBaseUrl), trimSlash(userPathSegment));
 
     HttpHeaders headers = new HttpHeaders();
     headers.setBearerAuth(stripBearerPrefix(bearerToken));
@@ -118,7 +144,7 @@ public class EmailServiceClient {
     }
   }
 
-  /** GET /.../mail/deliveries/{deliveryTaskId} with polling */
+  /** GET /e/tymail/v1/{user}/mail/deliveries/{deliveryTaskId} with polling */
   public Map<String, Object> pollDeliveryStatus(
       String mailBaseUrl, String userPathSegment, String bearerToken,
       int deliveryTaskId, Duration pollEvery, Duration maxWait) {
@@ -127,8 +153,8 @@ public class EmailServiceClient {
     out.put("ok", false);
     out.put("deliveryTaskId", deliveryTaskId);
 
-    String url = trimSlash(mailBaseUrl) + "/e/tymail/v1/" + trimSlash(userPathSegment)
-        + "/mail/deliveries/" + deliveryTaskId;
+    String url = String.format(DELIVERY_STATUS_URL_TPL,
+        trimSlash(mailBaseUrl), trimSlash(userPathSegment), deliveryTaskId);
 
     HttpHeaders headers = new HttpHeaders();
     headers.setBearerAuth(stripBearerPrefix(bearerToken));
@@ -169,11 +195,11 @@ public class EmailServiceClient {
           }
         }
       } catch (HttpStatusCodeException e) {
-        lastCode = e.getStatusCode().value(); // keep polling unless timeout
+        lastCode = e.getStatusCode().value(); // 429/backoff handled by sleep
       } catch (ResourceAccessException e) {
         // network hiccup; keep polling
       } catch (Exception e) {
-        // unexpected; keep polling
+        // unexpected; keep polling until timeout
       }
 
       sleepQuietly(pollEvery);
@@ -190,8 +216,8 @@ public class EmailServiceClient {
 
   // ---------- helpers (typed + null-safe) ----------
 
-  private static ParameterizedTypeReference<Map<String, Object>> responseType() {
-    return new ParameterizedTypeReference<>() {};
+  private static org.springframework.core.ParameterizedTypeReference<Map<String, Object>> responseType() {
+    return new org.springframework.core.ParameterizedTypeReference<>() {};
   }
 
   private static String stripBearerPrefix(String token) {
@@ -225,4 +251,47 @@ public class EmailServiceClient {
   private static String safeBody(HttpStatusCodeException e) {
     try { return e.getResponseBodyAsString(); } catch (Exception ex) { return ""; }
   }
+
+  private String pickBaseUrl(String candidate) {
+    return (candidate != null && !candidate.isBlank()) ? candidate : (defaultMailBaseUrl != null ? defaultMailBaseUrl : "");
+  }
+
+  private String pickUserPath(String candidate) {
+    return (candidate != null && !candidate.isBlank()) ? candidate : (defaultUserPath != null ? defaultUserPath : "");
+  }
 }
+
+(Optional) make base URLs config-driven
+
+If you want to avoid passing mailBaseUrl/userPathSegment from callers, add a small properties class and wire it into the constructor that accepts defaults:
+
+// EmailApiProperties.java
+package jp.co.neo.notification.notificationapi;
+
+import lombok.Getter;
+import lombok.Setter;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.context.annotation.Configuration;
+
+@Getter @Setter
+@Configuration
+@ConfigurationProperties(prefix = "email.api")
+public class EmailApiProperties {
+  private String mailBaseUrl;     // https://mail.paas.crmstyle.com
+  private String userPathSegment; // your-tenant-or-user
+}
+
+# application.yml
+email:
+  api:
+    mailBaseUrl: "https://mail.paas.crmstyle.com"
+    userPathSegment: "your-tenant"
+
+// Wire into EmailServiceClient (e.g., via @Autowired)
+public EmailServiceClient(RestTemplate restTemplate,
+                          TokenService tokenService,
+                          EmailApiProperties props) {
+  this(restTemplate, tokenService, props.getMailBaseUrl(), props.getUserPathSegment());
+}
+
+This preserves all previous logic, fixes URL building, and lets you drive base URLs from config.
