@@ -1,110 +1,334 @@
-Got it—no custom exception. Here’s a tiny, production-friendly helper that:
-	•	POSTs a JSON string with RestTemplate
-	•	Returns a Map<String,Object> like: {"ok": true, "statusCode": 200, "body": ""}
-	•	Treats any 2xx as success; 400/500 (or any non-2xx) as error (but still returns the map)
-	•	Catches timeouts/IO and unexpected errors cleanly
+Got it—you need a simple, copy-pasteable flow that:
+	1.	gets an OAuth token
+	2.	POSTs the email payload
+	3.	polls the delivery status until COMPLETED/ERROR (or times out)
 
-package jp.co.neofirst.api.common.http;
+Below is a compact, production-friendly implementation using RestTemplate (what you already have). It keeps the code in one service class, with clear error handling and comments. No caching (you can add it later by memoizing the token + expires_at).
+
+⸻
+
+EmailGateway (single class)
+
+package jp.co.neo.notification.notificationapi;
 
 import org.springframework.http.*;
-import org.springframework.stereotype.Service;
+import org.springframework.stereotype.Component;
 import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestTemplate;
 
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
 
-/**
- * Minimal JSON POST client using RestTemplate.
- * Returns a simple result map instead of throwing custom exceptions.
- */
-@Service
-public class HttpJsonClient {
+@Component
+public class EmailGateway {
 
-    private final RestTemplate restTemplate;
+    private final RestTemplate rest;
 
-    public HttpJsonClient(RestTemplate restTemplate) {
-        this.restTemplate = restTemplate; // thread-safe bean you already configured
+    public EmailGateway(RestTemplate restTemplate) {
+        this.rest = restTemplate;
     }
 
     /**
-     * POST a JSON string and return a compact result map:
-     *  - ok: boolean  (true if 2xx)
-     *  - statusCode: int
-     *  - body: String (response body if present, else "")
-     *  - error: String (present only on failures/timeouts/unexpected)
+     * Orchestrates the whole flow:
+     * 1) fetch access token
+     * 2) send email -> get deliveryTaskId
+     * 3) poll status until COMPLETED/ERROR or timeout
      */
-    public Map<String, Object> postJson(String url, String jsonBody, Map<String, String> extraHeaders) {
+    public Map<String, Object> deliverEmail(
+            String authUrl, String mailBaseUrl, String userPathSegment,
+            String clientId, String clientSecret,
+            String scope, String audience,
+            String emailPayloadJson,
+            Duration pollEvery, Duration maxWait
+    ) {
+
         Map<String, Object> result = new HashMap<>();
+        result.put("ok", false);
+
+        // --- step 1: token ---
+        Map<String, Object> tok = fetchAccessToken(authUrl, clientId, clientSecret, scope, audience);
+        if (!(Boolean) tok.get("ok")) {
+            result.put("stage", "token");
+            result.putAll(tok);
+            return result;
+        }
+        String token = (String) tok.get("accessToken");
+
+        // --- step 2: send email ---
+        Map<String, Object> send = sendEmail(mailBaseUrl, userPathSegment, token, emailPayloadJson);
+        if (!(Boolean) send.get("ok")) {
+            result.put("stage", "send");
+            result.putAll(send);
+            return result;
+        }
+        int deliveryTaskId = (Integer) send.get("deliveryTaskId");
+
+        // --- step 3: poll status ---
+        Map<String, Object> poll = pollDeliveryStatus(mailBaseUrl, userPathSegment, token,
+                deliveryTaskId, pollEvery, maxWait);
+
+        // merge and return
+        result.put("stage", "done");
+        result.putAll(poll);
+        return result;
+    }
+
+    /**
+     * Calls the OAuth token endpoint using client_credentials.
+     * Authorization: Basic base64(clientId:clientSecret)
+     * Content-Type: application/x-www-form-urlencoded
+     */
+    public Map<String, Object> fetchAccessToken(
+            String authUrl, String clientId, String clientSecret, String scope, String audience) {
+
+        Map<String, Object> out = new HashMap<>();
+        out.put("ok", false);
+
+        // Build Basic header
+        String basic = clientId + ":" + clientSecret;
+        String basicB64 = Base64.getEncoder().encodeToString(basic.getBytes(StandardCharsets.UTF_8));
 
         HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.set("Authorization", "Basic " + basicB64);
+        headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
         headers.setAccept(java.util.List.of(MediaType.APPLICATION_JSON));
-        if (extraHeaders != null) extraHeaders.forEach(headers::set);
 
-        HttpEntity<String> entity = new HttpEntity<>(jsonBody, headers);
+        String form = "grant_type=client_credentials"
+                + "&scope=" + urlEncode(scope)
+                + "&audience=" + urlEncode(audience);
+
+        HttpEntity<String> entity = new HttpEntity<>(form, headers);
 
         try {
-            ResponseEntity<String> resp = restTemplate.exchange(url, HttpMethod.POST, entity, String.class);
-
+            ResponseEntity<Map> resp = rest.exchange(authUrl, HttpMethod.POST, entity, Map.class);
             boolean ok = resp.getStatusCode().is2xxSuccessful();
-            result.put("ok", ok);
-            result.put("statusCode", resp.getStatusCode().value());
-            result.put("body", resp.getBody() == null ? "" : resp.getBody());
-            return result;
+            out.put("statusCode", resp.getStatusCodeValue());
+
+            if (!ok || resp.getBody() == null) {
+                out.put("error", "Token call failed");
+                return out;
+            }
+
+            Object at = resp.getBody().get("access_token");
+            Object typ = resp.getBody().get("token_type");
+            Object exp = resp.getBody().get("expires_in");
+
+            if (at == null || typ == null) {
+                out.put("error", "Missing access_token/token_type in response");
+                return out;
+            }
+
+            out.put("ok", true);
+            out.put("accessToken", at.toString());                 // e.g. "eyJ..."
+            out.put("tokenType", typ.toString());                   // typically "bearer"
+            out.put("expiresInSec", exp instanceof Number ? ((Number) exp).intValue() : null);
+            return out;
 
         } catch (HttpStatusCodeException e) {
-            // Downstream returned 4xx/5xx
-            result.put("ok", false);
-            result.put("statusCode", e.getRawStatusCode());
-            result.put("body", e.getResponseBodyAsString() == null ? "" : e.getResponseBodyAsString());
-            result.put("error", "HTTP " + e.getRawStatusCode() + " " + e.getStatusText());
-            return result;
-
+            out.put("statusCode", e.getStatusCode().value());
+            out.put("error", "HTTP " + e.getStatusCode().value() + " token: " + safeBody(e));
+            return out;
         } catch (ResourceAccessException e) {
-            // Timeouts / DNS / connection issues
-            result.put("ok", false);
-            result.put("statusCode", 504); // represent as timeout-ish
-            result.put("body", "");
-            result.put("error", "I/O error (timeout/connection): " + e.getMessage());
-            return result;
-
+            out.put("statusCode", 0);
+            out.put("error", "IO token: " + e.getMessage());
+            return out;
         } catch (Exception e) {
-            // Any unexpected error
-            result.put("ok", false);
-            result.put("statusCode", 500);
-            result.put("body", "");
-            result.put("error", "Unexpected error: " + e.getMessage());
-            return result;
+            out.put("statusCode", 0);
+            out.put("error", "Unexpected token: " + e.getMessage());
+            return out;
         }
     }
-}
 
-How you’d call it
+    /**
+     * POST /e/tymail/v1/{user}/mail/deliveries
+     * Returns deliveryTaskId from response.
+     */
+    public Map<String, Object> sendEmail(
+            String mailBaseUrl, String userPathSegment, String bearerToken, String emailPayloadJson) {
 
-@Service
-public class NotificationDispatcher {
-    private final HttpJsonClient http;
+        Map<String, Object> out = new HashMap<>();
+        out.put("ok", false);
 
-    public NotificationDispatcher(HttpJsonClient http) {
-        this.http = http;
-    }
+        String url = trimSlash(mailBaseUrl) + "/e/tymail/v1/" + trimSlash(userPathSegment) + "/mail/deliveries";
 
-    public void send(String url, String payloadJson, String requestId) {
-        Map<String, Object> res = http.postJson(
-            url,
-            payloadJson,
-            Map.of("X-Request-Id", requestId, "X-Correlation-Id", requestId)
-        );
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(bearerToken);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.setAccept(java.util.List.of(MediaType.APPLICATION_JSON));
 
-        // simple handling
-        if (!(Boolean) res.get("ok")) {
-            // log + decide retry/DLQ
-            System.err.println("Downstream failed: status=" + res.get("statusCode")
-                    + " error=" + res.getOrDefault("error","") );
+        HttpEntity<String> entity = new HttpEntity<>(emailPayloadJson, headers);
+
+        try {
+            ResponseEntity<Map> resp = rest.exchange(url, HttpMethod.POST, entity, Map.class);
+            out.put("statusCode", resp.getStatusCodeValue());
+
+            if (!resp.getStatusCode().is2xxSuccessful() || resp.getBody() == null) {
+                out.put("error", "Send call failed");
+                return out;
+            }
+
+            Object dt = resp.getBody().get("deliveryTaskId");
+            if (!(dt instanceof Number)) {
+                out.put("error", "Missing deliveryTaskId");
+                return out;
+            }
+
+            out.put("ok", true);
+            out.put("deliveryTaskId", ((Number) dt).intValue());
+            out.put("raw", resp.getBody());
+            return out;
+
+        } catch (HttpStatusCodeException e) {
+            out.put("statusCode", e.getStatusCode().value());
+            out.put("error", "HTTP " + e.getStatusCode().value() + " send: " + safeBody(e));
+            return out;
+        } catch (ResourceAccessException e) {
+            out.put("statusCode", 0);
+            out.put("error", "IO send: " + e.getMessage());
+            return out;
+        } catch (Exception e) {
+            out.put("statusCode", 0);
+            out.put("error", "Unexpected send: " + e.getMessage());
+            return out;
         }
     }
+
+    /**
+     * GET /e/tymail/v1/{user}/mail/deliveries/{deliveryTaskId}
+     * Polls until status is COMPLETED or ERROR or timeout reached.
+     * Returns: ok, finalStatus, attempts, lastBody.
+     */
+    public Map<String, Object> pollDeliveryStatus(
+            String mailBaseUrl, String userPathSegment, String bearerToken,
+            int deliveryTaskId, Duration pollEvery, Duration maxWait) {
+
+        Map<String, Object> out = new HashMap<>();
+        out.put("ok", false);
+        out.put("deliveryTaskId", deliveryTaskId);
+
+        String url = trimSlash(mailBaseUrl) + "/e/tymail/v1/" + trimSlash(userPathSegment)
+                + "/mail/deliveries/" + deliveryTaskId;
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(bearerToken);
+        headers.setAccept(java.util.List.of(MediaType.APPLICATION_JSON));
+
+        Instant deadline = Instant.now().plus(maxWait);
+        int attempts = 0;
+        Map lastBody = null;
+        int lastCode = 0;
+
+        while (Instant.now().isBefore(deadline)) {
+            attempts++;
+
+            try {
+                ResponseEntity<Map> resp = rest.exchange(url, HttpMethod.GET, new HttpEntity<>(headers), Map.class);
+                lastCode = resp.getStatusCodeValue();
+
+                if (!resp.getStatusCode().is2xxSuccessful() || resp.getBody() == null) {
+                    // transient? backoff and retry
+                } else {
+                    lastBody = resp.getBody();
+                    String status = stringOrNull(lastBody.get("status")); // SENDING | COMPLETED | RESERVED | ERROR
+                    if ("COMPLETED".equalsIgnoreCase(status)) {
+                        out.put("ok", true);
+                        out.put("finalStatus", status);
+                        out.put("attempts", attempts);
+                        out.put("lastBody", lastBody);
+                        out.put("statusCode", lastCode);
+                        return out;
+                    }
+                    if ("ERROR".equalsIgnoreCase(status)) {
+                        out.put("ok", false);
+                        out.put("finalStatus", status);
+                        out.put("attempts", attempts);
+                        out.put("lastBody", lastBody);
+                        out.put("statusCode", lastCode);
+                        out.put("error", "Delivery ended in ERROR");
+                        return out;
+                    }
+                    // SENDING / RESERVED -> keep polling
+                }
+            } catch (HttpStatusCodeException e) {
+                lastCode = e.getStatusCode().value();
+                // 429 -> backoff; others: keep trying until timeout
+                // (Spec says 429 can happen; we simply wait below)
+            } catch (ResourceAccessException e) {
+                // network hiccup, will retry
+            } catch (Exception e) {
+                // unexpected, but retry until timeout
+            }
+
+            sleepQuietly(pollEvery);
+        }
+
+        out.put("ok", false);
+        out.put("finalStatus", "TIMEOUT");
+        out.put("attempts", attempts);
+        out.put("lastBody", lastBody);
+        out.put("statusCode", lastCode);
+        out.put("error", "Polling timed out");
+        return out;
+    }
+
+    // -------------------- small helpers --------------------
+
+    private static String urlEncode(String s) {
+        try { return java.net.URLEncoder.encode(s, StandardCharsets.UTF_8); }
+        catch (Exception e) { return s; }
+    }
+
+    private static String trimSlash(String s) {
+        if (s == null) return "";
+        String t = s.trim();
+        while (t.endsWith("/")) t = t.substring(0, t.length() - 1);
+        return t;
+    }
+
+    private static String safeBody(HttpStatusCodeException e) {
+        try { return e.getResponseBodyAsString(); } catch (Exception ex) { return ""; }
+    }
+
+    private static void sleepQuietly(Duration d) {
+        try { Thread.sleep(Math.max(1, d.toMillis())); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+    }
+
+    private static String stringOrNull(Object o) { return o == null ? null : String.valueOf(o); }
 }
 
-This keeps it simple, thread-safe (shared RestTemplate bean), and easy to branch on success vs. error without custom exceptions.
+How to call it from your service
+
+// somewhere in your NotificationServiceImpl
+@Autowired
+private EmailGateway emailGateway;
+
+public Map<String,Object> sendViaEmailService(String tokenUrl, String mailBaseUrl, String userSegment,
+                                              String clientId, String clientSecret,
+                                              String scope, String audience,
+                                              String emailPayloadJson) {
+
+    // example: poll every 3s, timeout after 60s
+    return emailGateway.deliverEmail(
+            tokenUrl, mailBaseUrl, userSegment,
+            clientId, clientSecret,
+            scope, audience,
+            emailPayloadJson,
+            Duration.ofSeconds(3), Duration.ofSeconds(60)
+    );
+}
+
+Notes
+	•	No caching: we fetch a fresh token per call (simple and correct). If you later want caching, memoize accessToken + expiresAt = now + expires_in - 60s buffer, and reuse until expired.
+	•	Thread-safe: RestTemplate bean is thread-safe; this class doesn’t store mutable state.
+	•	Error handling: Each stage returns { ok, statusCode, error, ... }, so your controller/service can decide how to respond (e.g., 500 on ok=false).
+	•	URLs:
+	•	Token: https://auth.paas.crmstyle.com/oauth2/token (from your screenshot)
+	•	Send: POST https://mail.paas.crmstyle.com/e/tymail/v1/{user}/mail/deliveries
+	•	Status: GET  https://mail.paas.crmstyle.com/e/tymail/v1/{user}/mail/deliveries/{deliveryTaskId}
+
+If you want me to wire this to your existing EmailServiceCall.postJson(...) wrapper instead, say the word and I’ll adapt.
