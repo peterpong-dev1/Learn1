@@ -1,195 +1,160 @@
-Great — here’s the full production-grade Java code for both:
+Got it—you want full DTOs for the entire JSON your builder produces (not just placeholders). Here’s a clean, production-ready model set you can use on the consumer side.
 
-⸻
+package com.neo.notification.model;
 
-✅ 1. Producer-Side Azure Function (Cosmos DB Trigger)
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonProperty;
 
-This function writes/update timestamp to Azure Table and forwards all messages to the Notification Queue.
-
-ProducerFunction.java
-
-package com.example.functions;
-
-import com.azure.data.tables.TableClient;
-import com.azure.data.tables.TableClientBuilder;
-import com.azure.data.tables.models.TableEntity;
-import com.azure.messaging.servicebus.*;
-import com.fasterxml.jackson.databind.ObjectMapper;
-
-import java.time.Instant;
-import java.util.List;
+import java.time.OffsetDateTime;
 import java.util.Map;
 
 /**
- * Azure Function triggered by Cosmos DB Change Feed.
- * Updates Azure Table with latest timestamp and forwards message to queue.
+ * Root payload produced by NotificationPayloadBuilder.
  */
-public class ProducerFunction {
+@JsonInclude(JsonInclude.Include.NON_NULL)
+public class NotificationPayload {
 
-    private static final String CONNECTION_STRING = System.getenv("AzureWebJobsStorage");
-    private static final String TABLE_NAME = "MessageTracker";
-    private static final String QUEUE_NAME = System.getenv("NOTIFICATION_QUEUE_NAME");
-    private static final String SERVICE_BUS_CONNECTION = System.getenv("SERVICE_BUS_CONNECTION");
+    // ---- Top-level scalars ----
+    private String notificationType;
+    private String triggerType;
+    private String messageType;
+    private String language;
+    private String applicationId;
+    private String policyId;
 
-    private final TableClient tableClient;
-    private final ServiceBusSenderClient senderClient;
-    private final ObjectMapper mapper = new ObjectMapper();
+    // ---- Nested objects ----
+    private Recipient recipient;
+    private Agency agency;
 
-    public ProducerFunction() {
-        this.tableClient = new TableClientBuilder()
-                .connectionString(CONNECTION_STRING)
-                .tableName(TABLE_NAME)
-                .buildClient();
+    /** Dynamic key/value bag */
+    private Map<String, Object> placeholders;
 
-        this.senderClient = new ServiceBusClientBuilder()
-                .connectionString(SERVICE_BUS_CONNECTION)
-                .sender()
-                .queueName(QUEUE_NAME)
-                .buildClient();
+    private Metadata metadata;
+
+    // Getters & setters
+    public String getNotificationType() { return notificationType; }
+    public void setNotificationType(String notificationType) { this.notificationType = notificationType; }
+
+    public String getTriggerType() { return triggerType; }
+    public void setTriggerType(String triggerType) { this.triggerType = triggerType; }
+
+    public String getMessageType() { return messageType; }
+    public void setMessageType(String messageType) { this.messageType = messageType; }
+
+    public String getLanguage() { return language; }
+    public void setLanguage(String language) { this.language = language; }
+
+    public String getApplicationId() { return applicationId; }
+    public void setApplicationId(String applicationId) { this.applicationId = applicationId; }
+
+    public String getPolicyId() { return policyId; }
+    public void setPolicyId(String policyId) { this.policyId = policyId; }
+
+    public Recipient getRecipient() { return recipient; }
+    public void setRecipient(Recipient recipient) { this.recipient = recipient; }
+
+    public Agency getAgency() { return agency; }
+    public void setAgency(Agency agency) { this.agency = agency; }
+
+    public Map<String, Object> getPlaceholders() { return placeholders; }
+    public void setPlaceholders(Map<String, Object> placeholders) { this.placeholders = placeholders; }
+
+    public Metadata getMetadata() { return metadata; }
+    public void setMetadata(Metadata metadata) { this.metadata = metadata; }
+
+    // ---- Nested DTOs ----
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class Recipient {
+        private String name;
+        private String email;
+        private String phone;
+        private String lineId;
+
+        public String getName() { return name; }
+        public void setName(String name) { this.name = name; }
+
+        public String getEmail() { return email; }
+        public void setEmail(String email) { this.email = email; }
+
+        public String getPhone() { return phone; }
+        public void setPhone(String phone) { this.phone = phone; }
+
+        public String getLineId() { return lineId; }
+        public void setLineId(String lineId) { this.lineId = lineId; }
     }
 
-    /**
-     * Main function called for each Cosmos DB change.
-     *
-     * @param documents The changed documents
-     */
-    public void process(List<Map<String, Object>> documents) {
-        for (Map<String, Object> doc : documents) {
-            try {
-                String docId = doc.get("docId").toString();
-                String notificationType = doc.get("notificationType").toString();
-                String triggerType = doc.get("triggerType").toString();
-                String recipientType = doc.get("recipientType").toString();
-                String timestamp = doc.get("lastUpdatedTime").toString(); // ISO format
-                Instant updatedTime = Instant.parse(timestamp);
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class Agency {
+        private String agencyId;
+        private String agencyName;
 
-                String rowKey = notificationType + "|" + triggerType + "|" + recipientType;
+        public String getAgencyId() { return agencyId; }
+        public void setAgencyId(String agencyId) { this.agencyId = agencyId; }
 
-                TableEntity entity = new TableEntity(docId, rowKey);
-                entity.addProperty("LastUpdatedTime", updatedTime.toString());
+        public String getAgencyName() { return agencyName; }
+        public void setAgencyName(String agencyName) { this.agencyName = agencyName; }
+    }
 
-                tableClient.upsertEntity(entity); // Upsert the entity (insert or replace)
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class Metadata {
+        private String messageId;
+        private String correlationId;
+        private String container;
+        private String docId;
+        private String eventId;
+        private String eventName;
 
-                // Send full message to queue
-                String payload = mapper.writeValueAsString(doc);
-                senderClient.sendMessage(new ServiceBusMessage(payload));
+        /** Produced as ISO-8601 string by builder (createdAtUtc) */
+        @JsonProperty("createdAtUtc")
+        private OffsetDateTime createdAtUtc;
 
-            } catch (Exception e) {
-                System.err.println("❌ Failed to process document: " + e.getMessage());
-                e.printStackTrace();
-            }
-        }
+        /** Scheduled time from producer (msgScheduleAt) */
+        @JsonProperty("msgScheduleAt")
+        private OffsetDateTime msgScheduleAt;
+
+        public String getMessageId() { return messageId; }
+        public void setMessageId(String messageId) { this.messageId = messageId; }
+
+        public String getCorrelationId() { return correlationId; }
+        public void setCorrelationId(String correlationId) { this.correlationId = correlationId; }
+
+        public String getContainer() { return container; }
+        public void setContainer(String container) { this.container = container; }
+
+        public String getDocId() { return docId; }
+        public void setDocId(String docId) { this.docId = docId; }
+
+        public String getEventId() { return eventId; }
+        public void setEventId(String eventId) { this.eventId = eventId; }
+
+        public String getEventName() { return eventName; }
+        public void setEventName(String eventName) { this.eventName = eventName; }
+
+        public OffsetDateTime getCreatedAtUtc() { return createdAtUtc; }
+        public void setCreatedAtUtc(OffsetDateTime createdAtUtc) { this.createdAtUtc = createdAtUtc; }
+
+        public OffsetDateTime getMsgScheduleAt() { return msgScheduleAt; }
+        public void setMsgScheduleAt(OffsetDateTime msgScheduleAt) { this.msgScheduleAt = msgScheduleAt; }
     }
 }
 
+How to parse in the consumer:
 
-⸻
-
-✅ 2. Consumer-Side Azure Function (Service Bus Trigger)
-
-This function receives messages, checks Azure Table, and only proceeds if the message is the latest.
-
-ConsumerFunction.java
-
-package com.example.functions;
-
-import com.azure.data.tables.TableClient;
-import com.azure.data.tables.TableClientBuilder;
-import com.azure.data.tables.models.TableEntity;
-import com.azure.data.tables.models.TableServiceException;
-import com.azure.messaging.servicebus.ServiceBusReceivedMessage;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.neo.notification.model.NotificationPayload;
 
-import java.time.Instant;
-import java.util.Map;
+ObjectMapper mapper = new ObjectMapper();
+// If timestamps are ISO-8601 strings (as in your builder), this just works:
+NotificationPayload payload = mapper.readValue(jsonString, NotificationPayload.class);
 
-/**
- * Azure Function triggered by Service Bus message.
- * Validates timestamp using Azure Table, then proceeds with Notification API call.
- */
-public class ConsumerFunction {
+// Example access:
+String type = payload.getNotificationType();
+Map<String,Object> ph = payload.getPlaceholders();
+String email = payload.getRecipient() != null ? payload.getRecipient().getEmail() : null;
 
-    private static final String CONNECTION_STRING = System.getenv("AzureWebJobsStorage");
-    private static final String TABLE_NAME = "MessageTracker";
-    private final TableClient tableClient;
-    private final ObjectMapper mapper = new ObjectMapper();
-
-    public ConsumerFunction() {
-        this.tableClient = new TableClientBuilder()
-                .connectionString(CONNECTION_STRING)
-                .tableName(TABLE_NAME)
-                .buildClient();
-    }
-
-    /**
-     * Handles an incoming message from the queue.
-     *
-     * @param message The received Service Bus message
-     */
-    public void handle(ServiceBusReceivedMessage message) {
-        try {
-            String body = message.getBody().toString();
-            Map<String, Object> msg = mapper.readValue(body, Map.class);
-
-            String docId = msg.get("docId").toString();
-            String notificationType = msg.get("notificationType").toString();
-            String triggerType = msg.get("triggerType").toString();
-            String recipientType = msg.get("recipientType").toString();
-            String messageTime = msg.get("lastUpdatedTime").toString(); // from message
-            Instant incomingTime = Instant.parse(messageTime);
-
-            String rowKey = notificationType + "|" + triggerType + "|" + recipientType;
-
-            TableEntity entity = tableClient.getEntity(docId, rowKey);
-            String storedTime = entity.getProperty("LastUpdatedTime").toString();
-            Instant latestTime = Instant.parse(storedTime);
-
-            if (!incomingTime.equals(latestTime)) {
-                System.out.println("⏩ Stale message. Skipping.");
-                return;
-            }
-
-            // Proceed to call notification API
-            sendNotification(msg);
-
-        } catch (TableServiceException e) {
-            System.err.println("⚠️ Azure Table error: " + e.getMessage());
-        } catch (Exception e) {
-            System.err.println("❌ Failed to process message: " + e.getMessage());
-            e.printStackTrace();
-        }
-    }
-
-    /**
-     * Simulated call to Notification API.
-     *
-     * @param msg The message contents
-     */
-    private void sendNotification(Map<String, Object> msg) {
-        // TODO: replace this with actual HTTP POST call to notification API
-        System.out.println("📨 Sending to Notification API: " + msg);
-    }
-}
-
-
-⸻
-
-🧠 Summary
-
-Feature	Included
-Timestamp-based deduplication	✅
-Azure Table integration	✅
-Thread-safe client usage	✅
-Jackson for JSON parsing	✅
-Logging & error handling	✅
-Retry logic (simple, or can be added later)	⏳ (You can request if needed)
-
-
-⸻
-
-Let me know if you want:
-	•	A retry loop for API failure
-	•	To move to Spring-based version
-	•	Deployment tips for Azure Functions
-
-You’re now fully set up for reliable, timestamp-based deduplication on both ends 💪
+This mirrors everything in your screenshots:
+	•	top-level scalars,
+	•	recipient and agency,
+	•	dynamic placeholders,
+	•	metadata with createdAtUtc and msgScheduleAt as OffsetDateTime.
