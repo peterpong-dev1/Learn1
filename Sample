@@ -1,160 +1,177 @@
-Got it—you want full DTOs for the entire JSON your builder produces (not just placeholders). Here’s a clean, production-ready model set you can use on the consumer side.
+Got it 👍 — here’s a complete consumer implementation that follows the correct logic:
+	•	Service Bus trigger function in Java.
+	•	Detects whether the message was scheduled (by checking msgScheduleAt field presence).
+	•	For immediate (now) messages → directly send to Notification API.
+	•	For scheduled messages → check Azure Table to ensure the message is the latest (using preparedAt vs LastUpdatedTime).
+	•	Thread-safe HttpClient, clear logging, and safe error handling.
 
-package com.neo.notification.model;
+⸻
 
-import com.fasterxml.jackson.annotation.JsonInclude;
-import com.fasterxml.jackson.annotation.JsonProperty;
+✅ Full Consumer Code
 
-import java.time.OffsetDateTime;
-import java.util.Map;
+package com.neo.notification.consumer;
+
+import com.azure.data.tables.TableClient;
+import com.azure.data.tables.TableEntity;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.microsoft.azure.functions.*;
+import com.microsoft.azure.functions.annotation.*;
+
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Optional;
+import java.util.logging.Logger;
 
 /**
- * Root payload produced by NotificationPayloadBuilder.
+ * Azure Function that consumes messages from Service Bus.
+ * - Immediate messages: forwarded directly to Notification API
+ * - Scheduled messages: validated against Azure Table (deduplication)
  */
-@JsonInclude(JsonInclude.Include.NON_NULL)
-public class NotificationPayload {
+public class ScheduledMessageConsumerFn {
 
-    // ---- Top-level scalars ----
-    private String notificationType;
-    private String triggerType;
-    private String messageType;
-    private String language;
-    private String applicationId;
-    private String policyId;
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    // ---- Nested objects ----
-    private Recipient recipient;
-    private Agency agency;
+    // Thread-safe reusable HTTP client
+    private static final HttpClient HTTP = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(5))
+            .build();
 
-    /** Dynamic key/value bag */
-    private Map<String, Object> placeholders;
+    // Configuration from environment (local.settings.json or App Settings in Azure)
+    private static final String TABLE_NAME =
+            System.getenv().getOrDefault("MESSAGE_TRACKING_TABLE", "MessageTracking");
+    private static final String STORAGE_CONN = System.getenv("Blob_Connection");
+    private static final String NOTIFY_API_URL =
+            System.getenv().getOrDefault("NOTIFICATION_API_URL", "http://localhost:8080/notify");
 
-    private Metadata metadata;
+    @FunctionName("ScheduledMessageConsumer")
+    public void run(
+            @ServiceBusQueueTrigger(
+                    name = "msg",
+                    queueName = "%ServiceBusQueueForMsgAPI%",
+                    connection = "ServiceBusConnection",
+                    isSessionsEnabled = true // set based on your SB config
+            ) String body,
+            final ExecutionContext context) {
 
-    // Getters & setters
-    public String getNotificationType() { return notificationType; }
-    public void setNotificationType(String notificationType) { this.notificationType = notificationType; }
+        Logger log = context.getLogger();
+        log.info("Consumer received message from queue.");
 
-    public String getTriggerType() { return triggerType; }
-    public void setTriggerType(String triggerType) { this.triggerType = triggerType; }
+        try {
+            JsonNode root = MAPPER.readTree(body);
 
-    public String getMessageType() { return messageType; }
-    public void setMessageType(String messageType) { this.messageType = messageType; }
+            // Extract identifiers
+            String docId         = optText(root, "metadata", "docId").orElseThrow();
+            String notification  = optText(root, "notificationType").orElse(null);
+            String trigger       = optText(root, "triggerType").orElse(null);
+            String recipientType = optText(root, "recipient", "type").orElse(null);
 
-    public String getLanguage() { return language; }
-    public void setLanguage(String language) { this.language = language; }
+            // Scheduled or not: presence of msgScheduleAt
+            boolean isScheduled  = optText(root, "metadata", "msgScheduleAt").isPresent();
 
-    public String getApplicationId() { return applicationId; }
-    public void setApplicationId(String applicationId) { this.applicationId = applicationId; }
+            // preparedAt (createdAtUtc from producer) must be present
+            Instant preparedAt = optText(root, "metadata", "createdAtUtc")
+                    .map(Instant::parse)
+                    .orElseThrow(() -> new IllegalArgumentException("metadata.createdAtUtc missing"));
 
-    public String getPolicyId() { return policyId; }
-    public void setPolicyId(String policyId) { this.policyId = policyId; }
+            if (!isScheduled) {
+                // NOW message → no table check
+                log.info("Immediate message → sending directly to Notification API.");
+                callNotificationApi(body, log);
+                return;
+            }
 
-    public Recipient getRecipient() { return recipient; }
-    public void setRecipient(Recipient recipient) { this.recipient = recipient; }
+            // SCHEDULED message → check table
+            TableClient table = new com.azure.data.tables.TableClientBuilder()
+                    .connectionString(STORAGE_CONN)
+                    .tableName(TABLE_NAME)
+                    .buildClient();
 
-    public Agency getAgency() { return agency; }
-    public void setAgency(Agency agency) { this.agency = agency; }
+            String rowKey = String.join("|",
+                    nz(notification), nz(trigger), nz(recipientType));
 
-    public Map<String, Object> getPlaceholders() { return placeholders; }
-    public void setPlaceholders(Map<String, Object> placeholders) { this.placeholders = placeholders; }
+            Optional<TableEntity> entityOpt = tryGet(table, docId, rowKey);
 
-    public Metadata getMetadata() { return metadata; }
-    public void setMetadata(Metadata metadata) { this.metadata = metadata; }
+            if (entityOpt.isEmpty()) {
+                log.warning("Scheduled msg: no table row found → sending anyway.");
+                callNotificationApi(body, log);
+                return;
+            }
 
-    // ---- Nested DTOs ----
+            TableEntity entity = entityOpt.get();
+            Instant tableLastUpdated = Optional.ofNullable(entity.getProperty("LastUpdatedTime"))
+                    .map(Object::toString)
+                    .map(Instant::parse)
+                    .orElseThrow(() -> new IllegalStateException("Table row missing LastUpdatedTime"));
 
-    @JsonInclude(JsonInclude.Include.NON_NULL)
-    public static class Recipient {
-        private String name;
-        private String email;
-        private String phone;
-        private String lineId;
+            if (preparedAt.equals(tableLastUpdated) || preparedAt.isAfter(tableLastUpdated)) {
+                log.info("Scheduled msg is latest → sending.");
+                callNotificationApi(body, log);
+            } else {
+                log.info("Scheduled msg is stale (preparedAt < table) → SKIPPED.");
+            }
 
-        public String getName() { return name; }
-        public void setName(String name) { this.name = name; }
-
-        public String getEmail() { return email; }
-        public void setEmail(String email) { this.email = email; }
-
-        public String getPhone() { return phone; }
-        public void setPhone(String phone) { this.phone = phone; }
-
-        public String getLineId() { return lineId; }
-        public void setLineId(String lineId) { this.lineId = lineId; }
+        } catch (Exception ex) {
+            log.severe("Consumer failed: " + ex.getMessage());
+            throw new RuntimeException(ex);
+        }
     }
 
-    @JsonInclude(JsonInclude.Include.NON_NULL)
-    public static class Agency {
-        private String agencyId;
-        private String agencyName;
+    // ---- Helpers ----
 
-        public String getAgencyId() { return agencyId; }
-        public void setAgencyId(String agencyId) { this.agencyId = agencyId; }
-
-        public String getAgencyName() { return agencyName; }
-        public void setAgencyName(String agencyName) { this.agencyName = agencyName; }
+    private static Optional<TableEntity> tryGet(TableClient client, String partitionKey, String rowKey) {
+        try {
+            return Optional.of(client.getEntity(partitionKey, rowKey));
+        } catch (Exception e) {
+            return Optional.empty();
+        }
     }
 
-    @JsonInclude(JsonInclude.Include.NON_NULL)
-    public static class Metadata {
-        private String messageId;
-        private String correlationId;
-        private String container;
-        private String docId;
-        private String eventId;
-        private String eventName;
+    private static Optional<String> optText(JsonNode n, String... path) {
+        JsonNode cur = n;
+        for (String p : path) {
+            if (cur == null) return Optional.empty();
+            cur = cur.get(p);
+        }
+        return (cur != null && cur.isTextual()) ? Optional.of(cur.asText()) : Optional.empty();
+    }
 
-        /** Produced as ISO-8601 string by builder (createdAtUtc) */
-        @JsonProperty("createdAtUtc")
-        private OffsetDateTime createdAtUtc;
+    private static String nz(String s) {
+        return (s == null || s.isBlank()) ? "-" : s;
+    }
 
-        /** Scheduled time from producer (msgScheduleAt) */
-        @JsonProperty("msgScheduleAt")
-        private OffsetDateTime msgScheduleAt;
+    private static void callNotificationApi(String jsonPayload, Logger log) throws Exception {
+        HttpRequest req = HttpRequest.newBuilder()
+                .uri(URI.create(NOTIFY_API_URL))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(jsonPayload))
+                .timeout(Duration.ofSeconds(10))
+                .build();
 
-        public String getMessageId() { return messageId; }
-        public void setMessageId(String messageId) { this.messageId = messageId; }
-
-        public String getCorrelationId() { return correlationId; }
-        public void setCorrelationId(String correlationId) { this.correlationId = correlationId; }
-
-        public String getContainer() { return container; }
-        public void setContainer(String container) { this.container = container; }
-
-        public String getDocId() { return docId; }
-        public void setDocId(String docId) { this.docId = docId; }
-
-        public String getEventId() { return eventId; }
-        public void setEventId(String eventId) { this.eventId = eventId; }
-
-        public String getEventName() { return eventName; }
-        public void setEventName(String eventName) { this.eventName = eventName; }
-
-        public OffsetDateTime getCreatedAtUtc() { return createdAtUtc; }
-        public void setCreatedAtUtc(OffsetDateTime createdAtUtc) { this.createdAtUtc = createdAtUtc; }
-
-        public OffsetDateTime getMsgScheduleAt() { return msgScheduleAt; }
-        public void setMsgScheduleAt(OffsetDateTime msgScheduleAt) { this.msgScheduleAt = msgScheduleAt; }
+        HttpResponse<String> res = HTTP.send(req, HttpResponse.BodyHandlers.ofString());
+        if (res.statusCode() / 100 != 2) {
+            log.severe("Notification API failed: " + res.statusCode() + " body=" + res.body());
+            throw new RuntimeException("Notification API call failed");
+        } else {
+            log.info("Notification API success: " + res.statusCode());
+        }
     }
 }
 
-How to parse in the consumer:
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.neo.notification.model.NotificationPayload;
+⸻
 
-ObjectMapper mapper = new ObjectMapper();
-// If timestamps are ISO-8601 strings (as in your builder), this just works:
-NotificationPayload payload = mapper.readValue(jsonString, NotificationPayload.class);
+🔑 Key Points
+	•	NOW message: no msgScheduleAt → skip table check, just send.
+	•	Scheduled message: always check table for freshness (preparedAt vs LastUpdatedTime).
+	•	If table has no row → safe default is to send.
+	•	If preparedAt < LastUpdatedTime → skip (stale).
+	•	If equal or newer → send.
 
-// Example access:
-String type = payload.getNotificationType();
-Map<String,Object> ph = payload.getPlaceholders();
-String email = payload.getRecipient() != null ? payload.getRecipient().getEmail() : null;
+⸻
 
-This mirrors everything in your screenshots:
-	•	top-level scalars,
-	•	recipient and agency,
-	•	dynamic placeholders,
-	•	metadata with createdAtUtc and msgScheduleAt as OffsetDateTime.
+👉 Do you want me to also give you the matching producer code so the table (LastUpdatedTime) and message (preparedAt) are guaranteed to align perfectly?
