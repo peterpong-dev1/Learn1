@@ -1,177 +1,121 @@
-Got it 👍 — here’s a complete consumer implementation that follows the correct logic:
-	•	Service Bus trigger function in Java.
-	•	Detects whether the message was scheduled (by checking msgScheduleAt field presence).
-	•	For immediate (now) messages → directly send to Notification API.
-	•	For scheduled messages → check Azure Table to ensure the message is the latest (using preparedAt vs LastUpdatedTime).
-	•	Thread-safe HttpClient, clear logging, and safe error handling.
+Perfect—that’s exactly the pattern. Here’s a tiny, production-lean utility that:
+	•	takes a Map<String, Object> of JSON paths → values (e.g. "/stages.notificationApi.status" -> "PROCESSED"),
+	•	PATCHes those fields (creating the doc first if it doesn’t exist),
+	•	and lets you read by correlationId.
 
-⸻
+import com.azure.cosmos.*;
+import com.azure.cosmos.models.*;
+import com.azure.cosmos.util.CosmosPagedIterable;
+import com.fasterxml.jackson.databind.node.*;
 
-✅ Full Consumer Code
-
-package com.neo.notification.consumer;
-
-import com.azure.data.tables.TableClient;
-import com.azure.data.tables.TableEntity;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.microsoft.azure.functions.*;
-import com.microsoft.azure.functions.annotation.*;
-
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.time.Duration;
 import java.time.Instant;
-import java.util.Optional;
-import java.util.logging.Logger;
+import java.util.Map;
 
-/**
- * Azure Function that consumes messages from Service Bus.
- * - Immediate messages: forwarded directly to Notification API
- * - Scheduled messages: validated against Azure Table (deduplication)
- */
-public class ScheduledMessageConsumerFn {
+public final class CosmosReportingUtil {
+    private CosmosReportingUtil() {}
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
-
-    // Thread-safe reusable HTTP client
-    private static final HttpClient HTTP = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(5))
-            .build();
-
-    // Configuration from environment (local.settings.json or App Settings in Azure)
-    private static final String TABLE_NAME =
-            System.getenv().getOrDefault("MESSAGE_TRACKING_TABLE", "MessageTracking");
-    private static final String STORAGE_CONN = System.getenv("Blob_Connection");
-    private static final String NOTIFY_API_URL =
-            System.getenv().getOrDefault("NOTIFICATION_API_URL", "http://localhost:8080/notify");
-
-    @FunctionName("ScheduledMessageConsumer")
-    public void run(
-            @ServiceBusQueueTrigger(
-                    name = "msg",
-                    queueName = "%ServiceBusQueueForMsgAPI%",
-                    connection = "ServiceBusConnection",
-                    isSessionsEnabled = true // set based on your SB config
-            ) String body,
-            final ExecutionContext context) {
-
-        Logger log = context.getLogger();
-        log.info("Consumer received message from queue.");
-
+    /** Create minimal doc if not exists (id == correlationId, pk == /correlationId). */
+    public static ObjectNode createIfNotExists(CosmosContainer container, String correlationId) {
         try {
-            JsonNode root = MAPPER.readTree(body);
+            return container.readItem(correlationId, new PartitionKey(correlationId), ObjectNode.class).getItem();
+        } catch (CosmosException e) {
+            if (e.getStatusCode() != 404) throw e;
+        }
+        ObjectNode doc = JsonNodeFactory.instance.objectNode();
+        doc.put("id", correlationId);
+        doc.put("correlationId", correlationId);
+        doc.put("workflowStatus", "IN_PROGRESS");
+        doc.set("stages", JsonNodeFactory.instance.objectNode());
+        doc.put("createdAt", Instant.now().toString());
+        return container.createItem(doc, new PartitionKey(correlationId), new CosmosItemRequestOptions()).getItem();
+    }
 
-            // Extract identifiers
-            String docId         = optText(root, "metadata", "docId").orElseThrow();
-            String notification  = optText(root, "notificationType").orElse(null);
-            String trigger       = optText(root, "triggerType").orElse(null);
-            String recipientType = optText(root, "recipient", "type").orElse(null);
-
-            // Scheduled or not: presence of msgScheduleAt
-            boolean isScheduled  = optText(root, "metadata", "msgScheduleAt").isPresent();
-
-            // preparedAt (createdAtUtc from producer) must be present
-            Instant preparedAt = optText(root, "metadata", "createdAtUtc")
-                    .map(Instant::parse)
-                    .orElseThrow(() -> new IllegalArgumentException("metadata.createdAtUtc missing"));
-
-            if (!isScheduled) {
-                // NOW message → no table check
-                log.info("Immediate message → sending directly to Notification API.");
-                callNotificationApi(body, log);
-                return;
-            }
-
-            // SCHEDULED message → check table
-            TableClient table = new com.azure.data.tables.TableClientBuilder()
-                    .connectionString(STORAGE_CONN)
-                    .tableName(TABLE_NAME)
-                    .buildClient();
-
-            String rowKey = String.join("|",
-                    nz(notification), nz(trigger), nz(recipientType));
-
-            Optional<TableEntity> entityOpt = tryGet(table, docId, rowKey);
-
-            if (entityOpt.isEmpty()) {
-                log.warning("Scheduled msg: no table row found → sending anyway.");
-                callNotificationApi(body, log);
-                return;
-            }
-
-            TableEntity entity = entityOpt.get();
-            Instant tableLastUpdated = Optional.ofNullable(entity.getProperty("LastUpdatedTime"))
-                    .map(Object::toString)
-                    .map(Instant::parse)
-                    .orElseThrow(() -> new IllegalStateException("Table row missing LastUpdatedTime"));
-
-            if (preparedAt.equals(tableLastUpdated) || preparedAt.isAfter(tableLastUpdated)) {
-                log.info("Scheduled msg is latest → sending.");
-                callNotificationApi(body, log);
+    /**
+     * Upsert fields via PATCH. Keys are JSON paths (dot or slash), e.g.:
+     *  "/workflowStatus" -> "IN_PROGRESS"
+     *  "/stages.notificationApi.status" -> "PROCESSED"
+     *  "delivery.httpStatus" -> 202
+     * If the document doesn't exist, it's created first.
+     */
+    public static void patchFields(CosmosContainer container, String correlationId, Map<String, Object> fields) {
+        // try patch; if 404, create then patch
+        try {
+            doPatch(container, correlationId, fields);
+        } catch (CosmosException e) {
+            if (e.getStatusCode() == 404) {
+                createIfNotExists(container, correlationId);
+                doPatch(container, correlationId, fields);
             } else {
-                log.info("Scheduled msg is stale (preparedAt < table) → SKIPPED.");
+                throw e;
             }
-
-        } catch (Exception ex) {
-            log.severe("Consumer failed: " + ex.getMessage());
-            throw new RuntimeException(ex);
         }
     }
 
-    // ---- Helpers ----
-
-    private static Optional<TableEntity> tryGet(TableClient client, String partitionKey, String rowKey) {
-        try {
-            return Optional.of(client.getEntity(partitionKey, rowKey));
-        } catch (Exception e) {
-            return Optional.empty();
-        }
+    /** Read by correlationId (id == correlationId, pk == /correlationId). */
+    public static ObjectNode read(CosmosContainer container, String correlationId) {
+        return container.readItem(correlationId, new PartitionKey(correlationId), ObjectNode.class).getItem();
     }
 
-    private static Optional<String> optText(JsonNode n, String... path) {
-        JsonNode cur = n;
-        for (String p : path) {
-            if (cur == null) return Optional.empty();
-            cur = cur.get(p);
+    // --------- internal helpers ---------
+
+    private static void doPatch(CosmosContainer container, String correlationId, Map<String, Object> fields) {
+        CosmosPatchOperations ops = CosmosPatchOperations.create();
+        for (Map.Entry<String, Object> e : fields.entrySet()) {
+            String path = normalizePath(e.getKey());      // convert "a.b" → "/a/b", keep "/a.b" → "/a/b"
+            ops.set(path, e.getValue());
         }
-        return (cur != null && cur.isTextual()) ? Optional.of(cur.asText()) : Optional.empty();
+        ops.set("/lastUpdatedAt", Instant.now().toString());
+
+        container.patchItem(
+                correlationId,
+                new PartitionKey(correlationId),
+                ops,
+                ObjectNode.class
+        );
     }
 
-    private static String nz(String s) {
-        return (s == null || s.isBlank()) ? "-" : s;
-    }
-
-    private static void callNotificationApi(String jsonPayload, Logger log) throws Exception {
-        HttpRequest req = HttpRequest.newBuilder()
-                .uri(URI.create(NOTIFY_API_URL))
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(jsonPayload))
-                .timeout(Duration.ofSeconds(10))
-                .build();
-
-        HttpResponse<String> res = HTTP.send(req, HttpResponse.BodyHandlers.ofString());
-        if (res.statusCode() / 100 != 2) {
-            log.severe("Notification API failed: " + res.statusCode() + " body=" + res.body());
-            throw new RuntimeException("Notification API call failed");
-        } else {
-            log.info("Notification API success: " + res.statusCode());
-        }
+    /** Accepts "/a/b", "a.b", "a/b" → returns "/a/b" (JSON Pointer style for Cosmos PATCH). */
+    private static String normalizePath(String raw) {
+        if (raw == null || raw.isBlank()) throw new IllegalArgumentException("Empty patch path");
+        String p = raw.trim();
+        // strip leading slash if present
+        if (p.startsWith("/")) p = p.substring(1);
+        // convert dot notation to slashes
+        p = p.replace('.', '/');
+        // collapse accidental double slashes
+        while (p.contains("//")) p = p.replace("//", "/");
+        return "/" + p;
     }
 }
 
+Example usage
 
-⸻
+// Build container once (pk path = /correlationId)
+CosmosClient client = new CosmosClientBuilder()
+    .endpoint(System.getenv("COSMOS_URI"))
+    .key(System.getenv("COSMOS_KEY"))
+    .contentResponseOnWriteEnabled(true)
+    .buildClient();
+CosmosContainer container = client
+    .getDatabase("notification_reporting_db")
+    .getContainer("message_workflow");
 
-🔑 Key Points
-	•	NOW message: no msgScheduleAt → skip table check, just send.
-	•	Scheduled message: always check table for freshness (preparedAt vs LastUpdatedTime).
-	•	If table has no row → safe default is to send.
-	•	If preparedAt < LastUpdatedTime → skip (stale).
-	•	If equal or newer → send.
+// 1) Ensure doc exists (first stage)
+CosmosReportingUtil.createIfNotExists(container, "corr-123");
 
-⸻
+// 2) Patch a few fields later (add or update)
+CosmosReportingUtil.patchFields(container, "corr-123", Map.of(
+    "workflowStatus", "IN_PROGRESS",
+    "stages.scheduledConsumer.status", "PROCESSED",
+    "stages.scheduledConsumer.processedAt", Instant.now().toString(),
+    "delivery.httpStatus", 202
+));
 
-👉 Do you want me to also give you the matching producer code so the table (LastUpdatedTime) and message (preparedAt) are guaranteed to align perfectly?
+// 3) Read when needed
+var doc = CosmosReportingUtil.read(container, "corr-123");
+System.out.println(doc.toPrettyString());
+
+Notes
+	•	Keys in the map can be "a.b.c" or "/a/b/c"; the helper normalizes to JSON Pointer.
+	•	If the document doesn’t exist, patchFields creates it first (minimal shape), then applies your updates.
+	•	This uses PATCH (cheap RUs) and grows the document over time as you add fields.
