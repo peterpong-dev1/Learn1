@@ -1,67 +1,49 @@
-import com.azure.cosmos.*;
-import com.azure.cosmos.models.*;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+public static void patchSafe(CosmosContainer container, String corrId, Map<String, Object> fields) {
+    if (fields == null || fields.isEmpty()) return;
 
-import java.time.Instant;
-import java.util.Map;
+    // 1) Read current doc to see which parents already exist
+    ObjectNode cur = container.readItem(corrId, new PartitionKey(corrId), ObjectNode.class).getItem();
 
-public final class CosmosReportingUtil {
+    // Collect parents to create (only if missing) and leaves to set
+    Set<String> parentsToCreate = new LinkedHashSet<>();
+    List<Map.Entry<String,Object>> leaves = new ArrayList<>();
 
-    private CosmosReportingUtil() {}
-
-    /**
-     * Create minimal doc if not exists.
-     * If doc exists (by correlationId), returns existing doc.
-     * If not, inserts a new one with given fields.
-     *
-     * @param container     Cosmos DB container
-     * @param correlationId correlation id (used for id and partition key)
-     * @param fields        map of fields to insert on first creation
-     * @return ObjectNode   created or existing document
-     */
-    public static ObjectNode createIfNotExists(CosmosContainer container, 
-                                               String correlationId,
-                                               Map<String, Object> fields) {
-        try {
-            // Try to read the existing doc
-            return container.readItem(correlationId, new PartitionKey(correlationId), ObjectNode.class)
-                            .getItem();
-        } catch (CosmosException e) {
-            if (e.getStatusCode() != 404) {
-                throw e; // rethrow if it's not "Not Found"
+    for (var e : fields.entrySet()) {
+        String leaf = normalizeToPointer(e.getKey());    // "a.b.c" → "/a/b/c"
+        leaves.add(Map.entry(leaf, e.getValue()));
+        // walk parents like /a, /a/b ...
+        String[] parts = leaf.substring(1).split("/");
+        String path = "";
+        JsonNode probe = cur;
+        for (int i = 0; i < parts.length - 1; i++) {
+            path += "/" + parts[i];
+            JsonNode n = probe.at(path);
+            if (n.isMissingNode() || !n.isObject()) {
+                parentsToCreate.add(path);               // will create this parent
+            } else {
+                probe = n;                               // descend for next check
             }
         }
-
-        // Create a new document with dynamic fields
-        ObjectNode doc = JsonNodeFactory.instance.objectNode();
-        doc.put("id", correlationId);
-        doc.put("correlationId", correlationId);
-
-        // Add user-specified fields dynamically
-        if (fields != null) {
-            fields.forEach((k, v) -> {
-                if (v != null) {
-                    if (v instanceof String) {
-                        doc.put(k, (String) v);
-                    } else if (v instanceof Integer) {
-                        doc.put(k, (Integer) v);
-                    } else if (v instanceof Long) {
-                        doc.put(k, (Long) v);
-                    } else if (v instanceof Boolean) {
-                        doc.put(k, (Boolean) v);
-                    } else {
-                        doc.putPOJO(k, v); // fallback for objects
-                    }
-                }
-            });
-        }
-
-        // Always add createdAt timestamp
-        doc.put("createdAt", Instant.now().toString());
-
-        // Insert document
-        return container.createItem(doc, new PartitionKey(correlationId), new CosmosItemRequestOptions())
-                        .getItem();
     }
+
+    // Order parents shallow → deep so /a before /a/b
+    List<String> orderedParents = new ArrayList<>(parentsToCreate);
+    orderedParents.sort(Comparator.comparingInt(p -> p.split("/").length));
+
+    // 2) Build PATCH ops: create missing parents, then set leaves
+    CosmosPatchOperations ops = CosmosPatchOperations.create();
+    for (String p : orderedParents) ops.set(p, JsonNodeFactory.instance.objectNode());
+    for (var e : leaves) ops.set(e.getKey(), new ObjectMapper().valueToTree(e.getValue()));
+    ops.set("/lastUpdatedAtUtc", Instant.now().toString());
+
+    // 3) Apply
+    container.patchItem(corrId, new PartitionKey(corrId), ops, ObjectNode.class);
+}
+
+private static String normalizeToPointer(String raw) {
+    String p = raw.trim();
+    if (p.startsWith("/")) p = p.substring(1);
+    p = p.replace('.', '/');
+    while (p.contains("//")) p = p.replace("//", "/");
+    return "/" + p;
 }
