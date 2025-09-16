@@ -1,26 +1,67 @@
-現在の給与とほぼ同じ水準であったため、正直申し上げますと少し昇給を期待しておりました。
-過去には他社からより高い条件でのオファーもいただきましたが、御社で働きたい思いが強く辞退いたしました。
-御社で長く働きたいと考えておりますので、もし可能であれば給与条件について再度ご検討いただけますと幸いです。
+import com.azure.cosmos.*;
+import com.azure.cosmos.models.*;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 
-（もし他社の件を聞かれた場合）
-安定した環境で長期的に働きたいと考えておりますので、御社を第一に希望しております。
+import java.time.Instant;
+import java.util.Map;
 
-⸻
+public final class CosmosReportingUtil {
 
-Romaji:
-Genzai no kyūyo to hobo onaji suijun de atta tame, shōjiki mōshiagemasu to sukoshi shōkyū o kitai shite orimashita.
-Kako ni wa tasha kara yori takai jōken de no ofā mo itadaimashita ga, onsha de hatarakitai omoi ga tsuyoku jitai itashimashita.
-Onsha de nagaku hatarakitai to kangaete orimasu node, moshi kanō de areba kyūyo jōken ni tsuite saido go-kentō itadakemasu to saiwai desu.
+    private CosmosReportingUtil() {}
 
-(Moshi tasha no ken o kikareta baai)
-Antei shita kankyō de chōkiteki ni hatarakitai to kangaete orimasu node, onsha o daiichi ni kibō shite orimasu.
+    /**
+     * Create minimal doc if not exists.
+     * If doc exists (by correlationId), returns existing doc.
+     * If not, inserts a new one with given fields.
+     *
+     * @param container     Cosmos DB container
+     * @param correlationId correlation id (used for id and partition key)
+     * @param fields        map of fields to insert on first creation
+     * @return ObjectNode   created or existing document
+     */
+    public static ObjectNode createIfNotExists(CosmosContainer container, 
+                                               String correlationId,
+                                               Map<String, Object> fields) {
+        try {
+            // Try to read the existing doc
+            return container.readItem(correlationId, new PartitionKey(correlationId), ObjectNode.class)
+                            .getItem();
+        } catch (CosmosException e) {
+            if (e.getStatusCode() != 404) {
+                throw e; // rethrow if it's not "Not Found"
+            }
+        }
 
-⸻
+        // Create a new document with dynamic fields
+        ObjectNode doc = JsonNodeFactory.instance.objectNode();
+        doc.put("id", correlationId);
+        doc.put("correlationId", correlationId);
 
-English:
-Since the offered salary is almost the same as my current one, I must admit I was expecting a slight increase.
-In the past, I also received higher offers from other companies, but I declined them because I strongly wish to work here.
-I hope to build a long career at your company, so if possible, I would be grateful if you could kindly reconsider the salary conditions.
+        // Add user-specified fields dynamically
+        if (fields != null) {
+            fields.forEach((k, v) -> {
+                if (v != null) {
+                    if (v instanceof String) {
+                        doc.put(k, (String) v);
+                    } else if (v instanceof Integer) {
+                        doc.put(k, (Integer) v);
+                    } else if (v instanceof Long) {
+                        doc.put(k, (Long) v);
+                    } else if (v instanceof Boolean) {
+                        doc.put(k, (Boolean) v);
+                    } else {
+                        doc.putPOJO(k, v); // fallback for objects
+                    }
+                }
+            });
+        }
 
-(If asked about other companies:)
-I am seeking a stable environment where I can work long-term, which is why I place your company as my first choice.
+        // Always add createdAt timestamp
+        doc.put("createdAt", Instant.now().toString());
+
+        // Insert document
+        return container.createItem(doc, new PartitionKey(correlationId), new CosmosItemRequestOptions())
+                        .getItem();
+    }
+}
