@@ -1,120 +1,161 @@
-import com.azure.cosmos.*;
-import com.azure.cosmos.models.*;
-import com.fasterxml.jackson.databind.node.*;
+package your.pkg;
+
+import com.azure.cosmos.CosmosContainer;
+import com.azure.cosmos.CosmosException;
+import com.azure.cosmos.models.CosmosItemRequestOptions;
+import com.azure.cosmos.models.CosmosPatchOperations;
+import com.azure.cosmos.models.PartitionKey;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.time.Instant;
 import java.util.Map;
 
-public final class ReportingDocs {
-  private static final ObjectNodeFactory F = new ObjectNodeFactory();
+public final class ReportingStore {
 
-  private ReportingDocs() {}
+  private static final JsonNodeFactory F = JsonNodeFactory.instance;
 
-  /** Create minimal doc if not present. You can pass optional base fields to set on first create. */
+  private ReportingStore() {}
+
+  /** Create minimal skeleton if missing; returns existing if present. */
   public static ObjectNode createIfNotExists(CosmosContainer container,
                                              String correlationId,
                                              Map<String, Object> baseFields) {
     try {
-      // Already there?
-      return container.readItem(correlationId, new PartitionKey(correlationId), ObjectNode.class)
-                      .getItem();
+      return container.readItem(correlationId, new PartitionKey(correlationId), ObjectNode.class).getItem();
     } catch (CosmosException e) {
       if (e.getStatusCode() != 404) throw e;
     }
 
-    ObjectNode doc = F.object();
-    // required ids/keys
+    // --- skeleton (parents pre-seeded so PATCH never complains about missing paths)
+    ObjectNode doc = F.objectNode();
     doc.put("id", correlationId);
     doc.put("correlationId", correlationId);
 
-    // top-level simple fields (nullable-friendly)
+    // top-level
     doc.put("docId", (String) null);
     doc.put("function", (String) null);
     doc.put("container", (String) null);
-
-    // overall workflow status
-    doc.put("status", "IN_PROGRESS");
-
-    // timestamps (UTC ISO-8601 strings)
-    doc.put("createdAt", Instant.now().toString());
-    doc.put("lastUpdatedAtUtc", Instant.now().toString());
+    doc.put("status", "IN_PROGRESS");                 // overall workflow status
 
     // classification
     doc.put("notificationType", (String) null);
     doc.put("triggerType", (String) null);
     doc.put("recipientType", (String) null);
 
-    // email
-    ObjectNode email = F.object();
+    // email block
+    ObjectNode email = F.objectNode();
     email.put("subject", (String) null);
     email.put("body", (String) null);
     doc.set("email", email);
 
-    // stages (pre-seed parent objects so later PATCH doesn’t fail)
-    ObjectNode stages = F.object();
-    stages.set("cosmosdbtrigger", F.object());
-    stages.set("sbmsgqueuetrigger", F.object());
-    stages.set("sbnotificationqueuetrigger", F.object());
-    stages.set("notificationapi", F.object());
+    // stages buckets (empty objects so nested PATCH works)
+    ObjectNode stages = F.objectNode();
+    stages.set("cosmosdbtrigger",          F.objectNode());
+    stages.set("sbmsgqueuetrigger",        F.objectNode());
+    stages.set("sbnotificationqueuetrigger", F.objectNode());
+    stages.set("notificationapi",          F.objectNode());
     doc.set("stages", stages);
 
-    // error
+    // error + timestamps
     doc.put("errorMessage", (String) null);
+    doc.put("createdAt", Instant.now().toString());
+    doc.put("lastUpdatedAtUtc", Instant.now().toString());
 
-    // apply optional base fields on first create (keys are dot or slash paths)
+    // optional base fields on first create (dot or / paths)
     if (baseFields != null && !baseFields.isEmpty()) {
-      patchIntoObject(doc, baseFields);   // in-memory merge
+      mergeIntoObject(doc, baseFields);
     }
 
-    return container.createItem(doc, new PartitionKey(correlationId), new CosmosItemRequestOptions())
-                    .getItem();
+    return container.createItem(doc, new PartitionKey(correlationId), new CosmosItemRequestOptions()).getItem();
   }
 
-  // ---- helpers for in-memory merge (dot or slash paths) ----
-  private static void patchIntoObject(ObjectNode root, Map<String, Object> fields) {
+  /**
+   * PATCH fields server-side. Keys may be "a.b.c" or "/a/b/c".
+   * Assumes parent objects (like /stages/*) exist (created by createIfNotExists).
+   */
+  public static ObjectNode patchFields(CosmosContainer container,
+                                       String correlationId,
+                                       Map<String, Object> fields) {
+    if (fields == null || fields.isEmpty()) return read(container, correlationId);
+
+    CosmosPatchOperations ops = CosmosPatchOperations.create();
     for (Map.Entry<String, Object> e : fields.entrySet()) {
-      String path = normalizePath(e.getKey());     // "/a/b"
-      setPath(root, path, e.getValue());           // create parents if missing
+      ops.set(toPointer(e.getKey()), e.getValue());
+    }
+    ops.set("/lastUpdatedAtUtc", Instant.now().toString());
+
+    return container.patchItem(correlationId, new PartitionKey(correlationId), ops, ObjectNode.class).getItem();
+  }
+
+  /**
+   * Convenience: try PATCH; if the item does not exist (404), create skeleton (with optional base fields) then PATCH.
+   */
+  public static ObjectNode patchOrCreate(CosmosContainer container,
+                                         String correlationId,
+                                         Map<String, Object> patchFields,
+                                         Map<String, Object> baseOnCreate) {
+    try {
+      return patchFields(container, correlationId, patchFields);
+    } catch (CosmosException e) {
+      if (e.getStatusCode() != 404) throw e;
+      createIfNotExists(container, correlationId, baseOnCreate);
+      return patchFields(container, correlationId, patchFields);
+    }
+  }
+
+  /** Read helper (id==pk). */
+  public static ObjectNode read(CosmosContainer container, String correlationId) {
+    return container.readItem(correlationId, new PartitionKey(correlationId), ObjectNode.class).getItem();
+  }
+
+  // ---------- in-memory merge for initial create ----------
+
+  /** Merge a map of paths (dot or /) into an ObjectNode, creating parents as needed. */
+  private static void mergeIntoObject(ObjectNode root, Map<String, Object> fields) {
+    for (Map.Entry<String, Object> e : fields.entrySet()) {
+      setNested(root, toPointer(e.getKey()), e.getValue());
     }
     root.put("lastUpdatedAtUtc", Instant.now().toString());
   }
 
-  private static String normalizePath(String raw) {
-    String p = (raw == null ? "" : raw.trim());
+  /** Convert "a.b.c", "a/b/c", or "/a/b/c" → "/a/b/c". */
+  private static String toPointer(String raw) {
+    String p = raw == null ? "" : raw.trim();
     if (p.isEmpty()) throw new IllegalArgumentException("Empty path");
-    if (!p.startsWith("/")) p = p.replace('.', '/'); // "a.b" -> "a/b"
+    if (!p.startsWith("/")) p = p.replace('.', '/');
     if (!p.startsWith("/")) p = "/" + p;
     while (p.contains("//")) p = p.replace("//", "/");
     return p;
   }
 
-  // Create parents as needed inside an ObjectNode
-  private static void setPath(ObjectNode root, String path, Object value) {
-    String[] parts = path.substring(1).split("/");
-    ObjectNode curr = root;
+  /** Create parents inside an ObjectNode and set the leaf value. */
+  private static void setNested(ObjectNode root, String pointer, Object value) {
+    String[] parts = pointer.substring(1).split("/");
+    ObjectNode cur = root;
     for (int i = 0; i < parts.length - 1; i++) {
       String key = parts[i];
-      var next = curr.get(key);
+      var next = cur.get(key);
       if (!(next instanceof ObjectNode)) {
-        ObjectNode created = F.object();
-        curr.set(key, created);
-        curr = created;
+        ObjectNode created = F.objectNode();
+        cur.set(key, created);
+        cur = created;
       } else {
-        curr = (ObjectNode) next;
+        cur = (ObjectNode) next;
       }
     }
     String leaf = parts[parts.length - 1];
-    // set leaf (basic scalar/JSON; arrays/objects should be prebuilt as Jackson nodes)
+
     if (value == null) {
-      curr.putNull(leaf);
+      cur.putNull(leaf);
     } else if (value instanceof Boolean b) {
-      curr.put(leaf, b);
+      cur.put(leaf, b);
     } else if (value instanceof Number n) {
-      curr.put(leaf, n.doubleValue());
+      cur.put(leaf, n.doubleValue());           // keeps it numeric; change if you need specific types
     } else if (value instanceof ObjectNode on) {
-      curr.set(leaf, on);
+      cur.set(leaf, on);
     } else {
-      curr.put(leaf, value.toString());
+      cur.put(leaf, value.toString());
     }
   }
 }
