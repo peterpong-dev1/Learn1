@@ -1,49 +1,120 @@
-public static void patchSafe(CosmosContainer container, String corrId, Map<String, Object> fields) {
-    if (fields == null || fields.isEmpty()) return;
+import com.azure.cosmos.*;
+import com.azure.cosmos.models.*;
+import com.fasterxml.jackson.databind.node.*;
 
-    // 1) Read current doc to see which parents already exist
-    ObjectNode cur = container.readItem(corrId, new PartitionKey(corrId), ObjectNode.class).getItem();
+import java.time.Instant;
+import java.util.Map;
 
-    // Collect parents to create (only if missing) and leaves to set
-    Set<String> parentsToCreate = new LinkedHashSet<>();
-    List<Map.Entry<String,Object>> leaves = new ArrayList<>();
+public final class ReportingDocs {
+  private static final ObjectNodeFactory F = new ObjectNodeFactory();
 
-    for (var e : fields.entrySet()) {
-        String leaf = normalizeToPointer(e.getKey());    // "a.b.c" → "/a/b/c"
-        leaves.add(Map.entry(leaf, e.getValue()));
-        // walk parents like /a, /a/b ...
-        String[] parts = leaf.substring(1).split("/");
-        String path = "";
-        JsonNode probe = cur;
-        for (int i = 0; i < parts.length - 1; i++) {
-            path += "/" + parts[i];
-            JsonNode n = probe.at(path);
-            if (n.isMissingNode() || !n.isObject()) {
-                parentsToCreate.add(path);               // will create this parent
-            } else {
-                probe = n;                               // descend for next check
-            }
-        }
+  private ReportingDocs() {}
+
+  /** Create minimal doc if not present. You can pass optional base fields to set on first create. */
+  public static ObjectNode createIfNotExists(CosmosContainer container,
+                                             String correlationId,
+                                             Map<String, Object> baseFields) {
+    try {
+      // Already there?
+      return container.readItem(correlationId, new PartitionKey(correlationId), ObjectNode.class)
+                      .getItem();
+    } catch (CosmosException e) {
+      if (e.getStatusCode() != 404) throw e;
     }
 
-    // Order parents shallow → deep so /a before /a/b
-    List<String> orderedParents = new ArrayList<>(parentsToCreate);
-    orderedParents.sort(Comparator.comparingInt(p -> p.split("/").length));
+    ObjectNode doc = F.object();
+    // required ids/keys
+    doc.put("id", correlationId);
+    doc.put("correlationId", correlationId);
 
-    // 2) Build PATCH ops: create missing parents, then set leaves
-    CosmosPatchOperations ops = CosmosPatchOperations.create();
-    for (String p : orderedParents) ops.set(p, JsonNodeFactory.instance.objectNode());
-    for (var e : leaves) ops.set(e.getKey(), new ObjectMapper().valueToTree(e.getValue()));
-    ops.set("/lastUpdatedAtUtc", Instant.now().toString());
+    // top-level simple fields (nullable-friendly)
+    doc.put("docId", (String) null);
+    doc.put("function", (String) null);
+    doc.put("container", (String) null);
 
-    // 3) Apply
-    container.patchItem(corrId, new PartitionKey(corrId), ops, ObjectNode.class);
-}
+    // overall workflow status
+    doc.put("status", "IN_PROGRESS");
 
-private static String normalizeToPointer(String raw) {
-    String p = raw.trim();
-    if (p.startsWith("/")) p = p.substring(1);
-    p = p.replace('.', '/');
+    // timestamps (UTC ISO-8601 strings)
+    doc.put("createdAt", Instant.now().toString());
+    doc.put("lastUpdatedAtUtc", Instant.now().toString());
+
+    // classification
+    doc.put("notificationType", (String) null);
+    doc.put("triggerType", (String) null);
+    doc.put("recipientType", (String) null);
+
+    // email
+    ObjectNode email = F.object();
+    email.put("subject", (String) null);
+    email.put("body", (String) null);
+    doc.set("email", email);
+
+    // stages (pre-seed parent objects so later PATCH doesn’t fail)
+    ObjectNode stages = F.object();
+    stages.set("cosmosdbtrigger", F.object());
+    stages.set("sbmsgqueuetrigger", F.object());
+    stages.set("sbnotificationqueuetrigger", F.object());
+    stages.set("notificationapi", F.object());
+    doc.set("stages", stages);
+
+    // error
+    doc.put("errorMessage", (String) null);
+
+    // apply optional base fields on first create (keys are dot or slash paths)
+    if (baseFields != null && !baseFields.isEmpty()) {
+      patchIntoObject(doc, baseFields);   // in-memory merge
+    }
+
+    return container.createItem(doc, new PartitionKey(correlationId), new CosmosItemRequestOptions())
+                    .getItem();
+  }
+
+  // ---- helpers for in-memory merge (dot or slash paths) ----
+  private static void patchIntoObject(ObjectNode root, Map<String, Object> fields) {
+    for (Map.Entry<String, Object> e : fields.entrySet()) {
+      String path = normalizePath(e.getKey());     // "/a/b"
+      setPath(root, path, e.getValue());           // create parents if missing
+    }
+    root.put("lastUpdatedAtUtc", Instant.now().toString());
+  }
+
+  private static String normalizePath(String raw) {
+    String p = (raw == null ? "" : raw.trim());
+    if (p.isEmpty()) throw new IllegalArgumentException("Empty path");
+    if (!p.startsWith("/")) p = p.replace('.', '/'); // "a.b" -> "a/b"
+    if (!p.startsWith("/")) p = "/" + p;
     while (p.contains("//")) p = p.replace("//", "/");
-    return "/" + p;
+    return p;
+  }
+
+  // Create parents as needed inside an ObjectNode
+  private static void setPath(ObjectNode root, String path, Object value) {
+    String[] parts = path.substring(1).split("/");
+    ObjectNode curr = root;
+    for (int i = 0; i < parts.length - 1; i++) {
+      String key = parts[i];
+      var next = curr.get(key);
+      if (!(next instanceof ObjectNode)) {
+        ObjectNode created = F.object();
+        curr.set(key, created);
+        curr = created;
+      } else {
+        curr = (ObjectNode) next;
+      }
+    }
+    String leaf = parts[parts.length - 1];
+    // set leaf (basic scalar/JSON; arrays/objects should be prebuilt as Jackson nodes)
+    if (value == null) {
+      curr.putNull(leaf);
+    } else if (value instanceof Boolean b) {
+      curr.put(leaf, b);
+    } else if (value instanceof Number n) {
+      curr.put(leaf, n.doubleValue());
+    } else if (value instanceof ObjectNode on) {
+      curr.set(leaf, on);
+    } else {
+      curr.put(leaf, value.toString());
+    }
+  }
 }
