@@ -1,161 +1,33 @@
-package your.pkg;
+Got it 👍 You want a 3-column table:
+	1.	Japanese (simple but professional, IT-related)
+	2.	Romaji
+	3.	English
 
-import com.azure.cosmos.CosmosContainer;
-import com.azure.cosmos.CosmosException;
-import com.azure.cosmos.models.CosmosItemRequestOptions;
-import com.azure.cosmos.models.CosmosPatchOperations;
-import com.azure.cosmos.models.PartitionKey;
-import com.fasterxml.jackson.databind.node.JsonNodeFactory;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+Here it is:
 
-import java.time.Instant;
-import java.util.Map;
+⸻
 
-public final class ReportingStore {
 
-  private static final JsonNodeFactory F = JsonNodeFactory.instance;
+日本語 (Japanese)	Romaji	English
+実際のデータが入っていて、変更が起こる場所です。	Jissai no dēta ga haitte ite, henkō ga okoru basho desu.	Contains the actual data and where change will happen
+Azure ファンクションで変更を記録して、同じ変更をもう一度処理しないように使います。	Azure fankushon de henkō o kiroku shite, onaji henkō o mō ichido shori shinai yō ni tsukaimasu.	It is used in Azure function to track the change feed so that change document will not process again.
+通知の流れ全体のステータスを追跡するために使います。	Tsūchi no nagare zentai no suteetasu o tsuiseki suru tame ni tsukaimasu.	It is used to track the status of entire notification workflow.
+通知の流れには多くの部品があるので、このコンテナには変更されたドキュメントごとに1つの記録があります。	Tsūchi no nagare ni wa ōku no buhin ga aru node, kono kontera ni wa henkō sareta dokyumento goto ni hitotsu no kiroku ga arimasu.	Since the notification workflow contains many components, this container will have one record for each changed document.
+この機能を使う前に一度だけ行う作業です。	Kono kinō o tsukau mae ni ichido dake okonau sagyō desu.	This is one time activity before launching this function.
+新しいドキュメントと古いドキュメントを比べて違いを見つけます。	Atarashii dokyumento to furui dokyumento o kurabete chigai o mitsukemasu.	The purpose is to compare the new document and old document for delta.
+ドキュメントのコピーがなければ、新しい追加です。	Dokyumento no kopī ga nakereba, atarashii tsuika desu.	If document copy is not present then it means it is an insert case.
+変更があるたびに、そのドキュメントは blob に保存されて、次に比べるときに使えます。	Henkō ga aru tabi ni, sono dokyumento wa blob ni hozon sarete, tsugi ni kuraberu toki ni tsukaemasu.	For every change, the document will get updated in the blob for future compares.
+これは通知の流れで使う設定ファイルです。	Kore wa tsūchi no nagare de tsukau settei fairu desu.	This contains the configuration files used in notification workflow.
+詳しい内容は「Config files」シートにあります。	Kuwashii naiyō wa “Config files” shīto ni arimasu.	The details are in the “Config files” sheet.
+これはメールのテンプレートです。	Kore wa mēru no tenpurēto desu.	This contains the email templates.
+今は通知の流れで出たエラーも blob に保存されています。	Ima wa tsūchi no nagare de deta erā mo blob ni hozon sareteimasu.	For now, the error occurred in the notification workflow are also stored in the blob.
+将来的にはこれを削除してステータス用のコンテナに変える予定ですが、必要なら残します。	Shōraiteki ni wa kore o sakujo shite suteetasu-yō no kontera ni kaeru yotei desu ga, hitsuyō nara nokoshimasu.	Planning to remove this and replace with status container but if required will keep it.
+Azure ファンクションのパッケージを一時的にデプロイする方法です。	Azure fankushon no pakkēji o ichijiteki ni depuroi suru hōhō desu.	This temporary way to deploy the azure function package.
+許可されなかった、またはスキップされたエージェンシーのログを保存します。	Kyoka sarenakatta, mata wa sukippu sareta ējenshī no rogu o hozon shimasu.	This store the log of not allowed/skipped agency.
+今はログが blob に保存されていますが、将来的にステータスコンテナにも保存する予定です。	Ima wa rogu ga blob ni hozon sareteimasu ga, shōraiteki ni suteetasu kontera ni mo hozon suru yotei desu.	Currently the logs are stored in the blob but planning to store in the status container too.
+これは CosmosDbTrigger Azure の間をつなぐ役割です。	Kore wa CosmosDbTrigger Azure no aida o tsunagu yakuwari desu.	This is the bridge between CosmosDbTrigger azure …
 
-  private ReportingStore() {}
 
-  /** Create minimal skeleton if missing; returns existing if present. */
-  public static ObjectNode createIfNotExists(CosmosContainer container,
-                                             String correlationId,
-                                             Map<String, Object> baseFields) {
-    try {
-      return container.readItem(correlationId, new PartitionKey(correlationId), ObjectNode.class).getItem();
-    } catch (CosmosException e) {
-      if (e.getStatusCode() != 404) throw e;
-    }
+⸻
 
-    // --- skeleton (parents pre-seeded so PATCH never complains about missing paths)
-    ObjectNode doc = F.objectNode();
-    doc.put("id", correlationId);
-    doc.put("correlationId", correlationId);
-
-    // top-level
-    doc.put("docId", (String) null);
-    doc.put("function", (String) null);
-    doc.put("container", (String) null);
-    doc.put("status", "IN_PROGRESS");                 // overall workflow status
-
-    // classification
-    doc.put("notificationType", (String) null);
-    doc.put("triggerType", (String) null);
-    doc.put("recipientType", (String) null);
-
-    // email block
-    ObjectNode email = F.objectNode();
-    email.put("subject", (String) null);
-    email.put("body", (String) null);
-    doc.set("email", email);
-
-    // stages buckets (empty objects so nested PATCH works)
-    ObjectNode stages = F.objectNode();
-    stages.set("cosmosdbtrigger",          F.objectNode());
-    stages.set("sbmsgqueuetrigger",        F.objectNode());
-    stages.set("sbnotificationqueuetrigger", F.objectNode());
-    stages.set("notificationapi",          F.objectNode());
-    doc.set("stages", stages);
-
-    // error + timestamps
-    doc.put("errorMessage", (String) null);
-    doc.put("createdAt", Instant.now().toString());
-    doc.put("lastUpdatedAtUtc", Instant.now().toString());
-
-    // optional base fields on first create (dot or / paths)
-    if (baseFields != null && !baseFields.isEmpty()) {
-      mergeIntoObject(doc, baseFields);
-    }
-
-    return container.createItem(doc, new PartitionKey(correlationId), new CosmosItemRequestOptions()).getItem();
-  }
-
-  /**
-   * PATCH fields server-side. Keys may be "a.b.c" or "/a/b/c".
-   * Assumes parent objects (like /stages/*) exist (created by createIfNotExists).
-   */
-  public static ObjectNode patchFields(CosmosContainer container,
-                                       String correlationId,
-                                       Map<String, Object> fields) {
-    if (fields == null || fields.isEmpty()) return read(container, correlationId);
-
-    CosmosPatchOperations ops = CosmosPatchOperations.create();
-    for (Map.Entry<String, Object> e : fields.entrySet()) {
-      ops.set(toPointer(e.getKey()), e.getValue());
-    }
-    ops.set("/lastUpdatedAtUtc", Instant.now().toString());
-
-    return container.patchItem(correlationId, new PartitionKey(correlationId), ops, ObjectNode.class).getItem();
-  }
-
-  /**
-   * Convenience: try PATCH; if the item does not exist (404), create skeleton (with optional base fields) then PATCH.
-   */
-  public static ObjectNode patchOrCreate(CosmosContainer container,
-                                         String correlationId,
-                                         Map<String, Object> patchFields,
-                                         Map<String, Object> baseOnCreate) {
-    try {
-      return patchFields(container, correlationId, patchFields);
-    } catch (CosmosException e) {
-      if (e.getStatusCode() != 404) throw e;
-      createIfNotExists(container, correlationId, baseOnCreate);
-      return patchFields(container, correlationId, patchFields);
-    }
-  }
-
-  /** Read helper (id==pk). */
-  public static ObjectNode read(CosmosContainer container, String correlationId) {
-    return container.readItem(correlationId, new PartitionKey(correlationId), ObjectNode.class).getItem();
-  }
-
-  // ---------- in-memory merge for initial create ----------
-
-  /** Merge a map of paths (dot or /) into an ObjectNode, creating parents as needed. */
-  private static void mergeIntoObject(ObjectNode root, Map<String, Object> fields) {
-    for (Map.Entry<String, Object> e : fields.entrySet()) {
-      setNested(root, toPointer(e.getKey()), e.getValue());
-    }
-    root.put("lastUpdatedAtUtc", Instant.now().toString());
-  }
-
-  /** Convert "a.b.c", "a/b/c", or "/a/b/c" → "/a/b/c". */
-  private static String toPointer(String raw) {
-    String p = raw == null ? "" : raw.trim();
-    if (p.isEmpty()) throw new IllegalArgumentException("Empty path");
-    if (!p.startsWith("/")) p = p.replace('.', '/');
-    if (!p.startsWith("/")) p = "/" + p;
-    while (p.contains("//")) p = p.replace("//", "/");
-    return p;
-  }
-
-  /** Create parents inside an ObjectNode and set the leaf value. */
-  private static void setNested(ObjectNode root, String pointer, Object value) {
-    String[] parts = pointer.substring(1).split("/");
-    ObjectNode cur = root;
-    for (int i = 0; i < parts.length - 1; i++) {
-      String key = parts[i];
-      var next = cur.get(key);
-      if (!(next instanceof ObjectNode)) {
-        ObjectNode created = F.objectNode();
-        cur.set(key, created);
-        cur = created;
-      } else {
-        cur = (ObjectNode) next;
-      }
-    }
-    String leaf = parts[parts.length - 1];
-
-    if (value == null) {
-      cur.putNull(leaf);
-    } else if (value instanceof Boolean b) {
-      cur.put(leaf, b);
-    } else if (value instanceof Number n) {
-      cur.put(leaf, n.doubleValue());           // keeps it numeric; change if you need specific types
-    } else if (value instanceof ObjectNode on) {
-      cur.set(leaf, on);
-    } else {
-      cur.put(leaf, value.toString());
-    }
-  }
-}
+Would you like me to export this as Excel (xlsx) so you can reuse it directly in your documentation/spreadsheet?
