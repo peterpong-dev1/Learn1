@@ -1,27 +1,40 @@
-case "afterdaysfromtoday": {
-    int days = evt.schedule.days == null ? 0 : Math.max(0, evt.schedule.days);
-    ZoneId zone = zoneOrDefault(evt.schedule.tz);               // your helper
-    LocalTime t = parseTimeOrDefault(evt.schedule.time, LocalTime.of(9, 0));
+final ObjectMapper M = new ObjectMapper();
+ObjectNode extracted = M.createObjectNode();
 
-    // “today” = midnight of the current day in the target zone
-    ZonedDateTime today = ZonedDateTime.now(zone)
-                                       .withHour(0).withMinute(0)
-                                       .withSecond(0).withNano(0);
+// Copy simple extracted fields (skip agencies; we’ll handle them separately)
+for (Map.Entry<String,String> e : event.extractedFields.entrySet()) {
+    String name = e.getKey();
+    String ptr  = e.getValue();
+    if ("agencies".equals(name)) continue;              // skip array
+    if (ptr == null || ptr.isEmpty() || ptr.charAt(0) != '/') continue;
 
-    ZonedDateTime candidate = today.plusDays(days)
-                                   .withHour(t.getHour())
-                                   .withMinute(t.getMinute())
-                                   .withSecond(0)
-                                   .withNano(0);
-
-    // If you want “today + 0 days” but the time already passed, move to tomorrow
-    if (days == 0 && !candidate.isAfter(ZonedDateTime.now(zone))) {
-        candidate = candidate.plusDays(1);
+    JsonNode v = newDoc.at(ptr);
+    if (v != null && !v.isMissingNode() && !v.isNull()) {
+        extracted.set(name, v.isValueNode() ? M.valueToTree(v.asText()) : v);
     }
-
-    if (Boolean.TRUE.equals(evt.schedule.businessDays)) {
-        candidate = bumpToNextBusinessDay(candidate);
-    }
-
-    return candidate.toOffsetDateTime();
 }
+
+// Collect ALL agentRegistrationNumbers
+ArrayNode arnArray = M.createArrayNode();
+Set<String> seen = new HashSet<>();
+JsonNode agenciesNode = newDoc.at("/agency");
+if (agenciesNode != null && agenciesNode.isArray()) {
+    for (JsonNode a : agenciesNode) {
+        String arn = a.path("agentRegistrationNumber").asText(null);
+        if (arn == null || arn.isBlank()) continue;
+        if (!seen.add(arn)) continue;                  // dedupe
+        arnArray.add(arn);
+    }
+}
+extracted.set("agentRegistrationNumbers", arnArray);   // ✅ add the array
+
+// Build the message
+ObjectNode msg = M.createObjectNode();
+msg.put("eventId", event.id);
+msg.put("eventName", event.name);
+msg.put("container", event.container);
+msg.put("notificationType", event.notificationType);
+msg.put("triggerType", event.triggerType);
+msg.set("extracted", extracted);
+
+enqueueToServiceBus(msg);
