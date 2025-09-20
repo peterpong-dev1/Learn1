@@ -80,3 +80,15 @@ for (Map<String,Object> a : agents) {
     // optional: continue or break; your choice
   }
 }
+private static String str(Object o) { return o == null ? null : String.valueOf(o); }
+
+private static String dailyRowKey(Map<String,Object> ctx, String arn) {
+  String policyId = str(ctx.get("policyId"));
+  String ymd = java.time.LocalDate.now(java.time.ZoneId.of("Asia/Tokyo")).toString(); // 2025-09-20
+  return policyId + "#" + arn + "#" + ymd;
+}
+
+private static String correlationIdFor(IncomingMessage msg, String arn) {
+  return msg.getCorrelationId() + "#" + arn;
+}
+
