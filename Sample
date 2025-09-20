@@ -91,4 +91,90 @@ private static String dailyRowKey(Map<String,Object> ctx, String arn) {
 private static String correlationIdFor(IncomingMessage msg, String arn) {
   return msg.getCorrelationId() + "#" + arn;
 }
+====
 
+int total = agents.size();
+int skippedNotAllowed = 0;  // step 1 "skip"
+int buildFails = 0;         // step 2 "fail"
+int tableFails = 0;         // step 3 "fail"
+int sendFails = 0;          // step 4 "fail"
+int successes = 0;          // completed send
+
+for (Map<String,Object> agentCtx : agents) {
+    String arn = String.valueOf(agentCtx.get("agentRegistrationNumber"));
+
+    // ---- 1) Allowed-agency check ----
+    if (!AllowedAgencyValidator.checkIfAgencyAllowedForNotification(
+            parsedMessage, agentCtx,
+            SKIPPED_NOTALLOWED_LOG_CONTAINER, CONFIG_CONTAINER,
+            ERROR_CONTAINER, DATA_CONTAINER, context, CATEGORY)) {
+        skippedNotAllowed++;
+        continue; // move to next agent
+    }
+
+    // ---- 2) Build payload ----
+    String json = NotificationPayloadBuilder.buildJsonPerAgent(
+        fieldsContext, agentCtx, parsedMessage, context.getLogger(),
+        ERROR_CONTAINER, CATEGORY, prepareAt);
+    if (json == null || json.isBlank()) {
+        buildFails++;
+        continue;
+    }
+
+    // ---- 3) Upsert "latest in a day" ----
+    boolean tableUpdated = MessageTrackerUpdater.updateTableForLatestProcessing(
+        TABLE_CLIENT, parsedMessage, context, CATEGORY, json, prepareAt,
+        /* rowKeyOverride if you added one */ null);
+    if (!tableUpdated) {
+        tableFails++;
+        continue;
+    }
+
+    // ---- 4) Send ----
+    boolean sent = NotificationQueueSender.sendJson(
+        SB_SENDER, json, parsedMessage.getCorrelationId() + "#" + arn,
+        parsedMessage, Map.of("agentRegistrationNumber", arn),
+        SB_USE_SESSIONS, context, DATA_CONTAINER, ERROR_CONTAINER, CATEGORY);
+    if (!sent) {
+        sendFails++;
+        continue;
+    }
+
+    successes++;  // made it through all 4 steps
+}
+
+// -------- AFTER LOOP: compute overall outcome --------
+boolean allSkipped = (skippedNotAllowed == total);  // everyone skipped at step 1
+int attempted = total - skippedNotAllowed;          // those that passed step 1
+boolean allFailedAfterAllow = (successes == 0) && (attempted > 0) &&
+                              ((buildFails + tableFails + sendFails) == attempted);
+
+if (allSkipped) {
+    // e.g., update a message/correlation status = ALL_SKIPPED_NOT_ALLOWED
+    MessageStatusUpdater.updateStatus(correlationId, "ALL_SKIPPED_NOT_ALLOWED",
+        Map.of("total", total, "skippedNotAllowed", skippedNotAllowed));
+} else if (allFailedAfterAllow) {
+    // none succeeded, but at least one got past step 1
+    MessageStatusUpdater.updateStatus(correlationId, "ALL_FAILED",
+        Map.of("total", total,
+               "buildFails", buildFails,
+               "tableFails", tableFails,
+               "sendFails", sendFails));
+} else if (successes > 0 && (skippedNotAllowed + buildFails + tableFails + sendFails) > 0) {
+    // some passed, some didn’t
+    MessageStatusUpdater.updateStatus(correlationId, "PARTIAL_SUCCESS",
+        Map.of("total", total,
+               "successes", successes,
+               "skippedNotAllowed", skippedNotAllowed,
+               "buildFails", buildFails,
+               "tableFails", tableFails,
+               "sendFails", sendFails));
+} else if (successes == total) {
+    // everyone succeeded
+    MessageStatusUpdater.updateStatus(correlationId, "ALL_SUCCESS",
+        Map.of("total", total));
+} else {
+    // Edge cases (e.g., total==0)
+    MessageStatusUpdater.updateStatus(correlationId, "NO_RECIPIENTS",
+        Map.of("total", total));
+}
