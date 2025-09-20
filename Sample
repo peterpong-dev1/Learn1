@@ -1,63 +1,82 @@
-// Start with the basics (you already do this)
-Map<String, Object> fieldsContext = new HashMap<>();
-fieldsContext.putAll(parsedMessage.getExtractedFields());  // applicationNumber, policyId, etc.
+// 0) Common values once
+String prepareAt = Instant.now().toString();
+List<Map<String,Object>> agents = (List<Map<String,Object>>) fieldsContext.getOrDefault("agents", List.of());
 
-// Collect all ARNs
-List<String> arns = new ArrayList<>();
-Object arnsObj = parsedMessage.getExtractedFields().get("agentRegistrationNumbers");
-if (arnsObj instanceof List<?>) {
-    for (Object o : (List<?>) arnsObj) {
-        if (o != null && !o.toString().isBlank()) arns.add(o.toString());
-    }
-} else if (arnsObj instanceof String s && !s.isBlank()) {
-    arns.add(s);  // fallback: single string
-}
-arns = arns.stream().distinct().toList();
-
-// For each ARN → resolve agent info
-List<Map<String,Object>> agentInfos = new ArrayList<>();
-
-for (String arn : arns) {
-    Map<String,Object> agent = new LinkedHashMap<>();
-    agent.put("agentRegistrationNumber", arn);
-
-    try {
-        // 👇 call your existing lookup logic here
-        Map<String,Object> perAgentCtx = new HashMap<>();
-        perAgentCtx.putAll(parsedMessage.getExtractedFields());
-        perAgentCtx.put("agentRegistrationNumber", arn);
-
-        Map<String,Object> execResult = new LookupExecutor().executeLookupSteps(perAgentCtx, rule);
-        if (!Boolean.TRUE.equals(execResult.get("ok"))) {
-            agent.put("errorCode", execResult.get("errorCode"));
-            agent.put("message",  execResult.get("message"));
-        } else {
-            // Copy only outputs you care about from perAgentCtx
-            copyIfPresent(perAgentCtx, agent, "email1");
-            copyIfPresent(perAgentCtx, agent, "agencyName");
-            copyIfPresent(perAgentCtx, agent, "agencyNumber");
-            copyIfPresent(perAgentCtx, agent, "recipient.name.kanji");
-            copyIfPresent(perAgentCtx, agent, "recipient.name.kana");
-            copyIfPresent(perAgentCtx, agent, "recipient.name.alphabet");
-            copyIfPresent(perAgentCtx, agent, "recipient.phone");
-        }
-    } catch (Exception e) {
-        agent.put("error", "Lookup failed: " + e.getMessage());
-    }
-
-    agentInfos.add(agent);
+// Back-compat: if no 'agents' array, derive one from single values (optional)
+if (agents.isEmpty()) {
+  Map<String,Object> single = new LinkedHashMap<>();
+  single.put("agentRegistrationNumber", fieldsContext.get("agentRegistrationNumber"));
+  single.put("email1", fieldsContext.get("recipient.email"));
+  single.put("agencyId", fieldsContext.get("agency.agencyId"));
+  single.put("agencyName", fieldsContext.get("agency.agencyName"));
+  agents = List.of(single);
 }
 
-// ✅ Add to your main context
-fieldsContext.put("agents", agentInfos);
+for (Map<String,Object> a : agents) {
+  String arn   = str(a.get("agentRegistrationNumber"));
+  String email = str(a.get("email1"));                    // your key names
+  String agencyId   = str(a.get("agencyId"));
+  String agencyName = str(a.get("agencyName"));
 
-// Helper
-private static void copyIfPresent(Map<String,Object> src, Map<String,Object> dst, String key) {
-    Object v = src.get(key);
-    if (v == null) return;
-    if (v instanceof com.fasterxml.jackson.databind.JsonNode j) {
-        if (j.isArray() && j.size()==1) v = j.get(0);
-        v = j.isValueNode() ? j.asText() : j.toString();
-    }
-    dst.put(key, v);
+  if (arn == null || arn.isBlank()) { 
+    context.getLogger().warning("Skip: missing ARN");
+    continue;
+  }
+
+  // 1) Allowed-agency check (now per agent)
+  boolean allowed = AllowedAgencyValidator.checkIfAgencyAllowedForNotification(
+      parsedMessage,
+      /* per-agent map to check */ a,
+      SKIPPED_NOTALLOWED_LOG_CONTAINER, CONFIG_CONTAINER, ERROR_CONTAINER, DATA_CONTAINER,
+      context, CATEGORY);
+  if (!allowed) {
+    context.getLogger().warning("Skip: agency not allowed for arn=" + arn);
+    continue;
+  }
+
+  // 2) Build payload JSON (per agent)
+  //    Change your builder to accept the per-agent slice *plus* the common fieldsContext
+  String json = NotificationPayloadBuilder.buildJsonPerAgent(
+      /* common */ fieldsContext,
+      /* per-agent */ a,
+      parsedMessage,
+      context.getLogger(),
+      ERROR_CONTAINER, CATEGORY,
+      prepareAt
+  );
+  if (json == null || json.isEmpty()) {
+    context.getLogger().severe("Skip: payload build failed for arn=" + arn);
+    continue;
+  }
+
+  // 3) Table upsert (per agent, per day) – use a composite key!
+  //    Example row key: <policyId>#<arn>#<yyyyMMdd>
+  boolean tableUpdated = MessageTrackerUpdater.updateTableForLatestProcessing(
+      TABLE_CLIENT,
+      parsedMessage,
+      context,
+      CATEGORY,
+      json, 
+      prepareAt,
+      /* rowKeyOverride */ dailyRowKey(fieldsContext, arn) // NEW: add an overload or pass via appProps
+  );
+  if (!tableUpdated) {
+    context.getLogger().severe("Skip sending: table update failed for arn=" + arn);
+    continue;
+  }
+
+  // 4) Send to Notification API queue (per agent)
+  boolean sent = NotificationQueueSender.sendJson(
+      SB_SENDER,
+      json,
+      correlationIdFor(parsedMessage, arn),   // NEW: include arn in correlation for idempotency
+      parsedMessage,
+      /* appProps */ Map.of("agentRegistrationNumber", arn), // optional
+      SB_USE_SESSIONS,
+      context, DATA_CONTAINER, ERROR_CONTAINER, CATEGORY
+  );
+  if (!sent) {
+    context.getLogger().severe("Queue send failed for arn=" + arn);
+    // optional: continue or break; your choice
+  }
 }
