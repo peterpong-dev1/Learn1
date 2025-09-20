@@ -1,38 +1,27 @@
-未入金失効 | Unpaid / Lapsed Inquiry | Mi-nyuukin Shikkou  
-未入金 | Unpaid | Mi-nyuukin  
-失効 | Lapsed | Shikkou  
+case "afterdaysfromtoday": {
+    int days = evt.schedule.days == null ? 0 : Math.max(0, evt.schedule.days);
+    ZoneId zone = zoneOrDefault(evt.schedule.tz);               // your helper
+    LocalTime t = parseTimeOrDefault(evt.schedule.time, LocalTime.of(9, 0));
 
-新契約 | New Contract (section title) | Shin-keiyaku  
-新契約・成立 | New Contract - Established | Shin-keiyaku Seiritsu  
-新契約・不成立 | New Contract - Not Established | Shin-keiyaku Fuseiritsu  
-新契約・不備決定通知 | New Contract - Pending / Decision Incomplete | Shin-keiyaku Fubi Kettei Tsuuchi  
+    // “today” = midnight of the current day in the target zone
+    ZonedDateTime today = ZonedDateTime.now(zone)
+                                       .withHour(0).withMinute(0)
+                                       .withSecond(0).withNano(0);
 
-保全進捗状況照会 | Maintenance Progress Inquiry | Hozen Shinchoku Joukyou Shoukai  
-保全・支払関連進捗状況照会 | Maintenance / Payment-Related Progress Inquiry | Hozen · Shiharai Kanren Shinchoku Joukyou Shoukai  
-住所変更（手続完了） | Address Change (Procedure Complete) | Juusho Henko (Tetsuzuki Kanryou)  
-収納・払込方法変更（請求書送付中） | Premium Payment Method Change (Request Sent) | Shuunou / Haraikomi Houhou Henko (Seikyuusho Soufu-chuu)  
-収納・払込方法変更（手続完了） | Premium Payment Method Change (Request Completed) | Shuunou / Haraikomi Houhou Henko (Tetsuzuki Kanryou)  
-給付金支払（請求書受理済） | Insurance Benefit Payment (Application Accepted) | Kyuufukin Shiharai (Seikyuusho Jurizumi)  
+    ZonedDateTime candidate = today.plusDays(days)
+                                   .withHour(t.getHour())
+                                   .withMinute(t.getMinute())
+                                   .withSecond(0)
+                                   .withNano(0);
 
-進捗更新日 | Progress Update Date | Shinchoku Koushin-bi  
+    // If you want “today + 0 days” but the time already passed, move to tomorrow
+    if (days == 0 && !candidate.isAfter(ZonedDateTime.now(zone))) {
+        candidate = candidate.plusDays(1);
+    }
 
+    if (Boolean.TRUE.equals(evt.schedule.businessDays)) {
+        candidate = bumpToNextBusinessDay(candidate);
+    }
 
-===
-Master Event (JP) | Master Event (EN) | Trigger Event (JP) | Trigger Event (EN) | Trigger Sheet / Row | Match Type
------------------------------------------------------------------------------------------------------------------
-未入金失効 | Unpaid/Lapsed Inquiry | 未入金案内通知作成 + 失効通知作成 | Create Unpaid Notice + Create Lapse Notice | UnpaidContractInquiry rows 3 + 6 | Match (covered by combination)
-未入金 | Unpaid | 未入金案内通知作成 | Create Unpaid Notice | UnpaidContractInquiry row 3 | Match
-失効 | Lapsed | 失効通知作成 | Create Lapse Notice | UnpaidContractInquiry row 6 | Match
-新契約 | New Contract (section) | 成立, 不成立, 決定通知送信 | Established, Not Established, Decision Notification Sent | ProgressManagement row 2 + row bottom, TransactionProgress row 7 | Partial (covered as group)
-新契約・成立 | Established | 成立 | Established | ProgressManagement row 2 | Match
-新契約・不成立 | Not Established | 不成立 | Not Established | ProgressManagement row bottom | Match
-新契約・不備決定通知 | Pending / Decision Incomplete | 決定通知送信, 不備通知送信, 不備通知返信 | Decision Notification Sent, Deficiency Notification Sent/Resolved | TransactionProgress rows 5–7 | Partial
-保全進捗状況照会 | Maintenance Inquiry | (none) | (none) | — | Not Found
-保全・支払関連進捗状況照会 | Maintenance / Payment Inquiry | 入金確認 | Payment Received | ProgressManagement row 8 | Partial
-住所変更（手続完了） | Address Change (Procedure Complete) | (none) | (none) | — | Not Found
-収納方法変更（請求書送付中） | Payment Change Sent | (none) | (none) | — | Not Found
-収納方法変更（手続完了） | Payment Change Complete | (none) | (none) | — | Not Found
-給付金支払（請求書受理済） | Benefit Payment Accepted | (none) | (none) | — | Not Found
-進捗更新日 | Progress Update Date | (none) | (none) | — | Not Found
-
-
+    return candidate.toOffsetDateTime();
+}
