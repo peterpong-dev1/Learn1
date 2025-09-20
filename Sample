@@ -178,3 +178,35 @@ if (allSkipped) {
     MessageStatusUpdater.updateStatus(correlationId, "NO_RECIPIENTS",
         Map.of("total", total));
 }
+
+
+ ===
+
+public static String sanitizeForRowKey(String input) {
+    if (input == null) return "";
+
+    // 1) Replace disallowed chars
+    String sanitized = input
+        .replace("/", "_")
+        .replace("\\", "_")
+        .replace("#", "_")
+        .replace("?", "_");
+
+    // 2) Optionally replace '@' in emails to make key safer
+    sanitized = sanitized.replace("@", "_at_");
+
+    // 3) Trim whitespace
+    sanitized = sanitized.trim();
+
+    // 4) Enforce max length (Table Storage row key limit ~ 1 KB, keep safe at 255)
+    int MAX_LEN = 255;
+    if (sanitized.length() > MAX_LEN) {
+        // Keep start + hash of rest to ensure uniqueness
+        String prefix = sanitized.substring(0, MAX_LEN - 9); // room for "_HASHxxxx"
+        int hash = sanitized.hashCode();
+        sanitized = prefix + "_HASH" + Integer.toHexString(hash);
+    }
+
+    return sanitized;
+}
+
