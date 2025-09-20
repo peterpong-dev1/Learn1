@@ -1,74 +1,17 @@
-Japanese (日本語)                                   | Romaji                                                                                  | English
--------------------------------------------------------------------------------------------------------------------------------
-これは CosmosDbTrigger Azure ファンクションと         | Kore wa CosmosDbTrigger Azure fankushon to Message Azure fankushon (Service Bus torigā) | This is the bridge between CosmosDbTrigger Azure function 
-Message Azure ファンクション（Service Bus トリガー）の | no aida o tsunagu yakuwari desu.                                                        | and Message Azure function (Service Bus trigger).
-間をつなぐ役割です。                               |                                                                                         |
+未入金失効 | Unpaid / Lapsed Inquiry | Mi-nyuukin Shikkou  
+未入金 | Unpaid | Mi-nyuukin  
+失効 | Lapsed | Shikkou  
 
-この目的はコンポーネントを分けて、負荷を処理することです。 | Kono mokuteki wa komponēnto o wakete, fuka o shori suru koto desu.                       | The main purpose of this is to decouple the component and handle the load.
+新契約 | New Contract (section title) | Shin-keiyaku  
+新契約・成立 | New Contract - Established | Shin-keiyaku Seiritsu  
+新契約・不成立 | New Contract - Not Established | Shin-keiyaku Fuseiritsu  
+新契約・不備決定通知 | New Contract - Pending / Decision Incomplete | Shin-keiyaku Fubi Kettei Tsuuchi  
 
-これは Message Azure ファンクションと                 | Kore wa Message Azure fankushon to Notification Azure fankushon no aida o               | This is the bridge between Message Azure function 
-Notification Azure ファンクションの間をつなぐ役割です。| tsunagu yakuwari desu.                                                                   | and Notification Azure function.
+保全進捗状況照会 | Maintenance Progress Inquiry | Hozen Shinchoku Joukyou Shoukai  
+保全・支払関連進捗状況照会 | Maintenance / Payment-Related Progress Inquiry | Hozen · Shiharai Kanren Shinchoku Joukyou Shoukai  
+住所変更（手続完了） | Address Change (Procedure Complete) | Juusho Henko (Tetsuzuki Kanryou)  
+収納・払込方法変更（請求書送付中） | Premium Payment Method Change (Request Sent) | Shuunou / Haraikomi Houhou Henko (Seikyuusho Soufu-chuu)  
+収納・払込方法変更（手続完了） | Premium Payment Method Change (Request Completed) | Shuunou / Haraikomi Houhou Henko (Tetsuzuki Kanryou)  
+給付金支払（請求書受理済） | Insurance Benefit Payment (Application Accepted) | Kyuufukin Shiharai (Seikyuusho Jurizumi)  
 
-この目的はメッセージをスケジュールして、負荷を処理することです。 | Kono mokuteki wa messēji o sukejūru shite, fuka o shori suru koto desu.                | The main purpose is to schedule the message and handle the load.
-
-これはスケジュールの場合、最新のトリガー処理のロジックを扱います。 | Kore wa sukejūru no baai, saishin no torigā shori no rojikku o atsukaimasu.            | Used to handle the logic of processing the latest triggered in case of schedule.
-
-リアルタイムのメッセージでは、このロジックは使われません。 | Riaru taimu no messēji de wa, kono rojikku wa tsukawaremasen.                            | For real-time message this logic will not be applied.
-
-これは Message Azure ファンクションでメッセージ作成時間をUTCで保存します。 | Kore wa Message Azure fankushon de messēji sakusei jikan o UTC de hozon shimasu.      | It stores the message creation time in UTC in Message Azure function.
-
-Notification Azure ファンクションで、メッセージ時間がテーブルに保存された時間と同じかを確認します。 | Notification Azure fankushon de, messēji jikan ga tēburu ni hozon sareta jikan to onaji ka o kakunin shimasu. | In Notification Azure function, check if message time matches Table. If yes → proceed, otherwise skip.
-
-Azure ファンクションで Cosmos DB の変更を検出します。 | Azure fankushon de Cosmos DB no henkō o kenshutsu shimasu.                              | Azure function to catch changes in the Cosmos DB.
-
-Azure ファンクションの数は、追跡するコンテナの数に依存します。 | Azure fankushon no kazu wa, tsuiseki suru kontera no kazu ni izon shimasu.              | The number of functions depends on the number of containers to track.
-
-Azure ファンクションで Service Bus の新しいメッセージを検出します。 | Azure fankushon de Service Bus no atarashii messēji o kenshutsu shimasu.                | Azure function to catch new message in Service Bus.
-
-このファンクションはメッセージ処理のためのものです。 | Kono fankushon wa messēji shori no tame no mono desu.                                   | This function is for message processing.
-
-Azure ファンクションで Service Bus の新しいメッセージを検出します。 | Azure fankushon de Service Bus no atarashii messēji o kenshutsu shimasu.                | Azure function to catch new message in Service Bus.
-
-このファンクションは通知の前処理のためのものです。 | Kono fankushon wa tsūchi no maeshori no tame no mono desu.                              | This function is for pre-processing for notification.
-
-テンプレートを取得してメール API を呼び出します。 | Tenpurēto o shutoku shite mēru API o yobidashimasu.                                     | To get the templates and call the email API.
-
-実際の通知を送ります。                             | Jissai no tsūchi o okurimasu.                                                           | To send actual notification.
-
-初回のドキュメントコピーを blob に作成します。       | Shokai no dokyumento kopī o blob ni sakusei shimasu.                                    | To create a first-time document copy in the blob.
-
-Japanese (日本語)                                   | Romaji                                                                 | English
--------------------------------------------------------------------------------------------------------------------------------
-実際のデータが入っていて、変更が起こる場所です。       | Jissai no dēta ga haitte ite, henkō ga okoru basho desu.                | Contains the actual data and where change will happen
-
-Azure ファンクションで変更を記録して、同じ変更をもう一度処理しないように使います。 | Azure fankushon de henkō o kiroku shite, onaji henkō o mō ichido shori shinai yō ni tsukaimasu. | It is used in Azure function to track the change feed so that change document will not process again.
-
-通知の流れ全体のステータスを追跡するために使います。 | Tsūchi no nagare zentai no suteetasu o tsuiseki suru tame ni tsukaimasu. | It is used to track the status of entire notification workflow.
-
-通知の流れには多くの部品があるので、このコンテナには変更されたドキュメントごとに1つの記録があります。 | Tsūchi no nagare ni wa ōku no buhin ga aru node, kono kontera ni wa henkō sareta dokyumento goto ni hitotsu no kiroku ga arimasu. | Since the notification workflow contains many components, this container will have one record for each changed document.
-
-この機能を使う前に一度だけ行う作業です。         | Kono kinō o tsukau mae ni ichido dake okonau sagyō desu.                | This is one time activity before launching this function.
-
-新しいドキュメントと古いドキュメントを比べて違いを見つけます。 | Atarashii dokyumento to furui dokyumento o kurabete chigai o mitsukemasu. | The purpose is to compare the new document and old document for delta.
-
-ドキュメントのコピーがなければ、新しい追加です。   | Dokyumento no kopī ga nakereba, atarashii tsuika desu.                   | If document copy is not present then it means it is an insert case.
-
-変更があるたびに、そのドキュメントは blob に保存されて、次に比べるときに使えます。 | Henkō ga aru tabi ni, sono dokyumento wa blob ni hozon sarete, tsugi ni kuraberu toki ni tsukaemasu. | For every change, the document will get updated in the blob for future compares.
-
-これは通知の流れで使う設定ファイルです。           | Kore wa tsūchi no nagare de tsukau settei fairu desu.                   | This contains the configuration files used in notification workflow.
-
-詳しい内容は「Config files」シートにあります。       | Kuwashii naiyō wa “Config files” shīto ni arimasu.                       | The details are in the “Config files” sheet.
-
-これはメールのテンプレートです。                   | Kore wa mēru no tenpurēto desu.                                         | This contains the email templates.
-
-今は通知の流れで出たエラーも blob に保存されています。 | Ima wa tsūchi no nagare de deta erā mo blob ni hozon sareteimasu.        | For now, the error occurred in the notification workflow are also stored in the blob.
-
-将来的にはこれを削除してステータス用のコンテナに変える予定ですが、必要なら残します。 | Shōraiteki ni wa kore o sakujo shite suteetasu-yō no kontera ni kaeru yotei desu ga, hitsuyō nara nokoshimasu. | Planning to remove this and replace with status container but if required will keep it.
-
-Azure ファンクションのパッケージを一時的にデプロイする方法です。 | Azure fankushon no pakkēji o ichijiteki ni depuroi suru hōhō desu.        | This temporary way to deploy the azure function package.
-
-許可されなかった、またはスキップされたエージェンシーのログを保存します。 | Kyoka sarenakatta, mata wa sukippu sareta ējenshī no rogu o hozon shimasu. | This store the log of not allowed/skipped agency.
-
-今はログが blob に保存されていますが、将来的にステータスコンテナにも保存する予定です。 | Ima wa rogu ga blob ni hozon sareteimasu ga, shōraiteki ni suteetasu kontera ni mo hozon suru yotei desu. | Currently the logs are stored in the blob but planning to store in the status container too.
-
-これは CosmosDbTrigger Azure の間をつなぐ役割です。 | Kore wa CosmosDbTrigger Azure no aida o tsunagu yakuwari desu.           | This is the bridge between CosmosDbTrigger azure …
+進捗更新日 | Progress Update Date | Shinchoku Koushin-bi  
