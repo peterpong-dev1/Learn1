@@ -1,212 +1,166 @@
-// 0) Common values once
-String prepareAt = Instant.now().toString();
-List<Map<String,Object>> agents = (List<Map<String,Object>>) fieldsContext.getOrDefault("agents", List.of());
+Totally fair — let’s make it super simple and avoid complex PATCH ops.
 
-// Back-compat: if no 'agents' array, derive one from single values (optional)
-if (agents.isEmpty()) {
-  Map<String,Object> single = new LinkedHashMap<>();
-  single.put("agentRegistrationNumber", fieldsContext.get("agentRegistrationNumber"));
-  single.put("email1", fieldsContext.get("recipient.email"));
-  single.put("agencyId", fieldsContext.get("agency.agencyId"));
-  single.put("agencyName", fieldsContext.get("agency.agencyName"));
-  agents = List.of(single);
+Goal
+
+Add/update per-agent status under:
+
+agentProcessing → agents → <agentId> → { stages..., overall..., agentInfo... }
+
+…without changing your Cosmos DB trigger.
+
+Easiest safe pattern (read → modify JSON → replace with ETag)
+	1.	Read the doc (get ETag).
+	2.	In memory (Jackson), create the missing nodes for agentProcessing/agents/<agentId>.
+	3.	Set/update just the fields you need (for that agent).
+	4.	Replace the document with If-Match ETag.
+	5.	If you get 412, retry a few times.
+
+Drop-in helpers
+
+import com.azure.cosmos.*;
+import com.azure.cosmos.models.*;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import java.time.Instant;
+
+private static String sanitizeKey(String arn){
+    if (arn == null) return "";
+    String s = arn.replace("/", "_").replace("\\","_").replace("#","_").replace("?", "_").trim();
+    if (s.length() > 64) s = s.substring(0, 55) + "_H" + Integer.toHexString(s.hashCode());
+    return s;
 }
 
-for (Map<String,Object> a : agents) {
-  String arn   = str(a.get("agentRegistrationNumber"));
-  String email = str(a.get("email1"));                    // your key names
-  String agencyId   = str(a.get("agencyId"));
-  String agencyName = str(a.get("agencyName"));
+/** Super simple: read-modify-replace with ETag retry */
+public static void upsertAgentStageSimple(
+        CosmosContainer container,
+        String correlationId,
+        String rawAgentId,
+        java.util.function.Consumer<ObjectNode> perAgentUpdater  // you set fields for this agent here
+) {
+    final int MAX = 5;
+    CosmosException last = null;
+    String agentKey = sanitizeKey(rawAgentId);
 
-  if (arn == null || arn.isBlank()) { 
-    context.getLogger().warning("Skip: missing ARN");
-    continue;
-  }
+    for (int i = 0; i < MAX; i++) {
+        try {
+            // 1) read
+            CosmosItemResponse<JsonNode> read = container.readItem(
+                    correlationId, new PartitionKey(correlationId), JsonNode.class);
+            String etag = read.getResponseHeaders().get("etag");
+            ObjectNode doc = (ObjectNode) read.getItem();
 
-  // 1) Allowed-agency check (now per agent)
-  boolean allowed = AllowedAgencyValidator.checkIfAgencyAllowedForNotification(
-      parsedMessage,
-      /* per-agent map to check */ a,
-      SKIPPED_NOTALLOWED_LOG_CONTAINER, CONFIG_CONTAINER, ERROR_CONTAINER, DATA_CONTAINER,
-      context, CATEGORY);
-  if (!allowed) {
-    context.getLogger().warning("Skip: agency not allowed for arn=" + arn);
-    continue;
-  }
+            // 2) create parents if missing (in-memory only)
+            ObjectNode agentProcessing = doc.with("agentProcessing");          // creates if missing
+            ObjectNode agents          = agentProcessing.with("agents");       // creates if missing
+            ObjectNode agentNode       = agents.with(agentKey);                // creates if missing
 
-  // 2) Build payload JSON (per agent)
-  //    Change your builder to accept the per-agent slice *plus* the common fieldsContext
-  String json = NotificationPayloadBuilder.buildJsonPerAgent(
-      /* common */ fieldsContext,
-      /* per-agent */ a,
-      parsedMessage,
-      context.getLogger(),
-      ERROR_CONTAINER, CATEGORY,
-      prepareAt
-  );
-  if (json == null || json.isEmpty()) {
-    context.getLogger().severe("Skip: payload build failed for arn=" + arn);
-    continue;
-  }
+            // 3) hand control to your tiny updater (only touches this agent node)
+            perAgentUpdater.accept(agentNode);
 
-  // 3) Table upsert (per agent, per day) – use a composite key!
-  //    Example row key: <policyId>#<arn>#<yyyyMMdd>
-  boolean tableUpdated = MessageTrackerUpdater.updateTableForLatestProcessing(
-      TABLE_CLIENT,
-      parsedMessage,
-      context,
-      CATEGORY,
-      json, 
-      prepareAt,
-      /* rowKeyOverride */ dailyRowKey(fieldsContext, arn) // NEW: add an overload or pass via appProps
-  );
-  if (!tableUpdated) {
-    context.getLogger().severe("Skip sending: table update failed for arn=" + arn);
-    continue;
-  }
+            // optional meta bump
+            doc.with("meta").put("updatedAtUtc", Instant.now().toString());
 
-  // 4) Send to Notification API queue (per agent)
-  boolean sent = NotificationQueueSender.sendJson(
-      SB_SENDER,
-      json,
-      correlationIdFor(parsedMessage, arn),   // NEW: include arn in correlation for idempotency
-      parsedMessage,
-      /* appProps */ Map.of("agentRegistrationNumber", arn), // optional
-      SB_USE_SESSIONS,
-      context, DATA_CONTAINER, ERROR_CONTAINER, CATEGORY
-  );
-  if (!sent) {
-    context.getLogger().severe("Queue send failed for arn=" + arn);
-    // optional: continue or break; your choice
-  }
-}
-private static String str(Object o) { return o == null ? null : String.valueOf(o); }
+            // 4) replace with ETag (optimistic concurrency)
+            CosmosItemRequestOptions opts = new CosmosItemRequestOptions().setIfMatchETag(etag);
+            container.replaceItem(doc, correlationId, new PartitionKey(correlationId), opts);
+            return; // success
 
-private static String dailyRowKey(Map<String,Object> ctx, String arn) {
-  String policyId = str(ctx.get("policyId"));
-  String ymd = java.time.LocalDate.now(java.time.ZoneId.of("Asia/Tokyo")).toString(); // 2025-09-20
-  return policyId + "#" + arn + "#" + ymd;
-}
-
-private static String correlationIdFor(IncomingMessage msg, String arn) {
-  return msg.getCorrelationId() + "#" + arn;
-}
-====
-
-int total = agents.size();
-int skippedNotAllowed = 0;  // step 1 "skip"
-int buildFails = 0;         // step 2 "fail"
-int tableFails = 0;         // step 3 "fail"
-int sendFails = 0;          // step 4 "fail"
-int successes = 0;          // completed send
-
-for (Map<String,Object> agentCtx : agents) {
-    String arn = String.valueOf(agentCtx.get("agentRegistrationNumber"));
-
-    // ---- 1) Allowed-agency check ----
-    if (!AllowedAgencyValidator.checkIfAgencyAllowedForNotification(
-            parsedMessage, agentCtx,
-            SKIPPED_NOTALLOWED_LOG_CONTAINER, CONFIG_CONTAINER,
-            ERROR_CONTAINER, DATA_CONTAINER, context, CATEGORY)) {
-        skippedNotAllowed++;
-        continue; // move to next agent
+        } catch (CosmosException cx) {
+            last = cx;
+            if (cx.getStatusCode() == 412) { // ETag mismatch → retry
+                try { Thread.sleep(Math.min(1000, 50 * (1 << i))); } catch (InterruptedException ignored) {}
+                continue;
+            }
+            throw cx;
+        }
     }
-
-    // ---- 2) Build payload ----
-    String json = NotificationPayloadBuilder.buildJsonPerAgent(
-        fieldsContext, agentCtx, parsedMessage, context.getLogger(),
-        ERROR_CONTAINER, CATEGORY, prepareAt);
-    if (json == null || json.isBlank()) {
-        buildFails++;
-        continue;
-    }
-
-    // ---- 3) Upsert "latest in a day" ----
-    boolean tableUpdated = MessageTrackerUpdater.updateTableForLatestProcessing(
-        TABLE_CLIENT, parsedMessage, context, CATEGORY, json, prepareAt,
-        /* rowKeyOverride if you added one */ null);
-    if (!tableUpdated) {
-        tableFails++;
-        continue;
-    }
-
-    // ---- 4) Send ----
-    boolean sent = NotificationQueueSender.sendJson(
-        SB_SENDER, json, parsedMessage.getCorrelationId() + "#" + arn,
-        parsedMessage, Map.of("agentRegistrationNumber", arn),
-        SB_USE_SESSIONS, context, DATA_CONTAINER, ERROR_CONTAINER, CATEGORY);
-    if (!sent) {
-        sendFails++;
-        continue;
-    }
-
-    successes++;  // made it through all 4 steps
+    throw last != null ? last : new RuntimeException("Cosmos replace failed after retries");
 }
 
-// -------- AFTER LOOP: compute overall outcome --------
-boolean allSkipped = (skippedNotAllowed == total);  // everyone skipped at step 1
-int attempted = total - skippedNotAllowed;          // those that passed step 1
-boolean allFailedAfterAllow = (successes == 0) && (attempted > 0) &&
-                              ((buildFails + tableFails + sendFails) == attempted);
+How to use (tiny one-liners per stage)
+	•	Allow check OK
 
-if (allSkipped) {
-    // e.g., update a message/correlation status = ALL_SKIPPED_NOT_ALLOWED
-    MessageStatusUpdater.updateStatus(correlationId, "ALL_SKIPPED_NOT_ALLOWED",
-        Map.of("total", total, "skippedNotAllowed", skippedNotAllowed));
-} else if (allFailedAfterAllow) {
-    // none succeeded, but at least one got past step 1
-    MessageStatusUpdater.updateStatus(correlationId, "ALL_FAILED",
-        Map.of("total", total,
-               "buildFails", buildFails,
-               "tableFails", tableFails,
-               "sendFails", sendFails));
-} else if (successes > 0 && (skippedNotAllowed + buildFails + tableFails + sendFails) > 0) {
-    // some passed, some didn’t
-    MessageStatusUpdater.updateStatus(correlationId, "PARTIAL_SUCCESS",
-        Map.of("total", total,
-               "successes", successes,
-               "skippedNotAllowed", skippedNotAllowed,
-               "buildFails", buildFails,
-               "tableFails", tableFails,
-               "sendFails", sendFails));
-} else if (successes == total) {
-    // everyone succeeded
-    MessageStatusUpdater.updateStatus(correlationId, "ALL_SUCCESS",
-        Map.of("total", total));
-} else {
-    // Edge cases (e.g., total==0)
-    MessageStatusUpdater.updateStatus(correlationId, "NO_RECIPIENTS",
-        Map.of("total", total));
-}
+upsertAgentStageSimple(container, correlationId, arn, agent -> {
+    agent.with("stages").with("allowCheck")
+         .put("status", "OK")
+         .put("at", Instant.now().toString());
+    agent.put("updatedAtUtc", Instant.now().toString());
+    agent.with("overall").put("status", "IN_PROGRESS");
+});
 
+	•	Allow check SKIPPED (not allowed)
 
- ===
+upsertAgentStageSimple(container, correlationId, arn, agent -> {
+    agent.with("stages").with("allowCheck")
+         .put("status", "SKIPPED")
+         .put("reason", "NOT_ALLOWED")
+         .put("at", Instant.now().toString());
+    agent.with("overall")
+         .put("status", "SKIPPED")
+         .put("reason", "NOT_ALLOWED");
+    agent.put("updatedAtUtc", Instant.now().toString());
+});
 
-public static String sanitizeForRowKey(String input) {
-    if (input == null) return "";
+	•	Payload build FAILED
 
-    // 1) Replace disallowed chars
-    String sanitized = input
-        .replace("/", "_")
-        .replace("\\", "_")
-        .replace("#", "_")
-        .replace("?", "_");
+upsertAgentStageSimple(container, correlationId, arn, agent -> {
+    agent.with("stages").with("payloadBuild")
+         .put("status", "FAILED")
+         .put("errorCode", "TPL_ERR")
+         .put("message", "Missing email")
+         .put("at", Instant.now().toString());
+    agent.with("overall")
+         .put("status", "FAILED")
+         .put("reason", "PAYLOAD_FAILED");
+    agent.put("updatedAtUtc", Instant.now().toString());
+});
 
-    // 2) Optionally replace '@' in emails to make key safer
-    sanitized = sanitized.replace("@", "_at_");
+	•	Table upsert OK
 
-    // 3) Trim whitespace
-    sanitized = sanitized.trim();
+upsertAgentStageSimple(container, correlationId, arn, agent -> {
+    agent.with("stages").with("tableUpsert")
+         .put("status", "OK")
+         .put("rowKey", rowKey)
+         .put("at", Instant.now().toString());
+    agent.put("updatedAtUtc", Instant.now().toString());
+});
 
-    // 4) Enforce max length (Table Storage row key limit ~ 1 KB, keep safe at 255)
-    int MAX_LEN = 255;
-    if (sanitized.length() > MAX_LEN) {
-        // Keep start + hash of rest to ensure uniqueness
-        String prefix = sanitized.substring(0, MAX_LEN - 9); // room for "_HASHxxxx"
-        int hash = sanitized.hashCode();
-        sanitized = prefix + "_HASH" + Integer.toHexString(hash);
-    }
+	•	Queue send OK
 
-    return sanitized;
-}
+upsertAgentStageSimple(container, correlationId, arn, agent -> {
+    agent.with("stages").with("queueSend")
+         .put("status", "OK")
+         .put("sbMsgId", sbMsgId)
+         .put("at", Instant.now().toString());
+    agent.put("updatedAtUtc", Instant.now().toString());
+});
 
+	•	Notification API OK
+
+upsertAgentStageSimple(container, correlationId, arn, agent -> {
+    agent.with("stages").with("notificationApi")
+         .put("status", "OK")
+         .put("at", Instant.now().toString());
+    agent.with("overall").put("status", "SUCCESS");
+    agent.put("updatedAtUtc", Instant.now().toString());
+});
+
+	•	Snapshot agent info (email/agency) whenever you have it
+
+upsertAgentStageSimple(container, correlationId, arn, agent -> {
+    agent.with("agentInfo")
+         .put("agentRegistrationNumber", arn)
+         .put("email", email)
+         .put("agencyId", agencyId)
+         .put("agencyName", agencyName);
+    agent.put("updatedAtUtc", Instant.now().toString());
+});
+
+Why this is simpler
+	•	No PATCH ops to learn.
+	•	No parent-path errors: .with(...) creates missing nodes in memory.
+	•	Concurrency safe via ETag replace + tiny retry.
+	•	You only touch this agent’s node each time.
+
+If you want, give me one stage you’ll implement first (e.g., queueSend OK) and I’ll write the exact call with your variable names.
