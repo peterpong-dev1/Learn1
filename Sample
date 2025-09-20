@@ -15,3 +15,24 @@
 給付金支払（請求書受理済） | Insurance Benefit Payment (Application Accepted) | Kyuufukin Shiharai (Seikyuusho Jurizumi)  
 
 進捗更新日 | Progress Update Date | Shinchoku Koushin-bi  
+
+
+===
+Master Event (JP) | Master Event (EN) | Trigger Event (JP) | Trigger Event (EN) | Trigger Sheet / Row | Match Type
+-----------------------------------------------------------------------------------------------------------------
+未入金失効 | Unpaid/Lapsed Inquiry | 未入金案内通知作成 + 失効通知作成 | Create Unpaid Notice + Create Lapse Notice | UnpaidContractInquiry rows 3 + 6 | Match (covered by combination)
+未入金 | Unpaid | 未入金案内通知作成 | Create Unpaid Notice | UnpaidContractInquiry row 3 | Match
+失効 | Lapsed | 失効通知作成 | Create Lapse Notice | UnpaidContractInquiry row 6 | Match
+新契約 | New Contract (section) | 成立, 不成立, 決定通知送信 | Established, Not Established, Decision Notification Sent | ProgressManagement row 2 + row bottom, TransactionProgress row 7 | Partial (covered as group)
+新契約・成立 | Established | 成立 | Established | ProgressManagement row 2 | Match
+新契約・不成立 | Not Established | 不成立 | Not Established | ProgressManagement row bottom | Match
+新契約・不備決定通知 | Pending / Decision Incomplete | 決定通知送信, 不備通知送信, 不備通知返信 | Decision Notification Sent, Deficiency Notification Sent/Resolved | TransactionProgress rows 5–7 | Partial
+保全進捗状況照会 | Maintenance Inquiry | (none) | (none) | — | Not Found
+保全・支払関連進捗状況照会 | Maintenance / Payment Inquiry | 入金確認 | Payment Received | ProgressManagement row 8 | Partial
+住所変更（手続完了） | Address Change (Procedure Complete) | (none) | (none) | — | Not Found
+収納方法変更（請求書送付中） | Payment Change Sent | (none) | (none) | — | Not Found
+収納方法変更（手続完了） | Payment Change Complete | (none) | (none) | — | Not Found
+給付金支払（請求書受理済） | Benefit Payment Accepted | (none) | (none) | — | Not Found
+進捗更新日 | Progress Update Date | (none) | (none) | — | Not Found
+
+
