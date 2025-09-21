@@ -1,87 +1,98 @@
-Here you go—production-ready, concise Java to get per-event counts for one agent on one Tokyo day from your DailyAgentEventDocs table:
+Got it — you want the array path and the item field to come from config, not be hard-coded.
 
-Utility
+Here’s a minimal, backward-compatible pattern that fits your current JSON and code:
 
-import com.azure.data.tables.*;
-import com.azure.data.tables.models.*;
-import java.util.*;
+1) Config change (tiny)
 
-public final class AgentDailyCountsUtil {
+Keep your existing pointer for the array, and add a sibling key with suffix .itemField to say which field in each array item to read.
 
-    /** Table shape: PK = yyyyMMdd#agentId, RK = eventKey#docId */
-    public static Map<String,Integer> getCountsByEventForAgentDay(
-            TableClient table, String dayYyyymmdd, String agentId) {
+"extractedFields": {
+  "applicationNumber": "/applicationNumber",
+  "policyId": "/policyId",
 
-        String pk = dayYyyymmdd + "#" + agentId;
-
-        // Scan all rows in this partition; aggregate by eventKey via RK prefix before first '#'
-        String filter = "PartitionKey eq '" + escape(pk) + "'";
-        PagedIterable<TableEntity> rows = table.listEntities(
-                new ListEntitiesOptions().setFilter(filter), null, null);
-
-        Map<String,Integer> counts = new HashMap<>();
-        for (TableEntity e : rows) {
-            String rk = e.getRowKey();                 // eventKey#docId
-            int hash = rk.indexOf('#');
-            if (hash <= 0) continue;
-            String eventKey = rk.substring(0, hash);
-            counts.merge(eventKey, 1, Integer::sum);
-        }
-        return counts;
-    }
-
-    private static String escape(String s){ return s.replace("'", "''"); }
+  "agentId": "/agency",                 // array path (as today)
+  "agentId.itemField": "agentRegistrationNumber"  // NEW: value inside each array item
 }
 
-In your Notification SB trigger
+(If you prefer a JSON Pointer for the item value, you can also set "agentId.itemField": "/agentRegistrationNumber"—the code below supports both.)
 
-// message contains agentId + day (yyyyMMdd), already scheduled for the right day
-String agentId = msg.getAgentId();
-String day     = msg.getDay();
+2) Code change (drop-in)
 
-TableClient docsTable = /* build client for DailyAgentEventDocs */;
+Replace your hard-coded "agentRegistrationNumber" usage with this generic logic:
 
-// get counts
-Map<String,Integer> counts = AgentDailyCountsUtil.getCountsByEventForAgentDay(docsTable, day, agentId);
+final ObjectMapper M = new ObjectMapper();
+ObjectNode extractedFieldsNode = M.createObjectNode();
 
-// read with defaults for your template
-int unpaid    = counts.getOrDefault("unpaid", 0);
-int cancelled = counts.getOrDefault("cancelled", 0);
-int issued    = counts.getOrDefault("issued", 0);
-// ... other event keys as needed
+// 1) copy simple fields; skip collection fields (those with ".itemField")
+if (event.extractedFields != null && !event.extractedFields.isEmpty()) {
+    for (Map.Entry<String,String> e : event.extractedFields.entrySet()) {
+        String name = e.getKey();
+        String ptr  = e.getValue();
+        if (name.endsWith(".itemField")) continue;     // handled with its base name
+        if ("agentId".equals(name)) continue;          // we'll process generically below
 
-// build email payload → call Notification API once for this agent/day
+        if (isBlank(ptr) || ptr.charAt(0) != '/') continue; // must be a JSON Pointer
+        JsonNode v = newDoc.at(ptr);
+        if (v == null || v.isMissingNode() || v.isNull()) continue;
+        extractedFieldsNode.set(name, v.isValueNode() ? M.valueToTree(v.asText()) : v);
+    }
+}
 
-Notes:
-	•	This version does not subtract a day—it uses the exact day you put in the summary message.
-	•	Because PK = yyyyMMdd#agentId, the query is single-partition and efficient.
-	•	If you prefer to fetch only one event’s count, change the filter to:
+// 2) generic collection extractor for any "<name>" that also has "<name>.itemField"
+for (Map.Entry<String,String> e : event.extractedFields.entrySet()) {
+    String baseName = e.getKey();
+    if (baseName.endsWith(".itemField")) continue;     // skip meta keys
 
-PartitionKey eq '<day#agentId>' and RowKey ge '<eventKey>#' and RowKey lt '<eventKey>~'
+    String arrayPtr = e.getValue();                    // e.g., "/agency"
+    if (isBlank(arrayPtr) || arrayPtr.charAt(0) != '/') continue;
 
-and count the rows.
+    String itemFieldKey = baseName + ".itemField";
+    String itemPathConf = event.extractedFields.get(itemFieldKey);
+    if (itemPathConf == null) continue;                // not a collection config
 
-====
+    // read the array
+    JsonNode arr = newDoc.at(arrayPtr);
+    if (arr == null || !arr.isArray()) continue;
 
-ObjectMapper om = new ObjectMapper();
+    // support relative field name ("agentRegistrationNumber")
+    // OR a JSON Pointer within each item ("/agentRegistrationNumber")
+    boolean itemIsPointer = !isBlank(itemPathConf) && itemPathConf.startsWith("/");
 
-// original SB body (JSON string)
-String body = sbMessageBody;
+    ArrayNode out = M.createArrayNode();
+    Set<String> seen = new HashSet<>();
+    for (JsonNode item : arr) {
+        String val = itemIsPointer
+                ? item.at(itemPathConf).asText(null)
+                : item.path(itemPathConf).asText(null);
+        if (val == null || val.isBlank()) continue;
+        if (!seen.add(val)) continue;                  // de-dupe
+        out.add(val);
+    }
 
-// parse
-ObjectNode root;
-JsonNode n = om.readTree(body);
-root = (n.isObject()) ? (ObjectNode) n : om.createObjectNode().put("raw", body);
+    extractedFieldsNode.set(baseName, out);            // e.g., "agentId": ["A1","A2",...]
+}
 
-// add counts map under "dailyCounts"
-ObjectNode countsNode = root.putObject("dailyCounts");
-counts.forEach((k,v) -> countsNode.put(k, v));  // counts is Map<String,Integer>
+// helper
+private static boolean isBlank(String s){ return s == null || s.trim().isEmpty(); }
 
-// (optional) keep agent/day at top if not present
-root.putIfAbsent("agentId", agentId);
-root.putIfAbsent("day", dayYyyymmdd);
+What this gives you
+	•	No hard-coding of "agentRegistrationNumber".
+	•	You can rename the logical field ("agentId") or change the array path or inner field purely in config.
+	•	Works with other collections too: just add <name> and <name>.itemField pairs to extractedFields.
 
-// re-serialize for POST
-String payload = om.writeValueAsString(root);
+Example result
 
-// call Notification API with 'payload'
+With the config above, your output will contain:
+
+{
+  "applicationNumber": "APP123",
+  "policyId": "POL456",
+  "agentId": ["PRU001","PRU002"]    // dynamically extracted from /agency[*]/agentRegistrationNumber
+}
+
+If later your schema changes to "/agents" and value at "/reg/id", change only config:
+
+"agentId": "/agents",
+"agentId.itemField": "/reg/id"
+
+No code change needed.
