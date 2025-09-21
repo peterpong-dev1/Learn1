@@ -170,5 +170,112 @@ DailyAgentEventDocsWriter.InsertResult r =
 // r == INSERTED       → first time today (count this doc)
 // r == ALREADY_EXISTS → duplicate for the day (ignore)
 
+
+====
+
+Yes—send one summary message per agent/day to the Notification queue, then have the Notification SB trigger query counts and build the email.
+
+What to put in the summary message
+
+Minimal (keep it small + idempotent):
+
+{
+  "agentId": "A12345",
+  "day": "20251001",      // yyyyMMdd in Asia/Tokyo
+  "locale": "ja-JP",      // optional
+  "recipientType": "agent"// optional
+}
+
+Queue settings: enable duplicate detection and set messageId = agentId + "#" + day.
+
+Java: query counts per agent/day (prefix-range by RowKey)
+
+Uses the table we wrote earlier:
+	•	PK = yyyyMMdd
+	•	RK = agentId#eventKey#docId
+
+import com.azure.data.tables.*;
+import com.azure.data.tables.models.*;
+import java.time.*;
+import java.time.format.DateTimeFormatter;
+import java.util.*;
+import java.util.stream.Collectors;
+
+public final class AgentDailyCounts {
+
+    private static final ZoneId TOKYO = ZoneId.of("Asia/Tokyo");
+    private static final DateTimeFormatter DAY_FMT = DateTimeFormatter.BASIC_ISO_DATE; // yyyyMMdd
+
+    /** Helper: yesterday in Tokyo as yyyyMMdd */
+    public static String tokyoYesterday() {
+        return DAY_FMT.format(LocalDate.now(TOKYO).minusDays(1));
+    }
+
+    /**
+     * Return counts per eventKey for an agent on a given Tokyo day by scanning RowKey prefix.
+     * Table shape: PK=yyyyMMdd, RK=agentId#eventKey#docId (one row per docId)
+     */
+    public static Map<String,Integer> getCountsByEventForAgentDay(
+            TableClient table, String agentId, String dayYyyyMMdd) {
+
+        String low = agentId + "#";     // inclusive lower bound
+        String high = agentId + "~";    // exclusive upper bound (sentinel)
+
+        String filter = String.format(
+            "PartitionKey eq '%s' and RowKey ge '%s' and RowKey lt '%s'",
+            dayYyyyMMdd, escape(low), escape(high)
+        );
+
+        Map<String,Integer> counts = new HashMap<>();
+        // ListEntitiesOptions can also set page size if desired
+        PagedIterable<TableEntity> rows = table.listEntities(
+            new ListEntitiesOptions().setFilter(filter), null, null);
+
+        for (TableEntity e : rows) {
+            // RowKey = agentId#eventKey#docId → extract eventKey safely
+            String rk = e.getRowKey();
+            int i1 = rk.indexOf('#');
+            int i2 = rk.indexOf('#', i1 + 1);
+            if (i1 > 0 && i2 > i1) {
+                String eventKey = rk.substring(i1 + 1, i2);
+                counts.merge(eventKey, 1, Integer::sum);
+            }
+        }
+        return counts;
+    }
+
+    // Overload: yesterday in Tokyo
+    public static Map<String,Integer> getCountsByEventForAgentYesterday(TableClient table, String agentId) {
+        return getCountsByEventForAgentDay(table, agentId, tokyoYesterday());
+    }
+
+    // If your IDs can contain single quotes, escape them for the OData filter
+    private static String escape(String s) { return s.replace("'", "''"); }
+}
+
+Usage in Notification SB trigger (summary message)
+
+// message payload contains agentId + day
+String agentId = msg.getAgentId();
+String day     = msg.getDay(); // "yyyyMMdd"
+
+// table client for DailyAgentEventDocs
+TableClient docsTable = /* build client */;
+
+// fetch counts
+Map<String,Integer> counts = AgentDailyCounts.getCountsByEventForAgentDay(docsTable, agentId, day);
+
+// build template vars (fill 0 if missing)
+int unpaid    = counts.getOrDefault("unpaid", 0);
+int cancelled = counts.getOrDefault("cancelled", 0);
+int issued    = counts.getOrDefault("issued", 0);
+// ... other events
+
+// render + call Notification API once for this agent/day
+
+That’s all you need:
+	•	Message SB trigger writes per-doc rows.
+	•	Summary message (one per agent/day) hits the Notification SB trigger, which runs the query above and sends one email.
+
 This is all you need for the insert-once per (day, agentId, eventKey, docId) part.
 When you’re ready, I can give you the count query snippet that uses the RowKey prefix range.
