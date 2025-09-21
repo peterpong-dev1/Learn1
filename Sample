@@ -277,5 +277,159 @@ That’s all you need:
 	•	Message SB trigger writes per-doc rows.
 	•	Summary message (one per agent/day) hits the Notification SB trigger, which runs the query above and sends one email.
 
+===========
+
+Here’s a tight, production-ready helper that does both:
+	1.	insert the send-once control row in Azure Table (DailyAgentSendControl), and
+	2.	enqueue one summary message to the Notification queue (scheduled for 08:00 JST next day).
+
+import com.azure.data.tables.*;
+import com.azure.data.tables.models.*;
+import com.azure.messaging.servicebus.*;
+
+import java.time.*;
+import java.time.format.DateTimeFormatter;
+import java.util.Objects;
+import java.util.Random;
+import java.util.logging.Logger;
+
+public final class SummaryEnqueuer {
+
+    private static final ZoneId TOKYO = ZoneId.of("Asia/Tokyo");
+    private static final DateTimeFormatter DAY_FMT = DateTimeFormatter.BASIC_ISO_DATE; // yyyyMMdd
+    private static final Random JITTER = new Random();
+
+    private final TableClient controlTable;         // DailyAgentSendControl
+    private final ServiceBusSenderClient notifSender;
+    private final Logger log;
+
+    public SummaryEnqueuer(TableClient controlTable,
+                           ServiceBusSenderClient notifSender,
+                           Logger log) {
+        this.controlTable = Objects.requireNonNull(controlTable, "controlTable");
+        this.notifSender = Objects.requireNonNull(notifSender, "notifSender");
+        this.log = (log != null) ? log : Logger.getLogger(SummaryEnqueuer.class.getName());
+    }
+
+    /**
+     * Ensure exactly ONE summary message exists per (agentId, day).
+     * @param agentId like "A12345"
+     * @param dayYyyymmdd Tokyo day string, e.g. "20251001"
+     * @param locale optional, e.g. "ja-JP" (can be null)
+     * @return true if this call inserted control row AND enqueued; false if already scheduled by someone else
+     */
+    public boolean ensureSummaryScheduled(String agentId, String dayYyyymmdd, String locale) throws InterruptedException {
+        Objects.requireNonNull(agentId, "agentId");
+        Objects.requireNonNull(dayYyyymmdd, "day");
+
+        // 1) INSERT control row (first writer wins)
+        final String pk = dayYyyymmdd;                  // PK = yyyyMMdd
+        final String rk = agentId + "#summary";         // RK = agentId#summary
+
+        TableEntity e = new TableEntity(pk, rk)
+                .addProperty("agentId", agentId)
+                .addProperty("claimedAtUtc", Instant.now().toString());
+
+        if (!tryCreateEntityWithRetry(e)) {
+            // 409 conflict → another instance already scheduled the summary
+            log.fine(() -> "Summary already scheduled for agent=" + agentId + " day=" + pk);
+            return false;
+        }
+
+        // 2) Build summary payload (small + idempotent)
+        String body = "{\"agentId\":\"" + escapeJson(agentId) + "\","
+                    + "\"day\":\"" + escapeJson(pk) + "\""
+                    + (locale != null ? ",\"locale\":\"" + escapeJson(locale) + "\"" : "")
+                    + "}";
+
+        // 3) Schedule at 08:00 JST next day (or adjust if you pass 'day' as target)
+        OffsetDateTime scheduled = nextDay0800TokyoAsOffset(pk);
+
+        ServiceBusMessage msg = new ServiceBusMessage(body);
+        msg.setMessageId(agentId + "#" + pk);           // duplicate detection ON at queue level
+        msg.setSessionId(agentId + "#" + pk);           // optional: sessionize per agent/day
+        msg.setScheduledEnqueueTime(scheduled);
+
+        // 4) Send
+        notifSender.sendMessage(msg);
+        log.info(() -> "Enqueued summary message for agent=" + agentId + " day=" + pk + " at " + scheduled);
+        return true;
+    }
+
+    // -------- internals --------
+
+    /** Try to create the control row with retries on transient errors. Returns true if created, false if already exists. */
+    private boolean tryCreateEntityWithRetry(TableEntity e) throws InterruptedException {
+        final int maxAttempts = 6;
+        long backoffMs = 80;
+
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                controlTable.createEntity(e); // INSERT only
+                return true;                  // created (we're the first)
+            } catch (TableServiceException ex) {
+                int code = ex.getResponse().getStatusCode();
+                if (code == 409) return false; // already exists → someone else scheduled
+                if (code == 408 || code == 429 || (code >= 500 && code <= 599)) {
+                    if (attempt == maxAttempts) throw ex;
+                    Thread.sleep(backoffMs + JITTER.nextInt(50));
+                    backoffMs = Math.min(backoffMs * 2, 1200);
+                    continue;
+                }
+                throw ex; // non-retryable
+            } catch (RuntimeException ex) {
+                if (attempt == maxAttempts) throw ex;
+                Thread.sleep(backoffMs + JITTER.nextInt(50));
+                backoffMs = Math.min(backoffMs * 2, 1200);
+            }
+        }
+        return false; // unreachable
+    }
+
+    /** 08:00 JST of the *next* day relative to the provided Tokyo day string. */
+    private static OffsetDateTime nextDay0800TokyoAsOffset(String dayYyyymmdd) {
+        LocalDate day = LocalDate.parse(dayYyyymmdd, DAY_FMT);
+        ZonedDateTime zdt = day.plusDays(1).atTime(8, 0).atZone(TOKYO);
+        return zdt.toOffsetDateTime();
+    }
+
+    private static String escapeJson(String s) {
+        return s.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    // --- Builders (example) ---
+    public static SummaryEnqueuer from(String tableConnStr, String tableName, String sbConnStr, String queueName, Logger log) {
+        TableClient control = new TableClientBuilder()
+                .connectionString(tableConnStr)
+                .tableName(tableName)               // e.g., "DailyAgentSendControl"
+                .buildClient();
+        control.createTableIfNotExists();
+
+        ServiceBusClientBuilder sb = new ServiceBusClientBuilder()
+                .connectionString(sbConnStr);
+        ServiceBusSenderClient sender = sb.sender().queueName(queueName).buildClient();
+
+        return new SummaryEnqueuer(control, sender, log);
+    }
+}
+
+How you call it (inside Message SB trigger, after writing per-doc rows)
+
+SummaryEnqueuer enq = /* build once and reuse (DI/singleton) */;
+String tokyoDay = java.time.LocalDate.now(java.time.ZoneId.of("Asia/Tokyo"))
+                   .format(java.time.format.DateTimeFormatter.BASIC_ISO_DATE);
+
+boolean scheduled = enq.ensureSummaryScheduled(agentId, tokyoDay, "ja-JP");
+// scheduled == true  → we created control row and queued the summary
+// scheduled == false → someone else already scheduled it for this agent/day
+
+What this guarantees
+	•	Exactly one summary message per agent/day goes to the Notification queue.
+	•	It’s idempotent (duplicate detection via control row + messageId).
+	•	Resilient to transient errors (retries with backoff).
+	•	No coupling to your per-doc counting table (you keep that as-is).
+
+
+
 This is all you need for the insert-once per (day, agentId, eventKey, docId) part.
 When you’re ready, I can give you the count query snippet that uses the RowKey prefix range.
