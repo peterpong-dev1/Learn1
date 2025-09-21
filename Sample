@@ -1,480 +1,62 @@
-Here’s a production-grade, thread-safe, idempotent Java helper to record one row per (day, agentId, eventKey, docId) in Azure Table Storage.
-	•	Insert-only (first writer wins).
-	•	Idempotent: duplicate inserts return ALREADY_EXISTS.
-	•	Thread-safe: uses exponential backoff + jitter on transient errors.
-	•	Key-safe: sanitizes PartitionKey/RowKey and enforces length limits.
-	•	Compatible with Azure Data Tables v12 (com.azure:azure-data-tables).
+Here you go—production-ready, concise Java to get per-event counts for one agent on one Tokyo day from your DailyAgentEventDocs table:
 
-import com.azure.data.tables.TableClient;
-import com.azure.data.tables.TableClientBuilder;
-import com.azure.data.tables.models.TableEntity;
-import com.azure.data.tables.models.TableServiceException;
-
-import java.time.*;
-import java.time.format.DateTimeFormatter;
-import java.util.Objects;
-import java.util.Random;
-import java.util.logging.Logger;
-
-public final class DailyAgentEventDocsWriter {
-
-    public enum InsertResult { INSERTED, ALREADY_EXISTS }
-
-    private static final DateTimeFormatter DAY_FMT = DateTimeFormatter.BASIC_ISO_DATE; // yyyyMMdd
-    private static final ZoneId TOKYO = ZoneId.of("Asia/Tokyo");
-    private static final int MAX_KEY_LEN = 512; // conservative, Azure allows up to 1KB
-    private static final Random JITTER = new Random();
-
-    private final TableClient table;
-    private final Logger log;
-
-    public DailyAgentEventDocsWriter(TableClient table, Logger log) {
-        this.table = Objects.requireNonNull(table, "table");
-        this.log = (log != null) ? log : Logger.getLogger(DailyAgentEventDocsWriter.class.getName());
-    }
-
-    /**
-     * Records that a (agentId,eventKey,docId) occurred on the given 'occurredAtUtc' timestamp (UTC).
-     * Idempotent: if the row already exists, returns ALREADY_EXISTS and does not throw.
-     *
-     * Row shape:
-     *   PK = yyyyMMdd (Tokyo day)
-     *   RK = agentId#eventKey#docId
-     *   Properties: agentId, eventKey, docId, wonAtUtc
-     */
-    public InsertResult insertOnce(String agentId, String eventKey, String docId, Instant occurredAtUtc)
-            throws InterruptedException {
-        Objects.requireNonNull(agentId, "agentId");
-        Objects.requireNonNull(eventKey, "eventKey");
-        Objects.requireNonNull(docId, "docId");
-        Objects.requireNonNull(occurredAtUtc, "occurredAtUtc");
-
-        final String dayPk = toTokyoDay(occurredAtUtc);
-        final String rk = sanitizeKey(agentId) + "#" + sanitizeKey(eventKey) + "#" + sanitizeKey(docId);
-
-        final TableEntity e = new TableEntity(dayPk, rk)
-                .addProperty("agentId", agentId)
-                .addProperty("eventKey", eventKey)
-                .addProperty("docId", docId)
-                .addProperty("wonAtUtc", occurredAtUtc.toString());
-
-        // Robust insert with retries on transient errors
-        final int maxAttempts = 6; // ~1.7s avg backoff; adjust if you expect heavy contention
-        long backoffMs = 100;
-
-        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
-            try {
-                table.createEntity(e);                 // INSERT ONLY
-                return InsertResult.INSERTED;          // success, first writer
-            } catch (TableServiceException ex) {
-                int code = ex.getResponse().getStatusCode();
-
-                // 409 means the row already exists -> idempotent success
-                if (code == 409) {
-                    if (attempt == 1) {
-                        log.fine(() -> String.format(
-                            "DailyAgentEventDocs already had row (PK=%s, RK=%s).", dayPk, rk));
-                    }
-                    return InsertResult.ALREADY_EXISTS;
-                }
-
-                // Retry on common transients: 408, 429, 5xx
-                if (code == 408 || code == 429 || (code >= 500 && code <= 599)) {
-                    if (attempt == maxAttempts) {
-                        log.warning(() -> String.format(
-                            "Transient error (code=%d) after %d attempts inserting PK=%s RK=%s: %s",
-                            code, attempt, dayPk, rk, ex.getMessage()));
-                        throw ex; // bubble up after exhausting retries
-                    }
-                    long jitter = JITTER.nextInt(60); // small jitter to reduce thundering herd
-                    long sleep = backoffMs + jitter;
-                    log.fine(() -> String.format(
-                        "Transient error (code=%d). Retry %d/%d after %d ms for PK=%s RK=%s",
-                        code, attempt, maxAttempts, sleep, dayPk, rk));
-                    Thread.sleep(sleep);
-                    backoffMs = Math.min(backoffMs * 2, 1200); // cap growth
-                    continue;
-                }
-
-                // Non-retryable: rethrow
-                log.severe(() -> String.format(
-                    "Non-retryable TableServiceException (code=%d) inserting PK=%s RK=%s: %s",
-                    code, dayPk, rk, ex.getMessage()));
-                throw ex;
-            } catch (RuntimeException ex) {
-                // SDK/runtime failures: retry a few times, then rethrow
-                if (attempt == maxAttempts) {
-                    log.severe(() -> String.format(
-                        "Runtime error after %d attempts inserting PK=%s RK=%s: %s",
-                        attempt, dayPk, rk, ex.toString()));
-                    throw ex;
-                }
-                long sleep = backoffMs + JITTER.nextInt(60);
-                Thread.sleep(sleep);
-                backoffMs = Math.min(backoffMs * 2, 1200);
-            }
-        }
-        // Should never reach here
-        throw new IllegalStateException("Exhausted retries unexpectedly.");
-    }
-
-    // --- Helpers -----------------------------------------------------------------
-
-    /** Convert an Instant to Tokyo calendar day yyyyMMdd. */
-    private static String toTokyoDay(Instant utc) {
-        return DAY_FMT.format(ZonedDateTime.ofInstant(utc, TOKYO).toLocalDate());
-    }
-
-    /**
-     * Sanitize a value for PartitionKey/RowKey:
-     *  - Remove/replace forbidden characters: '/', '\\', '#', '?'
-     *  - Trim control chars
-     *  - Enforce length limit
-     */
-    private static String sanitizeKey(String raw) {
-        String s = raw;
-        // Disallow control chars
-        s = s.replaceAll("[\\p{Cntrl}]", "");
-        // Replace forbidden Table chars
-        s = s.replace('/', '-').replace('\\', '-').replace('#', '-').replace('?', '-');
-        // Optional: collapse whitespace
-        s = s.trim();
-        // Enforce conservative length
-        if (s.length() > MAX_KEY_LEN) {
-            // keep tail which is often most unique (ids), include a hash prefix if you prefer
-            s = s.substring(s.length() - MAX_KEY_LEN);
-        }
-        if (s.isEmpty()) s = "_";
-        return s;
-        // (If your agentId/eventKey/docId can contain other risky chars, extend this.)
-    }
-
-    // Factory (example)
-    public static DailyAgentEventDocsWriter fromConnStr(String connStr, String tableName, Logger log) {
-        TableClient client = new TableClientBuilder()
-                .connectionString(connStr)
-                .tableName(tableName)
-                .buildClient();
-        // Ensure table exists (idempotent)
-        client.createTableIfNotExists();
-        return new DailyAgentEventDocsWriter(client, log);
-    }
-}
-
-How to use (inside your Message SB trigger)
-
-DailyAgentEventDocsWriter writer = /* construct once, reuse */;
-DailyAgentEventDocsWriter.InsertResult r =
-    writer.insertOnce(agentId, eventKey, docId, Instant.now());
-
-// r == INSERTED       → first time today (count this doc)
-// r == ALREADY_EXISTS → duplicate for the day (ignore)
-
-
-====
-
-Yes—send one summary message per agent/day to the Notification queue, then have the Notification SB trigger query counts and build the email.
-
-What to put in the summary message
-
-Minimal (keep it small + idempotent):
-
-{
-  "agentId": "A12345",
-  "day": "20251001",      // yyyyMMdd in Asia/Tokyo
-  "locale": "ja-JP",      // optional
-  "recipientType": "agent"// optional
-}
-
-Queue settings: enable duplicate detection and set messageId = agentId + "#" + day.
-
-Java: query counts per agent/day (prefix-range by RowKey)
-
-Uses the table we wrote earlier:
-	•	PK = yyyyMMdd
-	•	RK = agentId#eventKey#docId
+Utility
 
 import com.azure.data.tables.*;
 import com.azure.data.tables.models.*;
-import java.time.*;
-import java.time.format.DateTimeFormatter;
 import java.util.*;
-import java.util.stream.Collectors;
 
-public final class AgentDailyCounts {
+public final class AgentDailyCountsUtil {
 
-    private static final ZoneId TOKYO = ZoneId.of("Asia/Tokyo");
-    private static final DateTimeFormatter DAY_FMT = DateTimeFormatter.BASIC_ISO_DATE; // yyyyMMdd
-
-    /** Helper: yesterday in Tokyo as yyyyMMdd */
-    public static String tokyoYesterday() {
-        return DAY_FMT.format(LocalDate.now(TOKYO).minusDays(1));
-    }
-
-    /**
-     * Return counts per eventKey for an agent on a given Tokyo day by scanning RowKey prefix.
-     * Table shape: PK=yyyyMMdd, RK=agentId#eventKey#docId (one row per docId)
-     */
+    /** Table shape: PK = yyyyMMdd#agentId, RK = eventKey#docId */
     public static Map<String,Integer> getCountsByEventForAgentDay(
-            TableClient table, String agentId, String dayYyyyMMdd) {
+            TableClient table, String dayYyyymmdd, String agentId) {
 
-        String low = agentId + "#";     // inclusive lower bound
-        String high = agentId + "~";    // exclusive upper bound (sentinel)
+        String pk = dayYyyymmdd + "#" + agentId;
 
-        String filter = String.format(
-            "PartitionKey eq '%s' and RowKey ge '%s' and RowKey lt '%s'",
-            dayYyyyMMdd, escape(low), escape(high)
-        );
+        // Scan all rows in this partition; aggregate by eventKey via RK prefix before first '#'
+        String filter = "PartitionKey eq '" + escape(pk) + "'";
+        PagedIterable<TableEntity> rows = table.listEntities(
+                new ListEntitiesOptions().setFilter(filter), null, null);
 
         Map<String,Integer> counts = new HashMap<>();
-        // ListEntitiesOptions can also set page size if desired
-        PagedIterable<TableEntity> rows = table.listEntities(
-            new ListEntitiesOptions().setFilter(filter), null, null);
-
         for (TableEntity e : rows) {
-            // RowKey = agentId#eventKey#docId → extract eventKey safely
-            String rk = e.getRowKey();
-            int i1 = rk.indexOf('#');
-            int i2 = rk.indexOf('#', i1 + 1);
-            if (i1 > 0 && i2 > i1) {
-                String eventKey = rk.substring(i1 + 1, i2);
-                counts.merge(eventKey, 1, Integer::sum);
-            }
+            String rk = e.getRowKey();                 // eventKey#docId
+            int hash = rk.indexOf('#');
+            if (hash <= 0) continue;
+            String eventKey = rk.substring(0, hash);
+            counts.merge(eventKey, 1, Integer::sum);
         }
         return counts;
     }
 
-    // Overload: yesterday in Tokyo
-    public static Map<String,Integer> getCountsByEventForAgentYesterday(TableClient table, String agentId) {
-        return getCountsByEventForAgentDay(table, agentId, tokyoYesterday());
-    }
-
-    // If your IDs can contain single quotes, escape them for the OData filter
-    private static String escape(String s) { return s.replace("'", "''"); }
+    private static String escape(String s){ return s.replace("'", "''"); }
 }
 
-Usage in Notification SB trigger (summary message)
+In your Notification SB trigger
 
-// message payload contains agentId + day
+// message contains agentId + day (yyyyMMdd), already scheduled for the right day
 String agentId = msg.getAgentId();
-String day     = msg.getDay(); // "yyyyMMdd"
+String day     = msg.getDay();
 
-// table client for DailyAgentEventDocs
-TableClient docsTable = /* build client */;
+TableClient docsTable = /* build client for DailyAgentEventDocs */;
 
-// fetch counts
-Map<String,Integer> counts = AgentDailyCounts.getCountsByEventForAgentDay(docsTable, agentId, day);
+// get counts
+Map<String,Integer> counts = AgentDailyCountsUtil.getCountsByEventForAgentDay(docsTable, day, agentId);
 
-// build template vars (fill 0 if missing)
+// read with defaults for your template
 int unpaid    = counts.getOrDefault("unpaid", 0);
 int cancelled = counts.getOrDefault("cancelled", 0);
 int issued    = counts.getOrDefault("issued", 0);
-// ... other events
+// ... other event keys as needed
 
-// render + call Notification API once for this agent/day
+// build email payload → call Notification API once for this agent/day
 
-That’s all you need:
-	•	Message SB trigger writes per-doc rows.
-	•	Summary message (one per agent/day) hits the Notification SB trigger, which runs the query above and sends one email.
+Notes:
+	•	This version does not subtract a day—it uses the exact day you put in the summary message.
+	•	Because PK = yyyyMMdd#agentId, the query is single-partition and efficient.
+	•	If you prefer to fetch only one event’s count, change the filter to:
 
-===========
+PartitionKey eq '<day#agentId>' and RowKey ge '<eventKey>#' and RowKey lt '<eventKey>~'
 
-Here’s a tight, production-ready helper that does both:
-	1.	insert the send-once control row in Azure Table (DailyAgentSendControl), and
-	2.	enqueue one summary message to the Notification queue (scheduled for 08:00 JST next day).
-
-import com.azure.data.tables.*;
-import com.azure.data.tables.models.*;
-import com.azure.messaging.servicebus.*;
-
-import java.time.*;
-import java.time.format.DateTimeFormatter;
-import java.util.Objects;
-import java.util.Random;
-import java.util.logging.Logger;
-
-public final class SummaryEnqueuer {
-
-    private static final ZoneId TOKYO = ZoneId.of("Asia/Tokyo");
-    private static final DateTimeFormatter DAY_FMT = DateTimeFormatter.BASIC_ISO_DATE; // yyyyMMdd
-    private static final Random JITTER = new Random();
-
-    private final TableClient controlTable;         // DailyAgentSendControl
-    private final ServiceBusSenderClient notifSender;
-    private final Logger log;
-
-    public SummaryEnqueuer(TableClient controlTable,
-                           ServiceBusSenderClient notifSender,
-                           Logger log) {
-        this.controlTable = Objects.requireNonNull(controlTable, "controlTable");
-        this.notifSender = Objects.requireNonNull(notifSender, "notifSender");
-        this.log = (log != null) ? log : Logger.getLogger(SummaryEnqueuer.class.getName());
-    }
-
-    /**
-     * Ensure exactly ONE summary message exists per (agentId, day).
-     * @param agentId like "A12345"
-     * @param dayYyyymmdd Tokyo day string, e.g. "20251001"
-     * @param locale optional, e.g. "ja-JP" (can be null)
-     * @return true if this call inserted control row AND enqueued; false if already scheduled by someone else
-     */
-    public boolean ensureSummaryScheduled(String agentId, String dayYyyymmdd, String locale) throws InterruptedException {
-        Objects.requireNonNull(agentId, "agentId");
-        Objects.requireNonNull(dayYyyymmdd, "day");
-
-        // 1) INSERT control row (first writer wins)
-        final String pk = dayYyyymmdd;                  // PK = yyyyMMdd
-        final String rk = agentId + "#summary";         // RK = agentId#summary
-
-        TableEntity e = new TableEntity(pk, rk)
-                .addProperty("agentId", agentId)
-                .addProperty("claimedAtUtc", Instant.now().toString());
-
-        if (!tryCreateEntityWithRetry(e)) {
-            // 409 conflict → another instance already scheduled the summary
-            log.fine(() -> "Summary already scheduled for agent=" + agentId + " day=" + pk);
-            return false;
-        }
-
-        // 2) Build summary payload (small + idempotent)
-        String body = "{\"agentId\":\"" + escapeJson(agentId) + "\","
-                    + "\"day\":\"" + escapeJson(pk) + "\""
-                    + (locale != null ? ",\"locale\":\"" + escapeJson(locale) + "\"" : "")
-                    + "}";
-
-        // 3) Schedule at 08:00 JST next day (or adjust if you pass 'day' as target)
-        OffsetDateTime scheduled = nextDay0800TokyoAsOffset(pk);
-
-        ServiceBusMessage msg = new ServiceBusMessage(body);
-        msg.setMessageId(agentId + "#" + pk);           // duplicate detection ON at queue level
-        msg.setSessionId(agentId + "#" + pk);           // optional: sessionize per agent/day
-        msg.setScheduledEnqueueTime(scheduled);
-
-        // 4) Send
-        notifSender.sendMessage(msg);
-        log.info(() -> "Enqueued summary message for agent=" + agentId + " day=" + pk + " at " + scheduled);
-        return true;
-    }
-
-    // -------- internals --------
-
-    /** Try to create the control row with retries on transient errors. Returns true if created, false if already exists. */
-    private boolean tryCreateEntityWithRetry(TableEntity e) throws InterruptedException {
-        final int maxAttempts = 6;
-        long backoffMs = 80;
-
-        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
-            try {
-                controlTable.createEntity(e); // INSERT only
-                return true;                  // created (we're the first)
-            } catch (TableServiceException ex) {
-                int code = ex.getResponse().getStatusCode();
-                if (code == 409) return false; // already exists → someone else scheduled
-                if (code == 408 || code == 429 || (code >= 500 && code <= 599)) {
-                    if (attempt == maxAttempts) throw ex;
-                    Thread.sleep(backoffMs + JITTER.nextInt(50));
-                    backoffMs = Math.min(backoffMs * 2, 1200);
-                    continue;
-                }
-                throw ex; // non-retryable
-            } catch (RuntimeException ex) {
-                if (attempt == maxAttempts) throw ex;
-                Thread.sleep(backoffMs + JITTER.nextInt(50));
-                backoffMs = Math.min(backoffMs * 2, 1200);
-            }
-        }
-        return false; // unreachable
-    }
-
-    /** 08:00 JST of the *next* day relative to the provided Tokyo day string. */
-    private static OffsetDateTime nextDay0800TokyoAsOffset(String dayYyyymmdd) {
-        LocalDate day = LocalDate.parse(dayYyyymmdd, DAY_FMT);
-        ZonedDateTime zdt = day.plusDays(1).atTime(8, 0).atZone(TOKYO);
-        return zdt.toOffsetDateTime();
-    }
-
-    private static String escapeJson(String s) {
-        return s.replace("\\", "\\\\").replace("\"", "\\\"");
-    }
-
-    // --- Builders (example) ---
-    public static SummaryEnqueuer from(String tableConnStr, String tableName, String sbConnStr, String queueName, Logger log) {
-        TableClient control = new TableClientBuilder()
-                .connectionString(tableConnStr)
-                .tableName(tableName)               // e.g., "DailyAgentSendControl"
-                .buildClient();
-        control.createTableIfNotExists();
-
-        ServiceBusClientBuilder sb = new ServiceBusClientBuilder()
-                .connectionString(sbConnStr);
-        ServiceBusSenderClient sender = sb.sender().queueName(queueName).buildClient();
-
-        return new SummaryEnqueuer(control, sender, log);
-    }
-}
-
-How you call it (inside Message SB trigger, after writing per-doc rows)
-
-SummaryEnqueuer enq = /* build once and reuse (DI/singleton) */;
-String tokyoDay = java.time.LocalDate.now(java.time.ZoneId.of("Asia/Tokyo"))
-                   .format(java.time.format.DateTimeFormatter.BASIC_ISO_DATE);
-
-boolean scheduled = enq.ensureSummaryScheduled(agentId, tokyoDay, "ja-JP");
-// scheduled == true  → we created control row and queued the summary
-// scheduled == false → someone else already scheduled it for this agent/day
-
-What this guarantees
-	•	Exactly one summary message per agent/day goes to the Notification queue.
-	•	It’s idempotent (duplicate detection via control row + messageId).
-	•	Resilient to transient errors (retries with backoff).
-	•	No coupling to your per-doc counting table (you keep that as-is).
-
-====
-
-Yes—use the send-control table and return a flag.
-
-Table
-
-DailyAgentSendControl
-	•	PK = yyyyMMdd#agentId
-	•	RK = summary
-	•	cols: claimedAtUtc, claimerMsgId (optional)
-
-Utility (returns if first time)
-
-public enum ScheduleResult { CREATED_AND_SHOULD_SEND, ALREADY_PRESENT }
-
-public static ScheduleResult ensureSummaryRow(TableClient controlTable,
-                                              String agentId, String dayYMD,
-                                              String messageId) {
-    String pk = dayYMD + "#" + agentId;   // per-agent/day partition
-    String rk = "summary";
-
-    TableEntity e = new TableEntity(pk, rk)
-        .addProperty("claimedAtUtc", java.time.Instant.now().toString())
-        .addProperty("claimerMsgId", messageId);
-
-    try {
-        controlTable.createEntity(e);      // INSERT only
-        return ScheduleResult.CREATED_AND_SHOULD_SEND; // first time
-    } catch (com.azure.data.tables.models.TableServiceException ex) {
-        if (ex.getResponse().getStatusCode() == 409) {
-            return ScheduleResult.ALREADY_PRESENT;     // someone else did it
-        }
-        throw ex; // other errors bubble up
-    }
-}
-
-Caller usage
-
-ScheduleResult r = ensureSummaryRow(controlTable, agentId, dayYMD, msgId);
-if (r == ScheduleResult.CREATED_AND_SHOULD_SEND) {
-    // enqueue ONE summary message for this agent/day
-    // (use messageId = agentId + "#" + dayYMD with duplicate detection)
-}
-// if ALREADY_PRESENT → do nothing
-
-This gives you the exact “first time vs already present” signal you need.
-
-This is all you need for the insert-once per (day, agentId, eventKey, docId) part.
-When you’re ready, I can give you the count query snippet that uses the RowKey prefix range.
+and count the rows.
