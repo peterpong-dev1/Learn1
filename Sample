@@ -1,166 +1,174 @@
-Totally fair — let’s make it super simple and avoid complex PATCH ops.
+Here’s a production-grade, thread-safe, idempotent Java helper to record one row per (day, agentId, eventKey, docId) in Azure Table Storage.
+	•	Insert-only (first writer wins).
+	•	Idempotent: duplicate inserts return ALREADY_EXISTS.
+	•	Thread-safe: uses exponential backoff + jitter on transient errors.
+	•	Key-safe: sanitizes PartitionKey/RowKey and enforces length limits.
+	•	Compatible with Azure Data Tables v12 (com.azure:azure-data-tables).
 
-Goal
+import com.azure.data.tables.TableClient;
+import com.azure.data.tables.TableClientBuilder;
+import com.azure.data.tables.models.TableEntity;
+import com.azure.data.tables.models.TableServiceException;
 
-Add/update per-agent status under:
+import java.time.*;
+import java.time.format.DateTimeFormatter;
+import java.util.Objects;
+import java.util.Random;
+import java.util.logging.Logger;
 
-agentProcessing → agents → <agentId> → { stages..., overall..., agentInfo... }
+public final class DailyAgentEventDocsWriter {
 
-…without changing your Cosmos DB trigger.
+    public enum InsertResult { INSERTED, ALREADY_EXISTS }
 
-Easiest safe pattern (read → modify JSON → replace with ETag)
-	1.	Read the doc (get ETag).
-	2.	In memory (Jackson), create the missing nodes for agentProcessing/agents/<agentId>.
-	3.	Set/update just the fields you need (for that agent).
-	4.	Replace the document with If-Match ETag.
-	5.	If you get 412, retry a few times.
+    private static final DateTimeFormatter DAY_FMT = DateTimeFormatter.BASIC_ISO_DATE; // yyyyMMdd
+    private static final ZoneId TOKYO = ZoneId.of("Asia/Tokyo");
+    private static final int MAX_KEY_LEN = 512; // conservative, Azure allows up to 1KB
+    private static final Random JITTER = new Random();
 
-Drop-in helpers
+    private final TableClient table;
+    private final Logger log;
 
-import com.azure.cosmos.*;
-import com.azure.cosmos.models.*;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.fasterxml.jackson.databind.node.JsonNodeFactory;
-import java.time.Instant;
-
-private static String sanitizeKey(String arn){
-    if (arn == null) return "";
-    String s = arn.replace("/", "_").replace("\\","_").replace("#","_").replace("?", "_").trim();
-    if (s.length() > 64) s = s.substring(0, 55) + "_H" + Integer.toHexString(s.hashCode());
-    return s;
-}
-
-/** Super simple: read-modify-replace with ETag retry */
-public static void upsertAgentStageSimple(
-        CosmosContainer container,
-        String correlationId,
-        String rawAgentId,
-        java.util.function.Consumer<ObjectNode> perAgentUpdater  // you set fields for this agent here
-) {
-    final int MAX = 5;
-    CosmosException last = null;
-    String agentKey = sanitizeKey(rawAgentId);
-
-    for (int i = 0; i < MAX; i++) {
-        try {
-            // 1) read
-            CosmosItemResponse<JsonNode> read = container.readItem(
-                    correlationId, new PartitionKey(correlationId), JsonNode.class);
-            String etag = read.getResponseHeaders().get("etag");
-            ObjectNode doc = (ObjectNode) read.getItem();
-
-            // 2) create parents if missing (in-memory only)
-            ObjectNode agentProcessing = doc.with("agentProcessing");          // creates if missing
-            ObjectNode agents          = agentProcessing.with("agents");       // creates if missing
-            ObjectNode agentNode       = agents.with(agentKey);                // creates if missing
-
-            // 3) hand control to your tiny updater (only touches this agent node)
-            perAgentUpdater.accept(agentNode);
-
-            // optional meta bump
-            doc.with("meta").put("updatedAtUtc", Instant.now().toString());
-
-            // 4) replace with ETag (optimistic concurrency)
-            CosmosItemRequestOptions opts = new CosmosItemRequestOptions().setIfMatchETag(etag);
-            container.replaceItem(doc, correlationId, new PartitionKey(correlationId), opts);
-            return; // success
-
-        } catch (CosmosException cx) {
-            last = cx;
-            if (cx.getStatusCode() == 412) { // ETag mismatch → retry
-                try { Thread.sleep(Math.min(1000, 50 * (1 << i))); } catch (InterruptedException ignored) {}
-                continue;
-            }
-            throw cx;
-        }
+    public DailyAgentEventDocsWriter(TableClient table, Logger log) {
+        this.table = Objects.requireNonNull(table, "table");
+        this.log = (log != null) ? log : Logger.getLogger(DailyAgentEventDocsWriter.class.getName());
     }
-    throw last != null ? last : new RuntimeException("Cosmos replace failed after retries");
+
+    /**
+     * Records that a (agentId,eventKey,docId) occurred on the given 'occurredAtUtc' timestamp (UTC).
+     * Idempotent: if the row already exists, returns ALREADY_EXISTS and does not throw.
+     *
+     * Row shape:
+     *   PK = yyyyMMdd (Tokyo day)
+     *   RK = agentId#eventKey#docId
+     *   Properties: agentId, eventKey, docId, wonAtUtc
+     */
+    public InsertResult insertOnce(String agentId, String eventKey, String docId, Instant occurredAtUtc)
+            throws InterruptedException {
+        Objects.requireNonNull(agentId, "agentId");
+        Objects.requireNonNull(eventKey, "eventKey");
+        Objects.requireNonNull(docId, "docId");
+        Objects.requireNonNull(occurredAtUtc, "occurredAtUtc");
+
+        final String dayPk = toTokyoDay(occurredAtUtc);
+        final String rk = sanitizeKey(agentId) + "#" + sanitizeKey(eventKey) + "#" + sanitizeKey(docId);
+
+        final TableEntity e = new TableEntity(dayPk, rk)
+                .addProperty("agentId", agentId)
+                .addProperty("eventKey", eventKey)
+                .addProperty("docId", docId)
+                .addProperty("wonAtUtc", occurredAtUtc.toString());
+
+        // Robust insert with retries on transient errors
+        final int maxAttempts = 6; // ~1.7s avg backoff; adjust if you expect heavy contention
+        long backoffMs = 100;
+
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                table.createEntity(e);                 // INSERT ONLY
+                return InsertResult.INSERTED;          // success, first writer
+            } catch (TableServiceException ex) {
+                int code = ex.getResponse().getStatusCode();
+
+                // 409 means the row already exists -> idempotent success
+                if (code == 409) {
+                    if (attempt == 1) {
+                        log.fine(() -> String.format(
+                            "DailyAgentEventDocs already had row (PK=%s, RK=%s).", dayPk, rk));
+                    }
+                    return InsertResult.ALREADY_EXISTS;
+                }
+
+                // Retry on common transients: 408, 429, 5xx
+                if (code == 408 || code == 429 || (code >= 500 && code <= 599)) {
+                    if (attempt == maxAttempts) {
+                        log.warning(() -> String.format(
+                            "Transient error (code=%d) after %d attempts inserting PK=%s RK=%s: %s",
+                            code, attempt, dayPk, rk, ex.getMessage()));
+                        throw ex; // bubble up after exhausting retries
+                    }
+                    long jitter = JITTER.nextInt(60); // small jitter to reduce thundering herd
+                    long sleep = backoffMs + jitter;
+                    log.fine(() -> String.format(
+                        "Transient error (code=%d). Retry %d/%d after %d ms for PK=%s RK=%s",
+                        code, attempt, maxAttempts, sleep, dayPk, rk));
+                    Thread.sleep(sleep);
+                    backoffMs = Math.min(backoffMs * 2, 1200); // cap growth
+                    continue;
+                }
+
+                // Non-retryable: rethrow
+                log.severe(() -> String.format(
+                    "Non-retryable TableServiceException (code=%d) inserting PK=%s RK=%s: %s",
+                    code, dayPk, rk, ex.getMessage()));
+                throw ex;
+            } catch (RuntimeException ex) {
+                // SDK/runtime failures: retry a few times, then rethrow
+                if (attempt == maxAttempts) {
+                    log.severe(() -> String.format(
+                        "Runtime error after %d attempts inserting PK=%s RK=%s: %s",
+                        attempt, dayPk, rk, ex.toString()));
+                    throw ex;
+                }
+                long sleep = backoffMs + JITTER.nextInt(60);
+                Thread.sleep(sleep);
+                backoffMs = Math.min(backoffMs * 2, 1200);
+            }
+        }
+        // Should never reach here
+        throw new IllegalStateException("Exhausted retries unexpectedly.");
+    }
+
+    // --- Helpers -----------------------------------------------------------------
+
+    /** Convert an Instant to Tokyo calendar day yyyyMMdd. */
+    private static String toTokyoDay(Instant utc) {
+        return DAY_FMT.format(ZonedDateTime.ofInstant(utc, TOKYO).toLocalDate());
+    }
+
+    /**
+     * Sanitize a value for PartitionKey/RowKey:
+     *  - Remove/replace forbidden characters: '/', '\\', '#', '?'
+     *  - Trim control chars
+     *  - Enforce length limit
+     */
+    private static String sanitizeKey(String raw) {
+        String s = raw;
+        // Disallow control chars
+        s = s.replaceAll("[\\p{Cntrl}]", "");
+        // Replace forbidden Table chars
+        s = s.replace('/', '-').replace('\\', '-').replace('#', '-').replace('?', '-');
+        // Optional: collapse whitespace
+        s = s.trim();
+        // Enforce conservative length
+        if (s.length() > MAX_KEY_LEN) {
+            // keep tail which is often most unique (ids), include a hash prefix if you prefer
+            s = s.substring(s.length() - MAX_KEY_LEN);
+        }
+        if (s.isEmpty()) s = "_";
+        return s;
+        // (If your agentId/eventKey/docId can contain other risky chars, extend this.)
+    }
+
+    // Factory (example)
+    public static DailyAgentEventDocsWriter fromConnStr(String connStr, String tableName, Logger log) {
+        TableClient client = new TableClientBuilder()
+                .connectionString(connStr)
+                .tableName(tableName)
+                .buildClient();
+        // Ensure table exists (idempotent)
+        client.createTableIfNotExists();
+        return new DailyAgentEventDocsWriter(client, log);
+    }
 }
 
-How to use (tiny one-liners per stage)
-	•	Allow check OK
+How to use (inside your Message SB trigger)
 
-upsertAgentStageSimple(container, correlationId, arn, agent -> {
-    agent.with("stages").with("allowCheck")
-         .put("status", "OK")
-         .put("at", Instant.now().toString());
-    agent.put("updatedAtUtc", Instant.now().toString());
-    agent.with("overall").put("status", "IN_PROGRESS");
-});
+DailyAgentEventDocsWriter writer = /* construct once, reuse */;
+DailyAgentEventDocsWriter.InsertResult r =
+    writer.insertOnce(agentId, eventKey, docId, Instant.now());
 
-	•	Allow check SKIPPED (not allowed)
+// r == INSERTED       → first time today (count this doc)
+// r == ALREADY_EXISTS → duplicate for the day (ignore)
 
-upsertAgentStageSimple(container, correlationId, arn, agent -> {
-    agent.with("stages").with("allowCheck")
-         .put("status", "SKIPPED")
-         .put("reason", "NOT_ALLOWED")
-         .put("at", Instant.now().toString());
-    agent.with("overall")
-         .put("status", "SKIPPED")
-         .put("reason", "NOT_ALLOWED");
-    agent.put("updatedAtUtc", Instant.now().toString());
-});
-
-	•	Payload build FAILED
-
-upsertAgentStageSimple(container, correlationId, arn, agent -> {
-    agent.with("stages").with("payloadBuild")
-         .put("status", "FAILED")
-         .put("errorCode", "TPL_ERR")
-         .put("message", "Missing email")
-         .put("at", Instant.now().toString());
-    agent.with("overall")
-         .put("status", "FAILED")
-         .put("reason", "PAYLOAD_FAILED");
-    agent.put("updatedAtUtc", Instant.now().toString());
-});
-
-	•	Table upsert OK
-
-upsertAgentStageSimple(container, correlationId, arn, agent -> {
-    agent.with("stages").with("tableUpsert")
-         .put("status", "OK")
-         .put("rowKey", rowKey)
-         .put("at", Instant.now().toString());
-    agent.put("updatedAtUtc", Instant.now().toString());
-});
-
-	•	Queue send OK
-
-upsertAgentStageSimple(container, correlationId, arn, agent -> {
-    agent.with("stages").with("queueSend")
-         .put("status", "OK")
-         .put("sbMsgId", sbMsgId)
-         .put("at", Instant.now().toString());
-    agent.put("updatedAtUtc", Instant.now().toString());
-});
-
-	•	Notification API OK
-
-upsertAgentStageSimple(container, correlationId, arn, agent -> {
-    agent.with("stages").with("notificationApi")
-         .put("status", "OK")
-         .put("at", Instant.now().toString());
-    agent.with("overall").put("status", "SUCCESS");
-    agent.put("updatedAtUtc", Instant.now().toString());
-});
-
-	•	Snapshot agent info (email/agency) whenever you have it
-
-upsertAgentStageSimple(container, correlationId, arn, agent -> {
-    agent.with("agentInfo")
-         .put("agentRegistrationNumber", arn)
-         .put("email", email)
-         .put("agencyId", agencyId)
-         .put("agencyName", agencyName);
-    agent.put("updatedAtUtc", Instant.now().toString());
-});
-
-Why this is simpler
-	•	No PATCH ops to learn.
-	•	No parent-path errors: .with(...) creates missing nodes in memory.
-	•	Concurrency safe via ETag replace + tiny retry.
-	•	You only touch this agent’s node each time.
-
-If you want, give me one stage you’ll implement first (e.g., queueSend OK) and I’ll write the exact call with your variable names.
+This is all you need for the insert-once per (day, agentId, eventKey, docId) part.
+When you’re ready, I can give you the count query snippet that uses the RowKey prefix range.
