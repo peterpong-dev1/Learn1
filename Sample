@@ -429,7 +429,52 @@ What this guarantees
 	•	Resilient to transient errors (retries with backoff).
 	•	No coupling to your per-doc counting table (you keep that as-is).
 
+====
 
+Yes—use the send-control table and return a flag.
+
+Table
+
+DailyAgentSendControl
+	•	PK = yyyyMMdd#agentId
+	•	RK = summary
+	•	cols: claimedAtUtc, claimerMsgId (optional)
+
+Utility (returns if first time)
+
+public enum ScheduleResult { CREATED_AND_SHOULD_SEND, ALREADY_PRESENT }
+
+public static ScheduleResult ensureSummaryRow(TableClient controlTable,
+                                              String agentId, String dayYMD,
+                                              String messageId) {
+    String pk = dayYMD + "#" + agentId;   // per-agent/day partition
+    String rk = "summary";
+
+    TableEntity e = new TableEntity(pk, rk)
+        .addProperty("claimedAtUtc", java.time.Instant.now().toString())
+        .addProperty("claimerMsgId", messageId);
+
+    try {
+        controlTable.createEntity(e);      // INSERT only
+        return ScheduleResult.CREATED_AND_SHOULD_SEND; // first time
+    } catch (com.azure.data.tables.models.TableServiceException ex) {
+        if (ex.getResponse().getStatusCode() == 409) {
+            return ScheduleResult.ALREADY_PRESENT;     // someone else did it
+        }
+        throw ex; // other errors bubble up
+    }
+}
+
+Caller usage
+
+ScheduleResult r = ensureSummaryRow(controlTable, agentId, dayYMD, msgId);
+if (r == ScheduleResult.CREATED_AND_SHOULD_SEND) {
+    // enqueue ONE summary message for this agent/day
+    // (use messageId = agentId + "#" + dayYMD with duplicate detection)
+}
+// if ALREADY_PRESENT → do nothing
+
+This gives you the exact “first time vs already present” signal you need.
 
 This is all you need for the insert-once per (day, agentId, eventKey, docId) part.
 When you’re ready, I can give you the count query snippet that uses the RowKey prefix range.
