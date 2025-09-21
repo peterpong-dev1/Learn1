@@ -60,3 +60,28 @@ Notes:
 PartitionKey eq '<day#agentId>' and RowKey ge '<eventKey>#' and RowKey lt '<eventKey>~'
 
 and count the rows.
+
+====
+
+ObjectMapper om = new ObjectMapper();
+
+// original SB body (JSON string)
+String body = sbMessageBody;
+
+// parse
+ObjectNode root;
+JsonNode n = om.readTree(body);
+root = (n.isObject()) ? (ObjectNode) n : om.createObjectNode().put("raw", body);
+
+// add counts map under "dailyCounts"
+ObjectNode countsNode = root.putObject("dailyCounts");
+counts.forEach((k,v) -> countsNode.put(k, v));  // counts is Map<String,Integer>
+
+// (optional) keep agent/day at top if not present
+root.putIfAbsent("agentId", agentId);
+root.putIfAbsent("day", dayYyyymmdd);
+
+// re-serialize for POST
+String payload = om.writeValueAsString(root);
+
+// call Notification API with 'payload'
