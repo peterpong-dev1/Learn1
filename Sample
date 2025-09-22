@@ -1,98 +1,84 @@
-Got it — you want the array path and the item field to come from config, not be hard-coded.
+You’re right—those first two screenshots are two different daily summary emails:
+	1.	未入金失効照会 (Unpaid/Lapse digest)
+	2.	新契約／保全・支払関連進捗照会 (New-business + Policy/Payment progress digest)
 
-Here’s a minimal, backward-compatible pattern that fits your current JSON and code:
+Treat them as two summary types. Wire it like this:
 
-1) Config change (tiny)
+What to add (very small)
+	•	A summaryType string with two values:
+	•	"unpaid"  (未入金失効照会)
+	•	"progress" (新契約／保全・支払関連進捗照会)
 
-Keep your existing pointer for the array, and add a sibling key with suffix .itemField to say which field in each array item to read.
+Where it flows
+	•	Config: map each Cosmos container/event → a summaryType.
+	•	e.g. appInfoProgressManagement → "progress"
+	•	unpaidContractInquiry → "unpaid"
+	•	Message function (first SB trigger)
+When you insert the de-dupe row in DailyAgentEventDocs, also include summaryType in the RowKey namespace (or keep it as a property) so you can filter later.
+Recommended table shape (unchanged partitioning):
+	•	Table: DailyAgentEventDocs
+	•	PK = yyyyMMdd#agentId  (Tokyo day)
+	•	RK = summaryType#eventKey#docId  ← add summaryType prefix
+	•	Props: agentId, summaryType, eventKey, docId, wonAtUtc
+	•	Send-control table (one row per agent/day per summaryType)
+	•	Table: DailyAgentSendControl
+	•	PK = yyyyMMdd#agentId#summaryType
+	•	RK = summary
+	•	Insert-only. If 409 → skip sending. If created → enqueue one summary message with {agentId, day, summaryType}.
 
-"extractedFields": {
-  "applicationNumber": "/applicationNumber",
-  "policyId": "/policyId",
+Notification SB trigger (second function)
+	•	Read {agentId, day, summaryType} from the message.
+	•	Query counts only for that summaryType:
 
-  "agentId": "/agency",                 // array path (as today)
-  "agentId.itemField": "agentRegistrationNumber"  // NEW: value inside each array item
+String pk = day + "#" + agentId;
+String prefix = summaryType + "#";            // "unpaid#" or "progress#"
+String filter = "PartitionKey eq '" + esc(pk) + "' and " +
+                "RowKey ge '" + esc(prefix) + "' and RowKey lt '" + esc(prefix + "~") + "'";
+
+
+	•	Aggregate to event-key buckets (the part after summaryType# up to the next #).
+	•	Render the unpaid digest or the progress digest using the right template.
+
+Why this works
+	•	You’ll send two separate daily emails (if there were events of each type) because the send-control row is unique per (day, agentId, summaryType).
+	•	Counting stays fast because the query is a single-partition prefix scan and further narrowed by summaryType.
+	•	Templates stay clean: one subject/body for “unpaid” digest; another for “progress” digest.
+
+Tiny code hints
+
+When inserting de-dupe row:
+
+String rk = summaryType + "#" + eventKey + "#" + docId;
+table.createEntity(new TableEntity(dayTokyodate + "#" + agentId, rk)
+   .addProperty("agentId", agentId)
+   .addProperty("summaryType", summaryType)
+   .addProperty("eventKey", eventKey)
+   .addProperty("docId", docId)
+   .addProperty("wonAtUtc", occurredAtUtc.toString()));
+
+Send-control:
+
+String controlPk = day + "#" + agentId + "#" + summaryType;
+try {
+  control.createEntity(new TableEntity(controlPk, "summary")
+     .addProperty("claimedAtUtc", Instant.now().toString()));
+  // first writer → enqueue {agentId, day, summaryType}
+} catch (TableServiceException ex) {
+  if (ex.getResponse().getStatusCode() == 409) { /* already scheduled → skip */ }
+  else throw ex;
 }
 
-(If you prefer a JSON Pointer for the item value, you can also set "agentId.itemField": "/agentRegistrationNumber"—the code below supports both.)
+Notification counts (by summaryType):
 
-2) Code change (drop-in)
-
-Replace your hard-coded "agentRegistrationNumber" usage with this generic logic:
-
-final ObjectMapper M = new ObjectMapper();
-ObjectNode extractedFieldsNode = M.createObjectNode();
-
-// 1) copy simple fields; skip collection fields (those with ".itemField")
-if (event.extractedFields != null && !event.extractedFields.isEmpty()) {
-    for (Map.Entry<String,String> e : event.extractedFields.entrySet()) {
-        String name = e.getKey();
-        String ptr  = e.getValue();
-        if (name.endsWith(".itemField")) continue;     // handled with its base name
-        if ("agentId".equals(name)) continue;          // we'll process generically below
-
-        if (isBlank(ptr) || ptr.charAt(0) != '/') continue; // must be a JSON Pointer
-        JsonNode v = newDoc.at(ptr);
-        if (v == null || v.isMissingNode() || v.isNull()) continue;
-        extractedFieldsNode.set(name, v.isValueNode() ? M.valueToTree(v.asText()) : v);
+Map<String,Integer> counts = new HashMap<>();
+for (TableEntity e : table.listEntities(new ListEntitiesOptions().setFilter(filter), null, null)) {
+    String rk = e.getRowKey();   // summaryType#eventKey#docId
+    int p1 = rk.indexOf('#');            // after summaryType
+    int p2 = rk.indexOf('#', p1 + 1);    // after eventKey
+    if (p1 > 0 && p2 > p1) {
+        String eventKey = rk.substring(p1 + 1, p2);
+        counts.merge(eventKey, 1, Integer::sum);
     }
 }
 
-// 2) generic collection extractor for any "<name>" that also has "<name>.itemField"
-for (Map.Entry<String,String> e : event.extractedFields.entrySet()) {
-    String baseName = e.getKey();
-    if (baseName.endsWith(".itemField")) continue;     // skip meta keys
-
-    String arrayPtr = e.getValue();                    // e.g., "/agency"
-    if (isBlank(arrayPtr) || arrayPtr.charAt(0) != '/') continue;
-
-    String itemFieldKey = baseName + ".itemField";
-    String itemPathConf = event.extractedFields.get(itemFieldKey);
-    if (itemPathConf == null) continue;                // not a collection config
-
-    // read the array
-    JsonNode arr = newDoc.at(arrayPtr);
-    if (arr == null || !arr.isArray()) continue;
-
-    // support relative field name ("agentRegistrationNumber")
-    // OR a JSON Pointer within each item ("/agentRegistrationNumber")
-    boolean itemIsPointer = !isBlank(itemPathConf) && itemPathConf.startsWith("/");
-
-    ArrayNode out = M.createArrayNode();
-    Set<String> seen = new HashSet<>();
-    for (JsonNode item : arr) {
-        String val = itemIsPointer
-                ? item.at(itemPathConf).asText(null)
-                : item.path(itemPathConf).asText(null);
-        if (val == null || val.isBlank()) continue;
-        if (!seen.add(val)) continue;                  // de-dupe
-        out.add(val);
-    }
-
-    extractedFieldsNode.set(baseName, out);            // e.g., "agentId": ["A1","A2",...]
-}
-
-// helper
-private static boolean isBlank(String s){ return s == null || s.trim().isEmpty(); }
-
-What this gives you
-	•	No hard-coding of "agentRegistrationNumber".
-	•	You can rename the logical field ("agentId") or change the array path or inner field purely in config.
-	•	Works with other collections too: just add <name> and <name>.itemField pairs to extractedFields.
-
-Example result
-
-With the config above, your output will contain:
-
-{
-  "applicationNumber": "APP123",
-  "policyId": "POL456",
-  "agentId": ["PRU001","PRU002"]    // dynamically extracted from /agency[*]/agentRegistrationNumber
-}
-
-If later your schema changes to "/agents" and value at "/reg/id", change only config:
-
-"agentId": "/agents",
-"agentId.itemField": "/reg/id"
-
-No code change needed.
+This gives you two independent digests per agent/day, aligned with your screenshots, without touching the rest of your flow.
