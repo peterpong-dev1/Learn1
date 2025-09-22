@@ -80,5 +80,26 @@ for (TableEntity e : table.listEntities(new ListEntitiesOptions().setFilter(filt
         counts.merge(eventKey, 1, Integer::sum);
     }
 }
+====
+
+Sounds good! When you’re ready, post the config pics and I’ll mark exactly where to add things.
+
+Super short checklist for config changes (so you know what to prep):
+	1.	Add summaryType per event/container
+	•	e.g.
+	•	unpaid for 未入金/失効系
+	•	progress for 新契約／保全・支払関連
+	2.	DailyAgentEventDocs row key
+	•	RK = <summaryType>#<eventKey>#<docId>
+	3.	Send-control key
+	•	PK = <yyyyMMdd>#<agentId>#<summaryType>
+	•	RK = summary
+	4.	Summary message payload
+	•	{ "agentId": "...", "day": "yyyyMMdd", "summaryType": "unpaid|progress" }
+	5.	Notification trigger query
+	•	Filter by PK = day#agentId
+	•	RowKey prefix = summaryType + "#", then bucket by eventKey
+
+Drop the screenshots and I’ll point to the exact lines/sections to edit.
 
 This gives you two independent digests per agent/day, aligned with your screenshots, without touching the rest of your flow.
