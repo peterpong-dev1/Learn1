@@ -1,105 +1,57 @@
-You’re right—those first two screenshots are two different daily summary emails:
-	1.	未入金失効照会 (Unpaid/Lapse digest)
-	2.	新契約／保全・支払関連進捗照会 (New-business + Policy/Payment progress digest)
+Got it—you want a rule that fires when a date field (e.g., lapseDate) equals today (Tokyo), and you already have eq. Easiest, low-impact change:
 
-Treat them as two summary types. Wire it like this:
+Minimal change: let eq understand “TODAY”
 
-What to add (very small)
-	•	A summaryType string with two values:
-	•	"unpaid"  (未入金失効照会)
-	•	"progress" (新契約／保全・支払関連進捗照会)
+Add a tiny resolver that turns special tokens into concrete strings, then use it inside your existing eq / ne.
 
-Where it flows
-	•	Config: map each Cosmos container/event → a summaryType.
-	•	e.g. appInfoProgressManagement → "progress"
-	•	unpaidContractInquiry → "unpaid"
-	•	Message function (first SB trigger)
-When you insert the de-dupe row in DailyAgentEventDocs, also include summaryType in the RowKey namespace (or keep it as a property) so you can filter later.
-Recommended table shape (unchanged partitioning):
-	•	Table: DailyAgentEventDocs
-	•	PK = yyyyMMdd#agentId  (Tokyo day)
-	•	RK = summaryType#eventKey#docId  ← add summaryType prefix
-	•	Props: agentId, summaryType, eventKey, docId, wonAtUtc
-	•	Send-control table (one row per agent/day per summaryType)
-	•	Table: DailyAgentSendControl
-	•	PK = yyyyMMdd#agentId#summaryType
-	•	RK = summary
-	•	Insert-only. If 409 → skip sending. If created → enqueue one summary message with {agentId, day, summaryType}.
+// --- helpers (put near your other helpers) ---
+private static final ZoneId BUSINESS_TZ =
+        ZoneId.of(Optional.ofNullable(System.getenv("Business_TZ")).orElse("Asia/Tokyo"));
 
-Notification SB trigger (second function)
-	•	Read {agentId, day, summaryType} from the message.
-	•	Query counts only for that summaryType:
-
-String pk = day + "#" + agentId;
-String prefix = summaryType + "#";            // "unpaid#" or "progress#"
-String filter = "PartitionKey eq '" + esc(pk) + "' and " +
-                "RowKey ge '" + esc(prefix) + "' and RowKey lt '" + esc(prefix + "~") + "'";
-
-
-	•	Aggregate to event-key buckets (the part after summaryType# up to the next #).
-	•	Render the unpaid digest or the progress digest using the right template.
-
-Why this works
-	•	You’ll send two separate daily emails (if there were events of each type) because the send-control row is unique per (day, agentId, summaryType).
-	•	Counting stays fast because the query is a single-partition prefix scan and further narrowed by summaryType.
-	•	Templates stay clean: one subject/body for “unpaid” digest; another for “progress” digest.
-
-Tiny code hints
-
-When inserting de-dupe row:
-
-String rk = summaryType + "#" + eventKey + "#" + docId;
-table.createEntity(new TableEntity(dayTokyodate + "#" + agentId, rk)
-   .addProperty("agentId", agentId)
-   .addProperty("summaryType", summaryType)
-   .addProperty("eventKey", eventKey)
-   .addProperty("docId", docId)
-   .addProperty("wonAtUtc", occurredAtUtc.toString()));
-
-Send-control:
-
-String controlPk = day + "#" + agentId + "#" + summaryType;
-try {
-  control.createEntity(new TableEntity(controlPk, "summary")
-     .addProperty("claimedAtUtc", Instant.now().toString()));
-  // first writer → enqueue {agentId, day, summaryType}
-} catch (TableServiceException ex) {
-  if (ex.getResponse().getStatusCode() == 409) { /* already scheduled → skip */ }
-  else throw ex;
-}
-
-Notification counts (by summaryType):
-
-Map<String,Integer> counts = new HashMap<>();
-for (TableEntity e : table.listEntities(new ListEntitiesOptions().setFilter(filter), null, null)) {
-    String rk = e.getRowKey();   // summaryType#eventKey#docId
-    int p1 = rk.indexOf('#');            // after summaryType
-    int p2 = rk.indexOf('#', p1 + 1);    // after eventKey
-    if (p1 > 0 && p2 > p1) {
-        String eventKey = rk.substring(p1 + 1, p2);
-        counts.merge(eventKey, 1, Integer::sum);
+private static String resolveSpecials(String v) {
+    if (v == null) return null;
+    String s = v.trim().toUpperCase();
+    if (s.equals("TODAY")) {
+        return LocalDate.now(BUSINESS_TZ).toString();       // yyyy-MM-dd
     }
+    if (s.startsWith("TODAY")) {                            // e.g. TODAY+1, TODAY-2
+        int delta = Integer.parseInt(s.substring(5));       // +N / -N
+        return LocalDate.now(BUSINESS_TZ).plusDays(delta).toString();
+    }
+    return v;
 }
-====
 
-Sounds good! When you’re ready, post the config pics and I’ll mark exactly where to add things.
+// If your document stores an ISO datetime, normalize to yyyy-MM-dd for comparison:
+private static String normalizeToYyyyMmDd(JsonNode n) {
+    if (n == null || n.isNull() || !n.isTextual()) return null;
+    String t = n.asText();
+    return t.length() >= 10 ? t.substring(0, 10) : t;       // first 10 chars
+}
 
-Super short checklist for config changes (so you know what to prep):
-	1.	Add summaryType per event/container
-	•	e.g.
-	•	unpaid for 未入金/失効系
-	•	progress for 新契約／保全・支払関連
-	2.	DailyAgentEventDocs row key
-	•	RK = <summaryType>#<eventKey>#<docId>
-	3.	Send-control key
-	•	PK = <yyyyMMdd>#<agentId>#<summaryType>
-	•	RK = summary
-	4.	Summary message payload
-	•	{ "agentId": "...", "day": "yyyyMMdd", "summaryType": "unpaid|progress" }
-	5.	Notification trigger query
-	•	Filter by PK = day#agentId
-	•	RowKey prefix = summaryType + "#", then bucket by eventKey
+Change equalsNow to use the normalizer:
 
-Drop the screenshots and I’ll point to the exact lines/sections to edit.
+private static boolean equalsNow(String path, ObjectNode doc, String expectedRaw) {
+    String expected = resolveSpecials(expectedRaw);
+    JsonNode v = doc.at(jsonPointer(path));
+    String actual = normalizeToYyyyMmDd(v);
+    if (actual == null || actual.isBlank()) return expected == null || expected.isBlank();
+    return expected != null && expected.equals(actual);
+}
 
-This gives you two independent digests per agent/day, aligned with your screenshots, without touching the rest of your flow.
+And keep your existing switch:
+
+case "eq":  return equalsNow(path, newDoc, r.value);
+case "ne":  return !equalsNow(path, newDoc, r.value);
+
+How to use it in config
+
+Now your rule can say:
+
+{ "op": "eq", "field": "/lapseDate", "value": "TODAY" }
+
+(Optionally TODAY+1 or TODAY-1 if you ever need offsets.)
+
+This keeps everything simple:
+	•	No new op names required.
+	•	Time-zone safe (Asia/Tokyo via Business_TZ env or default).
+	•	Works whether the field is yyyy-MM-dd or full ISO datetime.
