@@ -1,57 +1,67 @@
-Got it—you want a rule that fires when a date field (e.g., lapseDate) equals today (Tokyo), and you already have eq. Easiest, low-impact change:
+You’re right—keep eq (string) as-is. Add a new date-only op.
 
-Minimal change: let eq understand “TODAY”
+Config (example)
 
-Add a tiny resolver that turns special tokens into concrete strings, then use it inside your existing eq / ne.
+{ "op": "eqDate", "field": "/lapseDate", "value": "TODAY" }
 
-// --- helpers (put near your other helpers) ---
-private static final ZoneId BUSINESS_TZ =
-        ZoneId.of(Optional.ofNullable(System.getenv("Business_TZ")).orElse("Asia/Tokyo"));
+Java (drop-in)
 
-private static String resolveSpecials(String v) {
-    if (v == null) return null;
-    String s = v.trim().toUpperCase();
-    if (s.equals("TODAY")) {
-        return LocalDate.now(BUSINESS_TZ).toString();       // yyyy-MM-dd
+// Timezone for “today”
+private static final ZoneId BUSINESS_TZ = ZoneId.of("Asia/Tokyo");
+
+// eqDate: compare field's DATE to TODAY / TODAY±N or a literal yyyy-MM-dd
+private static boolean eqDate(String path, ObjectNode doc, String expectedSpec) {
+    LocalDate expected = parseDateSpec(expectedSpec);           // e.g. TODAY, TODAY+1, 2025-09-23
+    if (expected == null) return false;
+
+    JsonNode node = doc.at(jsonPtr(path));
+    if (node == null || node.isNull() || !node.isTextual()) return false;
+    String raw = node.asText();
+
+    LocalDate actual = parseLocalDateFlexible(raw);
+    return expected.equals(actual);
+}
+
+// Parse “TODAY”, “TODAY+1”, “TODAY-2”, or literal yyyy-MM-dd
+private static LocalDate parseDateSpec(String spec) {
+    if (spec == null) return null;
+    String s = spec.trim();
+    if (s.equalsIgnoreCase("TODAY")) return LocalDate.now(BUSINESS_TZ);
+    if (s.toUpperCase().startsWith("TODAY")) {
+        try {
+            int delta = Integer.parseInt(s.substring(5));       // +N or -N
+            return LocalDate.now(BUSINESS_TZ).plusDays(delta);
+        } catch (Exception ignore) { return null; }
     }
-    if (s.startsWith("TODAY")) {                            // e.g. TODAY+1, TODAY-2
-        int delta = Integer.parseInt(s.substring(5));       // +N / -N
-        return LocalDate.now(BUSINESS_TZ).plusDays(delta).toString();
+    try { return LocalDate.parse(s); } catch (Exception e) { return null; }
+}
+
+// Accepts "yyyy-MM-dd" OR ISO datetime; converts to BUSINESS_TZ date
+private static LocalDate parseLocalDateFlexible(String raw) {
+    try {
+        if (raw.length() == 10 && raw.charAt(4) == '-' && raw.charAt(7) == '-') {
+            return LocalDate.parse(raw);
+        }
+        // ISO datetime (with zone/offset or 'Z')
+        return OffsetDateTime.parse(raw).atZoneSameInstant(BUSINESS_TZ).toLocalDate();
+    } catch (Exception e) {
+        return null;
     }
-    return v;
 }
 
-// If your document stores an ISO datetime, normalize to yyyy-MM-dd for comparison:
-private static String normalizeToYyyyMmDd(JsonNode n) {
-    if (n == null || n.isNull() || !n.isTextual()) return null;
-    String t = n.asText();
-    return t.length() >= 10 ? t.substring(0, 10) : t;       // first 10 chars
+// Support both "/a/b" and "a.b"
+private static String jsonPtr(String field) {
+    if (field == null || field.isBlank()) return "/";
+    if (field.charAt(0) == '/') return field;
+    return "/" + field.replace('.', '/');
 }
 
-Change equalsNow to use the normalizer:
+Hook it into your evaluator
 
-private static boolean equalsNow(String path, ObjectNode doc, String expectedRaw) {
-    String expected = resolveSpecials(expectedRaw);
-    JsonNode v = doc.at(jsonPointer(path));
-    String actual = normalizeToYyyyMmDd(v);
-    if (actual == null || actual.isBlank()) return expected == null || expected.isBlank();
-    return expected != null && expected.equals(actual);
+switch (op) {
+  case "eq":     return equalsNow(path, newDoc, value);   // your existing string equality
+  case "eqDate": return eqDate(path, newDoc, value);      // NEW
+  // ...
 }
 
-And keep your existing switch:
-
-case "eq":  return equalsNow(path, newDoc, r.value);
-case "ne":  return !equalsNow(path, newDoc, r.value);
-
-How to use it in config
-
-Now your rule can say:
-
-{ "op": "eq", "field": "/lapseDate", "value": "TODAY" }
-
-(Optionally TODAY+1 or TODAY-1 if you ever need offsets.)
-
-This keeps everything simple:
-	•	No new op names required.
-	•	Time-zone safe (Asia/Tokyo via Business_TZ env or default).
-	•	Works whether the field is yyyy-MM-dd or full ISO datetime.
+This keeps string equality untouched and gives you a clean, robust date equality for rules like “lapseDate == TODAY”.
