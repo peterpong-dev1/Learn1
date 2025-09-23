@@ -1,67 +1,55 @@
-You’re right—keep eq (string) as-is. Add a new date-only op.
+for (Map.Entry<String, String> e : event.extractedFields.entrySet()) {
+    final String baseName = e.getKey();
+    if (baseName.endsWith(".itemField")) continue;
 
-Config (example)
+    final String path = e.getValue();
+    if (path == null || path.isBlank() || path.charAt(0) != '/') continue;
 
-{ "op": "eqDate", "field": "/lapseDate", "value": "TODAY" }
+    final JsonNode node = newDoc.at(path);
+    if (node == null || node.isMissingNode() || node.isNull()) continue;
 
-Java (drop-in)
+    ArrayNode out = M.createArrayNode();   // always output array
+    Set<String> seen = new HashSet<>();
 
-// Timezone for “today”
-private static final ZoneId BUSINESS_TZ = ZoneId.of("Asia/Tokyo");
+    if (node.isArray()) {
+        // --- existing logic for arrays ---
+        final String itemFieldKey  = baseName + ".itemField";
+        final String itemFieldConf = event.extractedFields.get(itemFieldKey);
+        final boolean itemIsPointer =
+                (itemFieldConf != null && !itemFieldConf.isBlank() && itemFieldConf.startsWith("/"));
 
-// eqDate: compare field's DATE to TODAY / TODAY±N or a literal yyyy-MM-dd
-private static boolean eqDate(String path, ObjectNode doc, String expectedSpec) {
-    LocalDate expected = parseDateSpec(expectedSpec);           // e.g. TODAY, TODAY+1, 2025-09-23
-    if (expected == null) return false;
-
-    JsonNode node = doc.at(jsonPtr(path));
-    if (node == null || node.isNull() || !node.isTextual()) return false;
-    String raw = node.asText();
-
-    LocalDate actual = parseLocalDateFlexible(raw);
-    return expected.equals(actual);
-}
-
-// Parse “TODAY”, “TODAY+1”, “TODAY-2”, or literal yyyy-MM-dd
-private static LocalDate parseDateSpec(String spec) {
-    if (spec == null) return null;
-    String s = spec.trim();
-    if (s.equalsIgnoreCase("TODAY")) return LocalDate.now(BUSINESS_TZ);
-    if (s.toUpperCase().startsWith("TODAY")) {
-        try {
-            int delta = Integer.parseInt(s.substring(5));       // +N or -N
-            return LocalDate.now(BUSINESS_TZ).plusDays(delta);
-        } catch (Exception ignore) { return null; }
-    }
-    try { return LocalDate.parse(s); } catch (Exception e) { return null; }
-}
-
-// Accepts "yyyy-MM-dd" OR ISO datetime; converts to BUSINESS_TZ date
-private static LocalDate parseLocalDateFlexible(String raw) {
-    try {
-        if (raw.length() == 10 && raw.charAt(4) == '-' && raw.charAt(7) == '-') {
-            return LocalDate.parse(raw);
+        for (JsonNode item : node) {
+            String val;
+            if (itemFieldConf == null || itemFieldConf.isBlank()) {
+                val = item.asText(null);
+            } else {
+                val = (itemIsPointer
+                        ? item.at(itemFieldConf).asText(null)
+                        : item.path(itemFieldConf).asText(null));
+            }
+            if (val == null || val.isBlank()) continue;
+            if (!seen.add(val)) continue;
+            out.add(val);
         }
-        // ISO datetime (with zone/offset or 'Z')
-        return OffsetDateTime.parse(raw).atZoneSameInstant(BUSINESS_TZ).toLocalDate();
-    } catch (Exception e) {
-        return null;
+    } else {
+        // --- NEW: handle object or scalar ---
+        if (node.isValueNode()) {
+            // plain scalar → wrap in array
+            String val = node.asText(null);
+            if (val != null && !val.isBlank() && seen.add(val)) {
+                out.add(val);
+            }
+        } else if (node.isObject()) {
+            // object → keep whole JSON object string
+            // (or pick a field if you want)
+            String val = node.toString();
+            if (val != null && !val.isBlank() && seen.add(val)) {
+                out.add(val);
+            }
+        }
+    }
+
+    if (out.size() > 0) {
+        extractedFieldsNode.set(baseName, out);
     }
 }
-
-// Support both "/a/b" and "a.b"
-private static String jsonPtr(String field) {
-    if (field == null || field.isBlank()) return "/";
-    if (field.charAt(0) == '/') return field;
-    return "/" + field.replace('.', '/');
-}
-
-Hook it into your evaluator
-
-switch (op) {
-  case "eq":     return equalsNow(path, newDoc, value);   // your existing string equality
-  case "eqDate": return eqDate(path, newDoc, value);      // NEW
-  // ...
-}
-
-This keeps string equality untouched and gives you a clean, robust date equality for rules like “lapseDate == TODAY”.
