@@ -1,48 +1,69 @@
-public final class DailyCountFormatter {
+import java.util.*;
+import java.util.regex.*;
+import java.util.stream.Collectors;
 
-    /**
-     * Convert dailyCounts into a placeholder map that matches template keys
-     * like {{countsLine}}, {{newBusinessCounts}}, {{paymentCounts}}.
-     */
-    public static Map<String,String> formatForTemplate(NotificationRequestDTO dto) {
-        Map<String,String> out = new LinkedHashMap<>();
-        Map<String, Map<String,Integer>> byCat = dto.getDailyCountsByCategory();
-        if (byCat == null || byCat.isEmpty()) return out;
+public final class TemplateRenderer {
 
-        // for each category, collapse to newline string
-        byCat.forEach((cat, perEvent) -> {
-            if (perEvent == null || perEvent.isEmpty()) return;
-            StringBuilder sb = new StringBuilder();
-            perEvent.forEach((event, cnt) -> {
-                if (cnt == null || cnt <= 0) return;
-                if (sb.length() > 0) sb.append('\n');
-                sb.append(event).append(": ").append(cnt);
-            });
+  // thread-safe, reusable
+  private static final Pattern PLACEHOLDER = Pattern.compile("\\{\\{\\s*([A-Za-z0-9_.-]+)\\s*}}");
 
-            if (sb.length() > 0) {
-                // map category → template placeholder
-                switch (cat) {
-                    case "unpaid":
-                        out.put("countsLine", sb.toString());
-                        break;
-                    case "NB":
-                        out.put("newBusinessCounts", sb.toString());
-                        break;
-                    case "TR":
-                        out.put("paymentCounts", sb.toString());
-                        break;
-                    default:
-                        // fallback: just keep the same key
-                        out.put(cat, sb.toString());
-                }
-            }
-        });
+  /** Input DTO shape you already have. */
+  public static final class SummaryEmailTemplateDTO {
+    private String templateName;
+    private String subject;
+    private List<String> body; // each line from the JSON "body" array
+    // getters/setters ...
+    public String getSubject() { return subject; }
+    public List<String> getBody() { return body; }
+  }
 
-        // add updateDate if present in DTO
-        if (dto.getUpdateDate() != null) {
-            out.put("updateDate", dto.getUpdateDate().toString());
-        }
+  /** Output after rendering. */
+  public static final class RenderedTemplateDTO {
+    private final String subject;
+    private final List<String> bodyLines;
+    private final String bodyJoined; // convenience (lines joined with '\n')
 
-        return out;
+    public RenderedTemplateDTO(String subject, List<String> bodyLines) {
+      this.subject   = subject;
+      this.bodyLines = bodyLines;
+      this.bodyJoined = String.join("\n", bodyLines);
     }
+    public String getSubject() { return subject; }
+    public List<String> getBodyLines() { return bodyLines; }
+    public String getBodyJoined() { return bodyJoined; }
+  }
+
+  /** Public: render subject + body using {{placeholders}} from values. */
+  public static RenderedTemplateDTO render(
+      SummaryEmailTemplateDTO template,
+      Map<String,String> values) {
+
+    Objects.requireNonNull(template, "template");
+    Objects.requireNonNull(values,   "values");
+
+    final String renderedSubject = apply(template.getSubject(), values);
+
+    final List<String> renderedBody =
+        Optional.ofNullable(template.getBody()).orElseGet(List::of)
+            .stream()
+            .map(line -> apply(line, values))
+            .collect(Collectors.toUnmodifiableList());
+
+    return new RenderedTemplateDTO(renderedSubject, renderedBody);
+  }
+
+  /** Replace all {{key}} in a single string. Unknown keys are left as-is. */
+  private static String apply(String text, Map<String,String> values) {
+    if (text == null || text.isEmpty()) return text;
+    final Matcher m = PLACEHOLDER.matcher(text);
+    final StringBuffer out = new StringBuffer(text.length() + 32);
+    while (m.find()) {
+      final String key  = m.group(1);
+      final String val  = values.get(key);
+      final String repl = (val != null) ? Matcher.quoteReplacement(val) : m.group(0);
+      m.appendReplacement(out, repl);
+    }
+    m.appendTail(out);
+    return out.toString();
+  }
 }
