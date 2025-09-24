@@ -1,71 +1,41 @@
-import java.util.concurrent.ConcurrentHashMap;
-import com.azure.storage.blob.*;
-import com.azure.storage.blob.models.BlobProperties;
+private String appendDailyCountToMessage(
+        String message,
+        Map<String, Map<String, Integer>> countsByCategory,
+        ExecutionContext context,
+        BlobContainerClient errorContainer,
+        NotificationPayLoadMessage parsedMessage) {
 
-public final class NotificationTemplateResolver {
+    ObjectMapper M = new ObjectMapper();
+    try {
+        JsonNode parsed = M.readTree(message);
+        ObjectNode root = parsed.isObject()
+                ? (ObjectNode) parsed
+                : M.createObjectNode().put("raw", message);
 
-    // cache: key -> (etag + template string)
-    private static final ConcurrentHashMap<String, CachedTemplate> CACHE = new ConcurrentHashMap<>();
+        // dailyCountsByCategory: { "NB": {...}, "TR": {...}, "UP": {...} }
+        ObjectNode byCat = M.createObjectNode();
 
-    private static class CachedTemplate {
-        final String etag;
-        final String content;
-        CachedTemplate(String etag, String content) {
-            this.etag = etag;
-            this.content = content;
-        }
-    }
+        for (Map.Entry<String, Map<String, Integer>> cat : countsByCategory.entrySet()) {
+            String category = cat.getKey();                    // e.g. "NB","TR","UP"
+            Map<String, Integer> perEvent = cat.getValue();
 
-    public static String resolveAndLoad(
-            String notificationType,
-            String language,
-            BlobServiceClient blobServiceClient,
-            CustomProperties customProperties) {
-
-        String templateContainerName = customProperties.getBlobTemplateContainerName();
-        if (templateContainerName == null || templateContainerName.isBlank()) {
-            templateContainerName = "dev"; // fallback
-        }
-
-        String basePath = customProperties.getBlobTemplateBasePath() + "/";
-        basePath += customProperties.getEmailTemplateVersion() + "/";
-
-        if (notificationType.equalsIgnoreCase(NeoConstants.UNPAID_TYPE)) {
-            basePath += NeoConstants.UNPAID_SUMMARY_TEMPLATE_NAME + language + NeoConstants.EMAIL_TEMPLATE_EXTENSION;
-        } else {
-            basePath += NeoConstants.NEWBUSINESS_TRANSACTION_SUMMARY_TEMPLATE_NAME + language + NeoConstants.EMAIL_TEMPLATE_EXTENSION;
-        }
-
-        String cacheKey = notificationType.toLowerCase() + "|" + language;
-        BlobClient blobClient = blobServiceClient
-                .getBlobContainerClient(templateContainerName)
-                .getBlobClient(basePath);
-
-        try {
-            // fetch ETag from blob properties
-            BlobProperties props = blobClient.getProperties();
-            String etag = props.getETag();
-
-            // check cache
-            CachedTemplate cached = CACHE.get(cacheKey);
-            if (cached != null && cached.etag.equals(etag)) {
-                return cached.content; // no change → return cached
+            ObjectNode catNode = M.createObjectNode();         // { eventKey: count }
+            if (perEvent != null) {
+                for (Map.Entry<String, Integer> e : perEvent.entrySet()) {
+                    if (e.getKey() != null && e.getValue() != null) {
+                        catNode.put(e.getKey(), e.getValue());
+                    }
+                }
             }
-
-            // load fresh
-            ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-            blobClient.downloadStream(outputStream);
-            String templateContent = outputStream.toString(StandardCharsets.UTF_8);
-
-            // update cache
-            CACHE.put(cacheKey, new CachedTemplate(etag, templateContent));
-
-            return templateContent;
-
-        } catch (Exception e) {
-            throw new CustomValidationException("No matching template found", Map.of(
-                    "emailTemplateResolution", "no match"
-            ));
+            byCat.set(category, catNode);
         }
+
+        root.set("dailyCountsByCategory", byCat);
+        return M.writeValueAsString(root);
+
+    } catch (Exception e) {
+        context.getLogger().severe("Failed to append daily counts: " + e.getMessage());
+        // (optional) log payload to blob...
+        return message; // fall back to original message
     }
 }
