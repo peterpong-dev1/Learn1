@@ -1,0 +1,71 @@
+import java.util.concurrent.ConcurrentHashMap;
+import com.azure.storage.blob.*;
+import com.azure.storage.blob.models.BlobProperties;
+
+public final class NotificationTemplateResolver {
+
+    // cache: key -> (etag + template string)
+    private static final ConcurrentHashMap<String, CachedTemplate> CACHE = new ConcurrentHashMap<>();
+
+    private static class CachedTemplate {
+        final String etag;
+        final String content;
+        CachedTemplate(String etag, String content) {
+            this.etag = etag;
+            this.content = content;
+        }
+    }
+
+    public static String resolveAndLoad(
+            String notificationType,
+            String language,
+            BlobServiceClient blobServiceClient,
+            CustomProperties customProperties) {
+
+        String templateContainerName = customProperties.getBlobTemplateContainerName();
+        if (templateContainerName == null || templateContainerName.isBlank()) {
+            templateContainerName = "dev"; // fallback
+        }
+
+        String basePath = customProperties.getBlobTemplateBasePath() + "/";
+        basePath += customProperties.getEmailTemplateVersion() + "/";
+
+        if (notificationType.equalsIgnoreCase(NeoConstants.UNPAID_TYPE)) {
+            basePath += NeoConstants.UNPAID_SUMMARY_TEMPLATE_NAME + language + NeoConstants.EMAIL_TEMPLATE_EXTENSION;
+        } else {
+            basePath += NeoConstants.NEWBUSINESS_TRANSACTION_SUMMARY_TEMPLATE_NAME + language + NeoConstants.EMAIL_TEMPLATE_EXTENSION;
+        }
+
+        String cacheKey = notificationType.toLowerCase() + "|" + language;
+        BlobClient blobClient = blobServiceClient
+                .getBlobContainerClient(templateContainerName)
+                .getBlobClient(basePath);
+
+        try {
+            // fetch ETag from blob properties
+            BlobProperties props = blobClient.getProperties();
+            String etag = props.getETag();
+
+            // check cache
+            CachedTemplate cached = CACHE.get(cacheKey);
+            if (cached != null && cached.etag.equals(etag)) {
+                return cached.content; // no change → return cached
+            }
+
+            // load fresh
+            ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+            blobClient.downloadStream(outputStream);
+            String templateContent = outputStream.toString(StandardCharsets.UTF_8);
+
+            // update cache
+            CACHE.put(cacheKey, new CachedTemplate(etag, templateContent));
+
+            return templateContent;
+
+        } catch (Exception e) {
+            throw new CustomValidationException("No matching template found", Map.of(
+                    "emailTemplateResolution", "no match"
+            ));
+        }
+    }
+}
