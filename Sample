@@ -1,55 +1,33 @@
-for (Map.Entry<String, String> e : event.extractedFields.entrySet()) {
-    final String baseName = e.getKey();
-    if (baseName.endsWith(".itemField")) continue;
+{
+  "templateName": "unpaidLapseInquiry",
+  "subject": "【ネオファースト生命】ネオnet更新（未入金失効照会）",
+  "body": [
+    "いつも大変お世話になっております。",
+    "ネオnet更新の情報が更新されましたのでご確認ください。",
+    "■未入金失効照会",
+    "{{countsLine}}",
+    "------------------------------",
+    "ネオファースト生命保険株式会社",
+    "※本アドレスは送信専用となります。"
+  ]
+}
 
-    final String path = e.getValue();
-    if (path == null || path.isBlank() || path.charAt(0) != '/') continue;
+===
 
-    final JsonNode node = newDoc.at(path);
-    if (node == null || node.isMissingNode() || node.isNull()) continue;
-
-    ArrayNode out = M.createArrayNode();   // always output array
-    Set<String> seen = new HashSet<>();
-
-    if (node.isArray()) {
-        // --- existing logic for arrays ---
-        final String itemFieldKey  = baseName + ".itemField";
-        final String itemFieldConf = event.extractedFields.get(itemFieldKey);
-        final boolean itemIsPointer =
-                (itemFieldConf != null && !itemFieldConf.isBlank() && itemFieldConf.startsWith("/"));
-
-        for (JsonNode item : node) {
-            String val;
-            if (itemFieldConf == null || itemFieldConf.isBlank()) {
-                val = item.asText(null);
-            } else {
-                val = (itemIsPointer
-                        ? item.at(itemFieldConf).asText(null)
-                        : item.path(itemFieldConf).asText(null));
-            }
-            if (val == null || val.isBlank()) continue;
-            if (!seen.add(val)) continue;
-            out.add(val);
-        }
-    } else {
-        // --- NEW: handle object or scalar ---
-        if (node.isValueNode()) {
-            // plain scalar → wrap in array
-            String val = node.asText(null);
-            if (val != null && !val.isBlank() && seen.add(val)) {
-                out.add(val);
-            }
-        } else if (node.isObject()) {
-            // object → keep whole JSON object string
-            // (or pick a field if you want)
-            String val = node.toString();
-            if (val != null && !val.isBlank() && seen.add(val)) {
-                out.add(val);
-            }
-        }
-    }
-
-    if (out.size() > 0) {
-        extractedFieldsNode.set(baseName, out);
-    }
+{
+  "templateName": "newBusinessAndPaymentProgress",
+  "subject": "【ネオファースト生命】ネオnet更新",
+  "body": [
+    "いつも大変お世話になっております。",
+    "ネオnet情報が更新されましたので各メニューより内容をご確認ください。",
+    "■新契約進捗状況照会",
+    "{{newBusinessCounts}}",
+    "■保全・支払関連進捗状況照会",
+    "{{paymentCounts}}",
+    "■進捗更新日",
+    "{{updateDate}}",
+    "------------------------------",
+    "ネオファースト生命保険株式会社",
+    "※本アドレスは送信専用となります。"
+  ]
 }
