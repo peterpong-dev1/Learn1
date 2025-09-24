@@ -1,41 +1,48 @@
-private String appendDailyCountToMessage(
-        String message,
-        Map<String, Map<String, Integer>> countsByCategory,
-        ExecutionContext context,
-        BlobContainerClient errorContainer,
-        NotificationPayLoadMessage parsedMessage) {
+public final class DailyCountFormatter {
 
-    ObjectMapper M = new ObjectMapper();
-    try {
-        JsonNode parsed = M.readTree(message);
-        ObjectNode root = parsed.isObject()
-                ? (ObjectNode) parsed
-                : M.createObjectNode().put("raw", message);
+    /**
+     * Convert dailyCounts into a placeholder map that matches template keys
+     * like {{countsLine}}, {{newBusinessCounts}}, {{paymentCounts}}.
+     */
+    public static Map<String,String> formatForTemplate(NotificationRequestDTO dto) {
+        Map<String,String> out = new LinkedHashMap<>();
+        Map<String, Map<String,Integer>> byCat = dto.getDailyCountsByCategory();
+        if (byCat == null || byCat.isEmpty()) return out;
 
-        // dailyCountsByCategory: { "NB": {...}, "TR": {...}, "UP": {...} }
-        ObjectNode byCat = M.createObjectNode();
+        // for each category, collapse to newline string
+        byCat.forEach((cat, perEvent) -> {
+            if (perEvent == null || perEvent.isEmpty()) return;
+            StringBuilder sb = new StringBuilder();
+            perEvent.forEach((event, cnt) -> {
+                if (cnt == null || cnt <= 0) return;
+                if (sb.length() > 0) sb.append('\n');
+                sb.append(event).append(": ").append(cnt);
+            });
 
-        for (Map.Entry<String, Map<String, Integer>> cat : countsByCategory.entrySet()) {
-            String category = cat.getKey();                    // e.g. "NB","TR","UP"
-            Map<String, Integer> perEvent = cat.getValue();
-
-            ObjectNode catNode = M.createObjectNode();         // { eventKey: count }
-            if (perEvent != null) {
-                for (Map.Entry<String, Integer> e : perEvent.entrySet()) {
-                    if (e.getKey() != null && e.getValue() != null) {
-                        catNode.put(e.getKey(), e.getValue());
-                    }
+            if (sb.length() > 0) {
+                // map category → template placeholder
+                switch (cat) {
+                    case "unpaid":
+                        out.put("countsLine", sb.toString());
+                        break;
+                    case "NB":
+                        out.put("newBusinessCounts", sb.toString());
+                        break;
+                    case "TR":
+                        out.put("paymentCounts", sb.toString());
+                        break;
+                    default:
+                        // fallback: just keep the same key
+                        out.put(cat, sb.toString());
                 }
             }
-            byCat.set(category, catNode);
+        });
+
+        // add updateDate if present in DTO
+        if (dto.getUpdateDate() != null) {
+            out.put("updateDate", dto.getUpdateDate().toString());
         }
 
-        root.set("dailyCountsByCategory", byCat);
-        return M.writeValueAsString(root);
-
-    } catch (Exception e) {
-        context.getLogger().severe("Failed to append daily counts: " + e.getMessage());
-        // (optional) log payload to blob...
-        return message; // fall back to original message
+        return out;
     }
 }
