@@ -1,12 +1,87 @@
-@ExceptionHandler(IllegalStateException.class)
-public ResponseEntity<ErrorContainerDTO> handleIllegalState(IllegalStateException ex) {
-    logger.error("IllegalStateException occurred. requestId: {}, message: {}",
-            MDC.get("requestId"), ex.getMessage());
+Great plan. Use a stable prefix from what you know (day/agent/summaryType) and append a short, collision-safe random suffix.
 
-    Map<String, Object> details = new HashMap<>();
-    details.put("reason", ex.getMessage());
+Recommended ID shape
 
-    return buildErrorResponse(HttpStatus.CONFLICT,  // or BAD_REQUEST if you prefer
-            "Illegal state error",
-            details);
+<yyyyMMdd>=<agentId>=<summaryType>=<rand20>
+
+	•	If any part is unknown, put "_" (or "unknown").
+	•	Keep only URL/table-safe chars. Avoid / \ ? # % etc. (“=” is OK for Cosmos DB docs.)
+
+Short, safe random suffix
+
+Use 100–128 bits from SecureRandom, Base32-Crockford (letters+digits, uppercase, no symbols).
+20 chars gives ~100 bits; collisions are effectively zero for your scale.
+
+Java helper
+
+import java.security.SecureRandom;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.util.Objects;
+
+public final class CorrelationIds {
+  private static final SecureRandom RNG = new SecureRandom();
+  private static final char[] B32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ".toCharArray(); // Crockford
+
+  /** 100-bit random, Base32 Crockford -> 20 chars */
+  public static String rand20() {
+    byte[] bytes = new byte[13]; // 104 bits
+    RNG.nextBytes(bytes);
+    return base32(bytes);
+  }
+
+  /** Build: yyyyMMdd=agentId=summaryType=rand20 ; use "_" for missing parts. */
+  public static String build(String yyyyMMdd, String agentId, String summaryType) {
+    String d = safe(yyyyMMdd);
+    String a = safe(agentId);
+    String s = safe(summaryType);
+    return d + "=" + a + "=" + s + "=" + rand20();
+  }
+
+  /** Fallback when you don't yet know day/agent/summaryType. */
+  public static String provisional() {
+    String day = LocalDate.now(ZoneId.of("Asia/Tokyo")).toString().replace("-", ""); // e.g. 20250926
+    return "tmp=" + day + "=" + rand20();
+  }
+
+  private static String safe(String s) {
+    if (s == null || s.isBlank()) return "_";
+    // strip disallowed characters for Cosmos id
+    return s.replaceAll("[/\\\\?#%]", "_").trim();
+  }
+
+  private static String base32(byte[] data) {
+    StringBuilder out = new StringBuilder((data.length * 8 + 4) / 5);
+    int buffer = 0, bits = 0;
+    for (byte b : data) {
+      buffer = (buffer << 8) | (b & 0xFF);
+      bits += 8;
+      while (bits >= 5) {
+        int idx = (buffer >>> (bits - 5)) & 0x1F;
+        out.append(B32[idx]);
+        bits -= 5;
+      }
+    }
+    if (bits > 0) out.append(B32[(buffer << (5 - bits)) & 0x1F]);
+    return out.toString();
+  }
+
+  private CorrelationIds() {}
 }
+
+How to use
+
+// In SBNotificationQueueTrigger (when you know all fields):
+String cid = CorrelationIds.build(day, agentId, summaryType);
+
+// If you don't know them yet (early stage):
+String cid = CorrelationIds.provisional();
+
+// Pass `cid` to Notification API; both services write to the same report row.
+
+Why this works
+	•	Stable prefix lets you eyeball/group records.
+	•	Random 100 bits keeps IDs short but essentially collision-free.
+	•	Safe charset: letters+digits+“=”; Cosmos DB document id accepts this, and it’s copy/paste friendly.
+
+If you prefer time-sortable IDs, swap the random with a ULID (26 chars); otherwise the above is lean and solid.
