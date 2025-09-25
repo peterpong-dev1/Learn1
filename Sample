@@ -84,4 +84,47 @@ Why this works
 	•	Random 100 bits keeps IDs short but essentially collision-free.
 	•	Safe charset: letters+digits+“=”; Cosmos DB document id accepts this, and it’s copy/paste friendly.
 
+
+====
+
+import java.security.SecureRandom;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+
+public final class CorrelationIdUtil {
+
+    private static final SecureRandom RNG = new SecureRandom();
+    private static final char[] BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567".toCharArray();
+    private static final int SUFFIX_LEN = 10; // 10 random chars
+
+    private CorrelationIdUtil() {}
+
+    public static String newCorrelationId(String agentId, String summaryType) {
+        String suffix = randomBase32(SUFFIX_LEN);
+
+        // Fallback if agentId/summaryType not available
+        if (isBlank(agentId) || isBlank(summaryType)) {
+            return "RND_" + suffix;
+        }
+
+        String date = LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE); // yyyyMMdd
+        return date + "_" + agentId + "_" + summaryType + "_" + suffix;
+    }
+
+    private static String randomBase32(int len) {
+        char[] buf = new char[len];
+        for (int i = 0; i < len; i++) {
+            buf[i] = BASE32[RNG.nextInt(BASE32.length)];
+        }
+        return new String(buf);
+    }
+
+    private static boolean isBlank(String s) {
+        return s == null || s.trim().isEmpty();
+    }
+}
+
+=====
+
+
 If you prefer time-sortable IDs, swap the random with a ULID (26 chars); otherwise the above is lean and solid.
