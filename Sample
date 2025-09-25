@@ -1,69 +1,40 @@
-import java.util.*;
-import java.util.regex.*;
-import java.util.stream.Collectors;
+import org.springframework.http.*;
+import org.springframework.web.client.RestTemplate;
 
-public final class TemplateRenderer {
+import java.util.Map;
 
-  // thread-safe, reusable
-  private static final Pattern PLACEHOLDER = Pattern.compile("\\{\\{\\s*([A-Za-z0-9_.-]+)\\s*}}");
+@Service
+public class EmailStubClient {
 
-  /** Input DTO shape you already have. */
-  public static final class SummaryEmailTemplateDTO {
-    private String templateName;
-    private String subject;
-    private List<String> body; // each line from the JSON "body" array
-    // getters/setters ...
-    public String getSubject() { return subject; }
-    public List<String> getBody() { return body; }
-  }
+    private final RestTemplate restTemplate;
 
-  /** Output after rendering. */
-  public static final class RenderedTemplateDTO {
-    private final String subject;
-    private final List<String> bodyLines;
-    private final String bodyJoined; // convenience (lines joined with '\n')
-
-    public RenderedTemplateDTO(String subject, List<String> bodyLines) {
-      this.subject   = subject;
-      this.bodyLines = bodyLines;
-      this.bodyJoined = String.join("\n", bodyLines);
+    // Inject shared RestTemplate
+    public EmailStubClient(RestTemplate restTemplate) {
+        this.restTemplate = restTemplate;
     }
-    public String getSubject() { return subject; }
-    public List<String> getBodyLines() { return bodyLines; }
-    public String getBodyJoined() { return bodyJoined; }
-  }
 
-  /** Public: render subject + body using {{placeholders}} from values. */
-  public static RenderedTemplateDTO render(
-      SummaryEmailTemplateDTO template,
-      Map<String,String> values) {
+    /**
+     * Calls the stub email API with POST request.
+     *
+     * @param url    stub endpoint (e.g. https://api-mgmt-dev-001.azure-api.net/v1/email/send)
+     * @param body   request payload (as Map, DTO, or raw JSON string)
+     * @return response body as String
+     */
+    public String callStub(String url, Object body) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
 
-    Objects.requireNonNull(template, "template");
-    Objects.requireNonNull(values,   "values");
+        HttpEntity<Object> request = new HttpEntity<>(body, headers);
 
-    final String renderedSubject = apply(template.getSubject(), values);
+        ResponseEntity<String> response =
+                restTemplate.exchange(url, HttpMethod.POST, request, String.class);
 
-    final List<String> renderedBody =
-        Optional.ofNullable(template.getBody()).orElseGet(List::of)
-            .stream()
-            .map(line -> apply(line, values))
-            .collect(Collectors.toUnmodifiableList());
-
-    return new RenderedTemplateDTO(renderedSubject, renderedBody);
-  }
-
-  /** Replace all {{key}} in a single string. Unknown keys are left as-is. */
-  private static String apply(String text, Map<String,String> values) {
-    if (text == null || text.isEmpty()) return text;
-    final Matcher m = PLACEHOLDER.matcher(text);
-    final StringBuffer out = new StringBuffer(text.length() + 32);
-    while (m.find()) {
-      final String key  = m.group(1);
-      final String val  = values.get(key);
-      final String repl = (val != null) ? Matcher.quoteReplacement(val) : m.group(0);
-      m.appendReplacement(out, repl);
+        if (response.getStatusCode().is2xxSuccessful()) {
+            return response.getBody();
+        } else {
+            throw new IllegalStateException(
+                    "Stub API call failed with status " + response.getStatusCode() +
+                    " body: " + response.getBody());
+        }
     }
-    m.appendTail(out);
-    return out.toString();
-  }
 }
