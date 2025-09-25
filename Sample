@@ -1,40 +1,93 @@
-import org.springframework.http.*;
-import org.springframework.web.client.RestTemplate;
+import java.util.*;
+import java.util.regex.*;
+import java.util.stream.Collectors;
 
-import java.util.Map;
+public final class SimpleTemplateRenderer {
 
-@Service
-public class EmailStubClient {
+  private static final Pattern PH = Pattern.compile("\\{\\{\\s*([A-Za-z0-9_.-]+)\\s*}}");
 
-    private final RestTemplate restTemplate;
+  public static final class Rendered {
+    private final String subject;
+    private final List<String> bodyLines;
+    public Rendered(String s, List<String> b){ this.subject=s; this.bodyLines=b; }
+    public String getSubject(){ return subject; }
+    public List<String> getBodyLines(){ return bodyLines; }
+    public String getBodyJoined(){ return String.join("\n", bodyLines); }
+  }
 
-    // Inject shared RestTemplate
-    public EmailStubClient(RestTemplate restTemplate) {
-        this.restTemplate = restTemplate;
+  public static Rendered render(SimpleTemplate tpl, Map<String,String> values) {
+    Objects.requireNonNull(tpl); Objects.requireNonNull(values);
+
+    String subject = replaceAll(tpl.getSubject(), values);
+
+    List<String> out = new ArrayList<>(64);
+    append(out, tpl.getHeader(), values);                          // always
+
+    // include each section only if its key has a non-blank/non-"0" value
+    includeIfPresent(out, "newBusinessCounts", tpl.getNewBusinessCounts(), values);
+    includeIfPresent(out, "paymentCounts",     tpl.getPaymentCounts(),     values);
+    includeIfPresent(out, "updateDate",        tpl.getUpdateDate(),        values);
+
+    append(out, tpl.getFooter(), values);                          // always
+    trimBlankRuns(out);
+    return new Rendered(subject, out);
+  }
+
+  // ---- helpers ----
+
+  private static void includeIfPresent(List<String> out, String key, List<String> lines, Map<String,String> vals){
+    if (lines == null || lines.isEmpty()) return;
+    String v = vals.get(key);
+    if (v == null) return;
+    if (v.isBlank()) return;
+    if (isZeroish(v)) return;          // treat "0" as absent for count blocks
+    append(out, lines, vals);
+  }
+
+  private static void append(List<String> out, List<String> lines, Map<String,String> vals){
+    if (lines == null) return;
+    for (String ln : lines) out.add(replaceAll(ln, vals));
+  }
+
+  private static String replaceAll(String text, Map<String,String> vals){
+    if (text == null || text.isEmpty()) return text;
+    Matcher m = PH.matcher(text);
+    StringBuffer sb = new StringBuffer(text.length()+32);
+    while (m.find()){
+      String key = m.group(1);
+      String val = vals.get(key);
+      m.appendReplacement(sb, Matcher.quoteReplacement(val != null ? val : m.group(0)));
     }
+    m.appendTail(sb);
+    return sb.toString();
+  }
 
-    /**
-     * Calls the stub email API with POST request.
-     *
-     * @param url    stub endpoint (e.g. https://api-mgmt-dev-001.azure-api.net/v1/email/send)
-     * @param body   request payload (as Map, DTO, or raw JSON string)
-     * @return response body as String
-     */
-    public String callStub(String url, Object body) {
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
-
-        HttpEntity<Object> request = new HttpEntity<>(body, headers);
-
-        ResponseEntity<String> response =
-                restTemplate.exchange(url, HttpMethod.POST, request, String.class);
-
-        if (response.getStatusCode().is2xxSuccessful()) {
-            return response.getBody();
-        } else {
-            throw new IllegalStateException(
-                    "Stub API call failed with status " + response.getStatusCode() +
-                    " body: " + response.getBody());
-        }
+  private static boolean isZeroish(String s){
+    // "0", " 0 ", "0件", etc. → zero
+    for (int i=0, n=s.length(); i<n; i++){
+      char c = s.charAt(i);
+      if (Character.isDigit(c)) {
+        // read contiguous digits
+        int j=i+1; while (j<n && Character.isDigit(s.charAt(j))) j++;
+        try { return Integer.parseInt(s.substring(i,j)) == 0; }
+        catch (NumberFormatException ignore) { return false; }
+      }
     }
+    return false;
+  }
+
+  private static void trimBlankRuns(List<String> lines){
+    // collapse multiple blank lines, trim leading/trailing blanks
+    ListIterator<String> it = lines.listIterator();
+    boolean prevBlank = true; // drop leading blanks
+    while (it.hasNext()){
+      String s = it.next();
+      boolean blank = (s == null || s.trim().isEmpty());
+      if (blank && prevBlank) it.remove(); else prevBlank = blank;
+    }
+    while (!lines.isEmpty()){
+      String last = lines.get(lines.size()-1);
+      if (last==null || last.trim().isEmpty()) lines.remove(lines.size()-1); else break;
+    }
+  }
 }
