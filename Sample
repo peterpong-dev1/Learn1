@@ -1,4 +1,4 @@
-Great plan. Use a stable prefix from what you know (day/agent/summaryType) and append a short, collision-safe random suffix.
+#Great plan. Use a stable prefix from what you know (day/agent/summaryType) and append a short, collision-safe random suffix.
 
 Recommended ID shape
 
@@ -126,5 +126,72 @@ public final class CorrelationIdUtil {
 
 =====
 
+Here you go—tiny, ready-to-use Java helpers to turn "yyyyMMdd" into Japanese style like 2025年9月26日 (no leading zeros) or 2025年09月26日 (zero-padded). Also includes “today (Tokyo)” and an optional Japanese era format.
 
+import java.time.*;
+import java.time.format.*;
+import java.util.Locale;
+
+public final class JpDateFormat {
+
+  private static final DateTimeFormatter INPUT = DateTimeFormatter.BASIC_ISO_DATE; // yyyyMMdd
+
+  // 2025年9月26日  (no leading zeros)
+  private static final DateTimeFormatter JP_NO_PAD = new DateTimeFormatterBuilder()
+      .appendValue(ChronoField.YEAR, 4).appendLiteral('年')
+      .appendValue(ChronoField.MONTH_OF_YEAR).appendLiteral('月')
+      .appendValue(ChronoField.DAY_OF_MONTH).appendLiteral('日')
+      .toFormatter(Locale.JAPAN);
+
+  // 2025年09月26日  (zero-padded)
+  private static final DateTimeFormatter JP_PAD = DateTimeFormatter.ofPattern("yyyy年MM月dd日", Locale.JAPAN);
+
+  // Japanese era: 令和7年9月26日
+  private static final DateTimeFormatter JP_ERA = new DateTimeFormatterBuilder()
+      .appendText(JapaneseDate.now().getChronology().eraOf(1)) // placeholder to force JapaneseChronology load
+      .appendPattern("Gy年M月d日")
+      .toFormatter(Locale.JAPAN)
+      .withChronology(JapaneseChronology.INSTANCE);
+
+  private JpDateFormat() {}
+
+  /** "yyyyMMdd" -> "yyyy年M月d日" (no leading zeros) */
+  public static String toJpNoPad(String yyyymmdd) {
+    LocalDate d = LocalDate.parse(normalize(yyyymmdd), INPUT);
+    return d.format(JP_NO_PAD);
+  }
+
+  /** "yyyyMMdd" -> "yyyy年MM月dd日" (zero-padded) */
+  public static String toJpPad(String yyyymmdd) {
+    LocalDate d = LocalDate.parse(normalize(yyyymmdd), INPUT);
+    return d.format(JP_PAD);
+  }
+
+  /** "yyyyMMdd" -> Japanese era, e.g., "令和7年9月26日" */
+  public static String toJpEra(String yyyymmdd) {
+    LocalDate d = LocalDate.parse(normalize(yyyymmdd), INPUT);
+    return JapaneseDate.from(d).format(JP_ERA);
+  }
+
+  /** Today in Tokyo -> "yyyy年M月d日" */
+  public static String todayTokyoNoPad() {
+    LocalDate d = LocalDate.now(ZoneId.of("Asia/Tokyo"));
+    return d.format(JP_NO_PAD);
+  }
+
+  // Accepts "yyyyMMdd" or "yyyy-MM-dd"; returns "yyyyMMdd"
+  private static String normalize(String s) {
+    String t = s.trim();
+    return t.length() == 10 && t.charAt(4) == '-' ? t.replace("-", "") : t;
+  }
+}
+
+Quick examples
+
+JpDateFormat.toJpNoPad("20250926"); // 2025年9月26日
+JpDateFormat.toJpPad("20250926");   // 2025年09月26日
+JpDateFormat.toJpEra("20250926");   // 令和7年9月26日
+JpDateFormat.todayTokyoNoPad();     // e.g., 2025年9月26日
+
+Pick toJpNoPad (natural style) or toJpPad (fixed width). If you only need one, you can delete the other formatters.
 If you prefer time-sortable IDs, swap the random with a ULID (26 chars); otherwise the above is lean and solid.
