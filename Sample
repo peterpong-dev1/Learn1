@@ -1,93 +1,12 @@
-import java.util.*;
-import java.util.regex.*;
-import java.util.stream.Collectors;
+@ExceptionHandler(IllegalStateException.class)
+public ResponseEntity<ErrorContainerDTO> handleIllegalState(IllegalStateException ex) {
+    logger.error("IllegalStateException occurred. requestId: {}, message: {}",
+            MDC.get("requestId"), ex.getMessage());
 
-public final class SimpleTemplateRenderer {
+    Map<String, Object> details = new HashMap<>();
+    details.put("reason", ex.getMessage());
 
-  private static final Pattern PH = Pattern.compile("\\{\\{\\s*([A-Za-z0-9_.-]+)\\s*}}");
-
-  public static final class Rendered {
-    private final String subject;
-    private final List<String> bodyLines;
-    public Rendered(String s, List<String> b){ this.subject=s; this.bodyLines=b; }
-    public String getSubject(){ return subject; }
-    public List<String> getBodyLines(){ return bodyLines; }
-    public String getBodyJoined(){ return String.join("\n", bodyLines); }
-  }
-
-  public static Rendered render(SimpleTemplate tpl, Map<String,String> values) {
-    Objects.requireNonNull(tpl); Objects.requireNonNull(values);
-
-    String subject = replaceAll(tpl.getSubject(), values);
-
-    List<String> out = new ArrayList<>(64);
-    append(out, tpl.getHeader(), values);                          // always
-
-    // include each section only if its key has a non-blank/non-"0" value
-    includeIfPresent(out, "newBusinessCounts", tpl.getNewBusinessCounts(), values);
-    includeIfPresent(out, "paymentCounts",     tpl.getPaymentCounts(),     values);
-    includeIfPresent(out, "updateDate",        tpl.getUpdateDate(),        values);
-
-    append(out, tpl.getFooter(), values);                          // always
-    trimBlankRuns(out);
-    return new Rendered(subject, out);
-  }
-
-  // ---- helpers ----
-
-  private static void includeIfPresent(List<String> out, String key, List<String> lines, Map<String,String> vals){
-    if (lines == null || lines.isEmpty()) return;
-    String v = vals.get(key);
-    if (v == null) return;
-    if (v.isBlank()) return;
-    if (isZeroish(v)) return;          // treat "0" as absent for count blocks
-    append(out, lines, vals);
-  }
-
-  private static void append(List<String> out, List<String> lines, Map<String,String> vals){
-    if (lines == null) return;
-    for (String ln : lines) out.add(replaceAll(ln, vals));
-  }
-
-  private static String replaceAll(String text, Map<String,String> vals){
-    if (text == null || text.isEmpty()) return text;
-    Matcher m = PH.matcher(text);
-    StringBuffer sb = new StringBuffer(text.length()+32);
-    while (m.find()){
-      String key = m.group(1);
-      String val = vals.get(key);
-      m.appendReplacement(sb, Matcher.quoteReplacement(val != null ? val : m.group(0)));
-    }
-    m.appendTail(sb);
-    return sb.toString();
-  }
-
-  private static boolean isZeroish(String s){
-    // "0", " 0 ", "0件", etc. → zero
-    for (int i=0, n=s.length(); i<n; i++){
-      char c = s.charAt(i);
-      if (Character.isDigit(c)) {
-        // read contiguous digits
-        int j=i+1; while (j<n && Character.isDigit(s.charAt(j))) j++;
-        try { return Integer.parseInt(s.substring(i,j)) == 0; }
-        catch (NumberFormatException ignore) { return false; }
-      }
-    }
-    return false;
-  }
-
-  private static void trimBlankRuns(List<String> lines){
-    // collapse multiple blank lines, trim leading/trailing blanks
-    ListIterator<String> it = lines.listIterator();
-    boolean prevBlank = true; // drop leading blanks
-    while (it.hasNext()){
-      String s = it.next();
-      boolean blank = (s == null || s.trim().isEmpty());
-      if (blank && prevBlank) it.remove(); else prevBlank = blank;
-    }
-    while (!lines.isEmpty()){
-      String last = lines.get(lines.size()-1);
-      if (last==null || last.trim().isEmpty()) lines.remove(lines.size()-1); else break;
-    }
-  }
+    return buildErrorResponse(HttpStatus.CONFLICT,  // or BAD_REQUEST if you prefer
+            "Illegal state error",
+            details);
 }
