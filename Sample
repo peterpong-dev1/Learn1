@@ -1,197 +1,138 @@
-#Great plan. Use a stable prefix from what you know (day/agent/summaryType) and append a short, collision-safe random suffix.
+Got it—here’s the same logic as plain methods (no class wrapper). Drop these into any existing util class you already have. Keep the imports you used.
 
-Recommended ID shape
+// ---------- imports you already have ----------
+// import com.azure.cosmos.*;
+// import com.azure.cosmos.models.*;
+// import com.fasterxml.jackson.databind.*;
+// import com.fasterxml.jackson.databind.node.*;
+// import java.time.Instant;
+// import java.util.Map;
+// import java.util.concurrent.ThreadLocalRandom;
 
-<yyyyMMdd>=<agentId>=<summaryType>=<rand20>
+private static final ObjectMapper M = new ObjectMapper();
 
-	•	If any part is unknown, put "_" (or "unknown").
-	•	Keep only URL/table-safe chars. Avoid / \ ? # % etc. (“=” is OK for Cosmos DB docs.)
+/** Upsert-like PATCH: creates missing parents for each JSON-Pointer, retries on ETag. */
+public static ObjectNode patchFieldsCreatingParents(
+    CosmosContainer container,
+    String correlationId,
+    Map<String, ?> fields) {
 
-Short, safe random suffix
+  if (fields == null || fields.isEmpty()) return read(container, correlationId);
 
-Use 100–128 bits from SecureRandom, Base32-Crockford (letters+digits, uppercase, no symbols).
-20 chars gives ~100 bits; collisions are effectively zero for your scale.
+  final int maxAttempts = 6;
+  long backoff = 100;
 
-Java helper
+  for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+    ObjectNode doc = read(container, correlationId);
+    String etag = null;
 
-import java.security.SecureRandom;
-import java.time.LocalDate;
-import java.time.ZoneId;
-import java.util.Objects;
+    if (doc == null) {
+      // minimal skeleton so later PATCHes can rely on parents
+      doc = M.createObjectNode();
+      doc.put("id", correlationId);
+      doc.set("stages", M.createObjectNode());
+      doc.set("agentProcessing", M.createObjectNode());
+      doc.put("createdAt", Instant.now().toString());
+      upsert(container, doc); // first create (no ETag)
+    } else {
+      etag = doc.path("_etag").asText(null); // optimistic concurrency
+    }
 
-public final class CorrelationIds {
-  private static final SecureRandom RNG = new SecureRandom();
-  private static final char[] B32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ".toCharArray(); // Crockford
+    // apply all paths
+    for (Map.Entry<String, ?> e : fields.entrySet()) {
+      final String pointer = e.getKey();               // e.g. "/agentProcessing/agentsById/A1/state"
+      final JsonNode value = toJsonNode(e.getValue()); // String, number, boolean, JsonNode, etc.
+      deepPut(doc, pointer, value);                    // creates parents then sets value
+    }
+    doc.put("lastUpdatedAtUtc", Instant.now().toString());
 
-  /** 100-bit random, Base32 Crockford -> 20 chars */
-  public static String rand20() {
-    byte[] bytes = new byte[13]; // 104 bits
-    RNG.nextBytes(bytes);
-    return base32(bytes);
-  }
-
-  /** Build: yyyyMMdd=agentId=summaryType=rand20 ; use "_" for missing parts. */
-  public static String build(String yyyyMMdd, String agentId, String summaryType) {
-    String d = safe(yyyyMMdd);
-    String a = safe(agentId);
-    String s = safe(summaryType);
-    return d + "=" + a + "=" + s + "=" + rand20();
-  }
-
-  /** Fallback when you don't yet know day/agent/summaryType. */
-  public static String provisional() {
-    String day = LocalDate.now(ZoneId.of("Asia/Tokyo")).toString().replace("-", ""); // e.g. 20250926
-    return "tmp=" + day + "=" + rand20();
-  }
-
-  private static String safe(String s) {
-    if (s == null || s.isBlank()) return "_";
-    // strip disallowed characters for Cosmos id
-    return s.replaceAll("[/\\\\?#%]", "_").trim();
-  }
-
-  private static String base32(byte[] data) {
-    StringBuilder out = new StringBuilder((data.length * 8 + 4) / 5);
-    int buffer = 0, bits = 0;
-    for (byte b : data) {
-      buffer = (buffer << 8) | (b & 0xFF);
-      bits += 8;
-      while (bits >= 5) {
-        int idx = (buffer >>> (bits - 5)) & 0x1F;
-        out.append(B32[idx]);
-        bits -= 5;
+    try {
+      CosmosItemRequestOptions opts = new CosmosItemRequestOptions();
+      if (etag != null) opts.setIfMatchETag(etag);     // fail if concurrent writer won
+      return container
+          .replaceItem(doc, correlationId, new PartitionKey(correlationId), opts)
+          .getItem();
+    } catch (CosmosException ex) {
+      final int code = ex.getStatusCode();
+      // retry on common transient/conflict statuses
+      if (code == 412 || code == 404 || code == 409 || code == 429 || code >= 500) {
+        try {
+          long jitter = ThreadLocalRandom.current().nextLong(0, 60);
+          Thread.sleep(Math.min(1200, backoff) + jitter);
+        } catch (InterruptedException ie) {
+          Thread.currentThread().interrupt();
+        }
+        backoff *= 2;
+        continue; // next attempt
       }
+      throw ex; // non-retryable
     }
-    if (bits > 0) out.append(B32[(buffer << (5 - bits)) & 0x1F]);
-    return out.toString();
   }
 
-  private CorrelationIds() {}
+  // give back whatever is latest if we exhausted retries
+  return read(container, correlationId);
 }
 
-How to use
+/* ---------- helpers ---------- */
 
-// In SBNotificationQueueTrigger (when you know all fields):
-String cid = CorrelationIds.build(day, agentId, summaryType);
-
-// If you don't know them yet (early stage):
-String cid = CorrelationIds.provisional();
-
-// Pass `cid` to Notification API; both services write to the same report row.
-
-Why this works
-	•	Stable prefix lets you eyeball/group records.
-	•	Random 100 bits keeps IDs short but essentially collision-free.
-	•	Safe charset: letters+digits+“=”; Cosmos DB document id accepts this, and it’s copy/paste friendly.
-
-
-====
-
-import java.security.SecureRandom;
-import java.time.LocalDate;
-import java.time.format.DateTimeFormatter;
-
-public final class CorrelationIdUtil {
-
-    private static final SecureRandom RNG = new SecureRandom();
-    private static final char[] BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567".toCharArray();
-    private static final int SUFFIX_LEN = 10; // 10 random chars
-
-    private CorrelationIdUtil() {}
-
-    public static String newCorrelationId(String agentId, String summaryType) {
-        String suffix = randomBase32(SUFFIX_LEN);
-
-        // Fallback if agentId/summaryType not available
-        if (isBlank(agentId) || isBlank(summaryType)) {
-            return "RND_" + suffix;
-        }
-
-        String date = LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE); // yyyyMMdd
-        return date + "_" + agentId + "_" + summaryType + "_" + suffix;
-    }
-
-    private static String randomBase32(int len) {
-        char[] buf = new char[len];
-        for (int i = 0; i < len; i++) {
-            buf[i] = BASE32[RNG.nextInt(BASE32.length)];
-        }
-        return new String(buf);
-    }
-
-    private static boolean isBlank(String s) {
-        return s == null || s.trim().isEmpty();
-    }
-}
-
-=====
-
-Here you go—tiny, ready-to-use Java helpers to turn "yyyyMMdd" into Japanese style like 2025年9月26日 (no leading zeros) or 2025年09月26日 (zero-padded). Also includes “today (Tokyo)” and an optional Japanese era format.
-
-import java.time.*;
-import java.time.format.*;
-import java.util.Locale;
-
-public final class JpDateFormat {
-
-  private static final DateTimeFormatter INPUT = DateTimeFormatter.BASIC_ISO_DATE; // yyyyMMdd
-
-  // 2025年9月26日  (no leading zeros)
-  private static final DateTimeFormatter JP_NO_PAD = new DateTimeFormatterBuilder()
-      .appendValue(ChronoField.YEAR, 4).appendLiteral('年')
-      .appendValue(ChronoField.MONTH_OF_YEAR).appendLiteral('月')
-      .appendValue(ChronoField.DAY_OF_MONTH).appendLiteral('日')
-      .toFormatter(Locale.JAPAN);
-
-  // 2025年09月26日  (zero-padded)
-  private static final DateTimeFormatter JP_PAD = DateTimeFormatter.ofPattern("yyyy年MM月dd日", Locale.JAPAN);
-
-  // Japanese era: 令和7年9月26日
-  private static final DateTimeFormatter JP_ERA = new DateTimeFormatterBuilder()
-      .appendText(JapaneseDate.now().getChronology().eraOf(1)) // placeholder to force JapaneseChronology load
-      .appendPattern("Gy年M月d日")
-      .toFormatter(Locale.JAPAN)
-      .withChronology(JapaneseChronology.INSTANCE);
-
-  private JpDateFormat() {}
-
-  /** "yyyyMMdd" -> "yyyy年M月d日" (no leading zeros) */
-  public static String toJpNoPad(String yyyymmdd) {
-    LocalDate d = LocalDate.parse(normalize(yyyymmdd), INPUT);
-    return d.format(JP_NO_PAD);
-  }
-
-  /** "yyyyMMdd" -> "yyyy年MM月dd日" (zero-padded) */
-  public static String toJpPad(String yyyymmdd) {
-    LocalDate d = LocalDate.parse(normalize(yyyymmdd), INPUT);
-    return d.format(JP_PAD);
-  }
-
-  /** "yyyyMMdd" -> Japanese era, e.g., "令和7年9月26日" */
-  public static String toJpEra(String yyyymmdd) {
-    LocalDate d = LocalDate.parse(normalize(yyyymmdd), INPUT);
-    return JapaneseDate.from(d).format(JP_ERA);
-  }
-
-  /** Today in Tokyo -> "yyyy年M月d日" */
-  public static String todayTokyoNoPad() {
-    LocalDate d = LocalDate.now(ZoneId.of("Asia/Tokyo"));
-    return d.format(JP_NO_PAD);
-  }
-
-  // Accepts "yyyyMMdd" or "yyyy-MM-dd"; returns "yyyyMMdd"
-  private static String normalize(String s) {
-    String t = s.trim();
-    return t.length() == 10 && t.charAt(4) == '-' ? t.replace("-", "") : t;
+private static ObjectNode read(CosmosContainer c, String id) {
+  try {
+    return c.readItem(id, new PartitionKey(id), ObjectNode.class).getItem();
+  } catch (CosmosException ex) {
+    if (ex.getStatusCode() == 404) return null;
+    throw ex;
   }
 }
 
-Quick examples
+private static void upsert(CosmosContainer c, ObjectNode doc) {
+  c.upsertItem(doc, new PartitionKey(doc.get("id").asText()), new CosmosItemRequestOptions());
+}
 
-JpDateFormat.toJpNoPad("20250926"); // 2025年9月26日
-JpDateFormat.toJpPad("20250926");   // 2025年09月26日
-JpDateFormat.toJpEra("20250926");   // 令和7年9月26日
-JpDateFormat.todayTokyoNoPad();     // e.g., 2025年9月26日
+/** Create parents for a JSON-Pointer path ("/a/b/c") and set value at the final segment. */
+private static void deepPut(ObjectNode root, String pointer, JsonNode value) {
+  if (pointer == null || pointer.isBlank() || pointer.charAt(0) != '/')
+    throw new IllegalArgumentException("Path must start with '/': " + pointer);
 
-Pick toJpNoPad (natural style) or toJpPad (fixed width). If you only need one, you can delete the other formatters.
-If you prefer time-sortable IDs, swap the random with a ULID (26 chars); otherwise the above is lean and solid.
+  String[] parts = pointer.split("/", -1); // first element is ""
+  ObjectNode cur = root;
+  for (int i = 1; i < parts.length; i++) {
+    String key = unescape(parts[i]);
+    boolean last = (i == parts.length - 1);
+    if (last) {
+      cur.set(key, value == null ? NullNode.instance : value);
+    } else {
+      JsonNode next = cur.get(key);
+      if (!(next instanceof ObjectNode)) {
+        next = M.createObjectNode();
+        cur.set(key, next);
+      }
+      cur = (ObjectNode) next;
+    }
+  }
+}
+
+/** JSON Pointer unescape: "~1" => "/", "~0" => "~" */
+private static String unescape(String s) {
+  return s.replace("~1", "/").replace("~0", "~");
+}
+
+private static JsonNode toJsonNode(Object v) {
+  if (v == null) return NullNode.instance;
+  if (v instanceof JsonNode) return (JsonNode) v;
+  if (v instanceof CharSequence) return TextNode.valueOf(v.toString());
+  if (v instanceof Boolean) return BooleanNode.valueOf((Boolean) v);
+  if (v instanceof Integer) return IntNode.valueOf((Integer) v);
+  if (v instanceof Long) return LongNode.valueOf((Long) v);
+  if (v instanceof Double) return DoubleNode.valueOf((Double) v);
+  return M.valueToTree(v); // maps, lists, POJOs
+}
+
+Call it like:
+
+Map<String,Object> patch = Map.of(
+  "/agentProcessing/agentsById/AGT123/state", "SENT",
+  "/agentProcessing/agentsById/AGT123/processedAt", Instant.now().toString()
+);
+DeepPatchUtil.patchFieldsCreatingParents(container, correlationId, patch);
+
+(Replace DeepPatchUtil. with your current class name, or keep as just patchFieldsCreatingParents(...) if you pasted into that class.)
