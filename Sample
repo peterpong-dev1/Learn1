@@ -1,1 +1,46 @@
-
+{
+  "version": "2.0",
+  "functionTimeout": "00:10:00",
+  "extensions": {
+    "cosmosDb": {
+      "maxItemsPerInvocation": 100,
+      "leaseOptions": {
+        "maxScaleCount": 4,
+        "leasePrefix": "prod-"
+      },
+      "connectionMode": "Direct",
+      "protocol": "Tcp",
+      "changeFeed": {
+        "feedPollDelay": "00:00:02",
+        "checkpointFrequency": {
+          "processedItemCount": 100,
+          "interval": "00:00:05"
+        },
+        "leaseAcquireInterval": "00:00:05",
+        "leaseRenewInterval": "00:00:05",
+        "leaseExpirationInterval": "00:01:00"
+      }
+    },
+    "serviceBus": {
+      "prefetchCount": 32,
+      "sessionHandlerOptions": {
+        "maxConcurrentSessions": 5,
+        "autoCompleteMessages": false,
+        "maxAutoRenewDuration": "00:10:00",
+        "messageWaitTimeout": "00:00:30"
+      },
+      "clientRetryOptions": {
+        "mode": "Exponential",
+        "maxRetries": 5,
+        "tryTimeout": "00:01:00",
+        "delay": "00:00:01",
+        "maxDelay": "00:00:08"
+      }
+    }
+  },
+  "logging": {
+    "applicationInsights": {
+      "samplingSettings": { "isEnabled": true, "maxTelemetryItemsPerSecond": 5 }
+    }
+  }
+}
