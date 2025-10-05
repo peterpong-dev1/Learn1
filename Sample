@@ -1,107 +1,23 @@
-Short answer: yes—two small things to handle.
-	1.	Email should stay an array (keep non-blank items, don’t unwrap [x] to "x").
-	2.	For other fields it’s fine to keep your current “unwrap single-element array” behavior.
+private static void addArrayIfNotBlank(ObjectNode node, String field, Object value) {
+    if (value == null) return;
 
-Here’s a tiny drop-in that adds an overload so you can choose per-key whether to keep arrays:
-
-// choose per-key
-private static void copyIfPresent(Map<String,Object> src,
-                                  Map<String,Object> dst,
-                                  String key,
-                                  boolean keepArray) {
-    Object v = src.get(key);
-    if (v == null) return;
-
-    if (v instanceof com.fasterxml.jackson.databind.JsonNode j) {
-        if (j.isArray()) {
-            if (keepArray) {
-                // filter: non-null, non-blank strings
-                com.fasterxml.jackson.databind.node.ArrayNode arr =
-                        new com.fasterxml.jackson.databind.ObjectMapper().createArrayNode();
-                for (com.fasterxml.jackson.databind.JsonNode n : j) {
-                    if (n == null || n.isNull()) continue;
-                    String s = n.isValueNode() ? n.asText() : n.toString();
-                    if (s != null && !s.isBlank()) arr.add(s);
-                }
-                if (arr.size() == 0) return;           // all empty → skip
-                dst.put(key, arr);                      // keep as JSON array
-                return;
-            } else {
-                // old behavior: unwrap [x] → x, else stringify
-                if (j.size() == 1) {
-                    com.fasterxml.jackson.databind.JsonNode n = j.get(0);
-                    v = n.isValueNode() ? n.asText() : n.toString();
-                } else {
-                    // optional: join to readable string
-                    StringBuilder sb = new StringBuilder();
-                    for (com.fasterxml.jackson.databind.JsonNode n : j) {
-                        String s = n.isValueNode() ? n.asText() : n.toString();
-                        if (s != null && !s.isBlank()) {
-                            if (sb.length() > 0) sb.append(", ");
-                            sb.append(s);
-                        }
-                    }
-                    if (sb.length() == 0) return;
-                    v = sb.toString();
-                }
+    ArrayNode arrayNode = node.putArray(field);
+    if (value instanceof String) {
+        String s = ((String) value).trim();
+        if (!s.isEmpty()) arrayNode.add(s);
+    } else if (value instanceof List<?>) {
+        for (Object v : (List<?>) value) {
+            if (v != null && !v.toString().isBlank()) arrayNode.add(v.toString());
+        }
+    } else {
+        // handle comma-separated strings
+        String s = value.toString();
+        if (s.contains(",")) {
+            for (String part : s.split(",")) {
+                if (!part.isBlank()) arrayNode.add(part.trim());
             }
-        } else if (j.isValueNode()) {
-            v = j.asText();
-        } else {
-            v = j.toString();
+        } else if (!s.isBlank()) {
+            arrayNode.add(s);
         }
     }
-
-    if (v instanceof CharSequence && ((CharSequence) v).toString().isBlank()) return;
-    dst.put(key, v);
 }
-
-Use it like this in your loop:
-
-// keep email as array
-copyIfPresent(perAgentCtx, agent, "recipient.email", true);
-
-// others: unwrap single-element arrays as before
-copyIfPresent(perAgentCtx, agent, "agencyName", false);
-copyIfPresent(perAgentCtx, agent, "agencyNumber", false);
-copyIfPresent(perAgentCtx, agent, "recipient.name.kanji", false);
-copyIfPresent(perAgentCtx, agent, "recipient.name.kana", false);
-copyIfPresent(perAgentCtx, agent, "recipient.name.alphabet", false);
-copyIfPresent(perAgentCtx, agent, "recipient.phone", false);
-
-Notes:
-	•	Your agentInfos.add(agent); and the subsequent if (agentInfos != null && !agentInfos.isEmpty()) { fieldsContext.put("agents", agentInfos); } are fine.
-	•	If you want the key to be emails instead of email in the final payload, just call copyIfPresent(..., "emails", true) and make sure your downstream expects recipient.emails (array
-
-
-
-=====
-Object emailsObj = context.get("recipient.email");
-List<String> emails = new ArrayList<>();
-
-if (emailsObj instanceof String) {
-    emails.add((String) emailsObj);
-} else if (emailsObj instanceof List<?>) {
-    for (Object o : (List<?>) emailsObj) {
-        emails.add(o.toString());
-    }
-}
-
-// Env flag: send only one or all
-boolean sendAll = Boolean.parseBoolean(System.getenv("SEND_ALL_EMAILS")); // e.g. "true" or "false"
-
-if (!sendAll && !emails.isEmpty()) {
-    emails = List.of(emails.get(0)); // only first
-}
-
-for (String email : emails) {
-    ObjectNode message = F.objectNode();
-    message.put("email", email);
-    message.put("subject", subject);
-    message.put("body", body);
-    // ... add other fields
-
-    queueClient.sendMessage(message.toString());
-}
-
-).
