@@ -71,4 +71,37 @@ copyIfPresent(perAgentCtx, agent, "recipient.phone", false);
 
 Notes:
 	•	Your agentInfos.add(agent); and the subsequent if (agentInfos != null && !agentInfos.isEmpty()) { fieldsContext.put("agents", agentInfos); } are fine.
-	•	If you want the key to be emails instead of email in the final payload, just call copyIfPresent(..., "emails", true) and make sure your downstream expects recipient.emails (array).
+	•	If you want the key to be emails instead of email in the final payload, just call copyIfPresent(..., "emails", true) and make sure your downstream expects recipient.emails (array
+
+
+
+=====
+Object emailsObj = context.get("recipient.email");
+List<String> emails = new ArrayList<>();
+
+if (emailsObj instanceof String) {
+    emails.add((String) emailsObj);
+} else if (emailsObj instanceof List<?>) {
+    for (Object o : (List<?>) emailsObj) {
+        emails.add(o.toString());
+    }
+}
+
+// Env flag: send only one or all
+boolean sendAll = Boolean.parseBoolean(System.getenv("SEND_ALL_EMAILS")); // e.g. "true" or "false"
+
+if (!sendAll && !emails.isEmpty()) {
+    emails = List.of(emails.get(0)); // only first
+}
+
+for (String email : emails) {
+    ObjectNode message = F.objectNode();
+    message.put("email", email);
+    message.put("subject", subject);
+    message.put("body", body);
+    // ... add other fields
+
+    queueClient.sendMessage(message.toString());
+}
+
+).
