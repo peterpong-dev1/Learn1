@@ -1,46 +1,74 @@
-{
-  "version": "2.0",
-  "functionTimeout": "00:10:00",
-  "extensions": {
-    "cosmosDb": {
-      "maxItemsPerInvocation": 100,
-      "leaseOptions": {
-        "maxScaleCount": 4,
-        "leasePrefix": "prod-"
-      },
-      "connectionMode": "Direct",
-      "protocol": "Tcp",
-      "changeFeed": {
-        "feedPollDelay": "00:00:02",
-        "checkpointFrequency": {
-          "processedItemCount": 100,
-          "interval": "00:00:05"
-        },
-        "leaseAcquireInterval": "00:00:05",
-        "leaseRenewInterval": "00:00:05",
-        "leaseExpirationInterval": "00:01:00"
-      }
-    },
-    "serviceBus": {
-      "prefetchCount": 32,
-      "sessionHandlerOptions": {
-        "maxConcurrentSessions": 5,
-        "autoCompleteMessages": false,
-        "maxAutoRenewDuration": "00:10:00",
-        "messageWaitTimeout": "00:00:30"
-      },
-      "clientRetryOptions": {
-        "mode": "Exponential",
-        "maxRetries": 5,
-        "tryTimeout": "00:01:00",
-        "delay": "00:00:01",
-        "maxDelay": "00:00:08"
-      }
+Short answer: yes—two small things to handle.
+	1.	Email should stay an array (keep non-blank items, don’t unwrap [x] to "x").
+	2.	For other fields it’s fine to keep your current “unwrap single-element array” behavior.
+
+Here’s a tiny drop-in that adds an overload so you can choose per-key whether to keep arrays:
+
+// choose per-key
+private static void copyIfPresent(Map<String,Object> src,
+                                  Map<String,Object> dst,
+                                  String key,
+                                  boolean keepArray) {
+    Object v = src.get(key);
+    if (v == null) return;
+
+    if (v instanceof com.fasterxml.jackson.databind.JsonNode j) {
+        if (j.isArray()) {
+            if (keepArray) {
+                // filter: non-null, non-blank strings
+                com.fasterxml.jackson.databind.node.ArrayNode arr =
+                        new com.fasterxml.jackson.databind.ObjectMapper().createArrayNode();
+                for (com.fasterxml.jackson.databind.JsonNode n : j) {
+                    if (n == null || n.isNull()) continue;
+                    String s = n.isValueNode() ? n.asText() : n.toString();
+                    if (s != null && !s.isBlank()) arr.add(s);
+                }
+                if (arr.size() == 0) return;           // all empty → skip
+                dst.put(key, arr);                      // keep as JSON array
+                return;
+            } else {
+                // old behavior: unwrap [x] → x, else stringify
+                if (j.size() == 1) {
+                    com.fasterxml.jackson.databind.JsonNode n = j.get(0);
+                    v = n.isValueNode() ? n.asText() : n.toString();
+                } else {
+                    // optional: join to readable string
+                    StringBuilder sb = new StringBuilder();
+                    for (com.fasterxml.jackson.databind.JsonNode n : j) {
+                        String s = n.isValueNode() ? n.asText() : n.toString();
+                        if (s != null && !s.isBlank()) {
+                            if (sb.length() > 0) sb.append(", ");
+                            sb.append(s);
+                        }
+                    }
+                    if (sb.length() == 0) return;
+                    v = sb.toString();
+                }
+            }
+        } else if (j.isValueNode()) {
+            v = j.asText();
+        } else {
+            v = j.toString();
+        }
     }
-  },
-  "logging": {
-    "applicationInsights": {
-      "samplingSettings": { "isEnabled": true, "maxTelemetryItemsPerSecond": 5 }
-    }
-  }
+
+    if (v instanceof CharSequence && ((CharSequence) v).toString().isBlank()) return;
+    dst.put(key, v);
 }
+
+Use it like this in your loop:
+
+// keep email as array
+copyIfPresent(perAgentCtx, agent, "recipient.email", true);
+
+// others: unwrap single-element arrays as before
+copyIfPresent(perAgentCtx, agent, "agencyName", false);
+copyIfPresent(perAgentCtx, agent, "agencyNumber", false);
+copyIfPresent(perAgentCtx, agent, "recipient.name.kanji", false);
+copyIfPresent(perAgentCtx, agent, "recipient.name.kana", false);
+copyIfPresent(perAgentCtx, agent, "recipient.name.alphabet", false);
+copyIfPresent(perAgentCtx, agent, "recipient.phone", false);
+
+Notes:
+	•	Your agentInfos.add(agent); and the subsequent if (agentInfos != null && !agentInfos.isEmpty()) { fieldsContext.put("agents", agentInfos); } are fine.
+	•	If you want the key to be emails instead of email in the final payload, just call copyIfPresent(..., "emails", true) and make sure your downstream expects recipient.emails (array).
