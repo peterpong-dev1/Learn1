@@ -1,23 +1,76 @@
-private static void addArrayIfNotBlank(ObjectNode node, String field, Object value) {
-    if (value == null) return;
+public static boolean evaluate(EventConfig.Event evt,
+                               boolean isCreate,
+                               ObjectNode newDoc,
+                               ObjectNode baseline,
+                               List<ChangeInfo> deltas) {
 
-    ArrayNode arrayNode = node.putArray(field);
-    if (value instanceof String) {
-        String s = ((String) value).trim();
-        if (!s.isEmpty()) arrayNode.add(s);
-    } else if (value instanceof List<?>) {
-        for (Object v : (List<?>) value) {
-            if (v != null && !v.toString().isBlank()) arrayNode.add(v.toString());
-        }
-    } else {
-        // handle comma-separated strings
-        String s = value.toString();
-        if (s.contains(",")) {
-            for (String part : s.split(",")) {
-                if (!part.isBlank()) arrayNode.add(part.trim());
-            }
-        } else if (!s.isBlank()) {
-            arrayNode.add(s);
-        }
+    // honor "when": ["insert","update"]
+    if (isCreate && !evt.allowInsert()) return false;
+    if (!isCreate && !evt.allowUpdate()) return false;
+
+    // On create there is no delta index
+    Map<String, ChangeInfo> idx = isCreate ? Collections.emptyMap()
+                                           : indexByFieldPath(deltas);
+
+    boolean hasAny = false;
+    boolean allOk  = true;
+
+    for (EventConfig.Rule r : evt.getConditions().getRules()) {
+        boolean hit = evalRule(r, isCreate, newDoc, baseline, idx);
+        hasAny = hasAny || hit;
+        allOk  = allOk  && hit;
+        if (evt.getConditions().isOr()  &&  hit) return true;   // OR short-circuit
+        if (evt.getConditions().isAnd() && !hit) return false;  // AND short-circuit
+    }
+
+    // no rules => no match
+    return evt.getConditions().isAnd() ? allOk : hasAny;
+}
+
+private static boolean evalRule(EventConfig.Rule r,
+                                boolean isCreate,
+                                ObjectNode newDoc,
+                                ObjectNode baseline,
+                                Map<String, ChangeInfo> idx) {
+
+    final String op   = safe(r.getOp());
+    final String path = safe(r.getField());
+
+    switch (op) {
+        case "changed":
+            // On create we usually DON'T treat “changed” as true for everything
+            return isCreate ? false : changed(idx.get(path));
+
+        case "changedTo":
+            // On create, allow if current value equals requested AND it is present
+            if (isCreate) return present(newDoc.at(jsonPointer(path)))
+                                && r.getValue() != null
+                                && r.getValue().equals(newDoc.at(jsonPointer(path)).asText());
+            return changedTo(idx.get(path), r.getValue());
+
+        case "becameNotNull":
+            // True on create if field is present now
+            return becameNotNull(isCreate, path, newDoc, baseline, idx.get(path));
+
+        case "becameNull":
+            // On create nothing “became null”
+            return isCreate ? false : becameNull(isCreate, path, newDoc, baseline, idx.get(path));
+
+        case "eq":
+            return equalsNow(path, newDoc, r.getValue());
+
+        case "equalsOrChangedTo":
+            return isCreate
+                    ? equalsNow(path, newDoc, r.getValue())
+                    : equalsOrChangedTo(isCreate, r.getField(), newDoc, idx.get(r.getField()), r.getValue());
+
+        case "ne":
+            return !equalsNow(path, newDoc, r.getValue());
+
+        case "eqDate":
+            return eqDate(path, newDoc, r.getValue());
+
+        default:
+            return false;
     }
 }
