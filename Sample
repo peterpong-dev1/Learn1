@@ -74,3 +74,54 @@ private static boolean evalRule(EventConfig.Rule r,
             return false;
     }
 }
+
+====
+
+Got it. For the create case you can’t rely on deltas, so you must evaluate the current value in newDoc.
+For your rule “lapseDate is null”, add a rule that checks the current value is absent/null.
+
+Option A (add an explicit op)
+
+Config
+
+"conditions": {
+  "logic": "AND",
+  "rules": [
+    { "op": "isNull", "field": "/lapseDate" }   // works on create & update
+  ]
+}
+
+Code (in evalRule)
+
+case "isNull": {
+  JsonNode v = newDoc.at(jsonPointer(path));
+  return v == null || v.isMissingNode() || v.isNull() ||
+         (v.isTextual() && v.asText().isBlank());
+}
+
+Option B (reuse your equalsNow)
+
+Allow equalsNow to accept null as the expected value.
+
+Config
+
+"conditions": {
+  "logic": "AND",
+  "rules": [
+    { "op": "eq", "field": "/lapseDate", "value": null }
+  ]
+}
+
+Code (adjust equalsNow)
+
+private static boolean equalsNow(String path, ObjectNode doc, String expected) {
+  JsonNode v = doc.at(jsonPointer(path));
+  if (expected == null) {                     // treat “is null”
+    return v == null || v.isMissingNode() || v.isNull()
+        || (v.isTextual() && v.asText().isBlank());
+  }
+  if (v == null || v.isMissingNode() || v.isNull()) return false;
+  return expected.equals(v.asText());
+}
+
+Either approach makes the rule fire on create when /lapseDate is null/absent (and will also work on updates). No changes needed to your delta logic for this case.
