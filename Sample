@@ -23,3 +23,41 @@ Presentation Outline
 	5.	Shuyō konseputo to ākitekutcha
 	6.	Kōdo kaisetsu (jissō no pointo)
 	7.	Demo to dēta kakunin hōhō
+
+Slide 1 — Project Overview / プロジェクト概要
+
+English
+
+Project Overview:
+An automated email notification system that triggers when changes occur in Cosmos DB that match business-defined conditions.
+
+Requirements:
+	1.	Send daily summary notifications to agents
+	2.	Monitor and report processing results
+	3.	Implement robust error handling and recovery mechanisms
+
+⸻
+
+Japanese（日本語）
+
+プロジェクト概要：
+Cosmos DBで発生した変更が、ビジネスで定義された条件に一致した場合に自動でメール通知を送信するシステムです。
+
+要件：
+	1.	エージェントへの日次サマリー通知の送信
+	2.	処理結果のモニタリングとレポート
+	3.	強固なエラー処理およびリカバリー機能の実装
+
+⸻
+
+Romaji（ローマ字）
+
+Purojekuto gaiyō:
+Cosmos DB de hassei shita henkō ga, bijinesu de teigi sareta jōken ni icchi shita baai ni jidō de mēru tsūchi o sōshin suru shisutemu desu.
+
+Yōken:
+	1.	ējento e no nichiji samarii tsūchi no sōshin
+	2.	shori kekka no monitaringu to repōto
+	3.	kyōko na erā shori oyobi rikabarī kinō no jissō
+
+
