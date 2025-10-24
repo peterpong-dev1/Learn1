@@ -1,63 +1,136 @@
-Presentation Outline
-	1.	Project Overview & Requirements
-	2.	System Components
-	3.	Configuration Files
-	4.	End-to-End Flow
-	5.	Key Concepts & Architecture
-	6.	Code Walkthrough
-	7.	Demo & Data Verification
+Absolutely 👍 — here’s a clean, reusable Java helper class you can drop straight into your Azure Function project.
 
-1.	プロジェクト概要と要件
-	2.	システム構成要素
-	3.	設定ファイルの説明
-	4.	全体フロー
-	5.	主要コンセプトとアーキテクチャ
-	6.	コード解説（実装のポイント）
-	7.	デモとデータ確認方法
-
-(Romaji version)
-	1.	Purojekuto gaiyō to yōken
-	2.	Shisutemu kōsei yōso
-	3.	Settei fairu no setsumei
-	4.	Zentai furō
-	5.	Shuyō konseputo to ākitekutcha
-	6.	Kōdo kaisetsu (jissō no pointo)
-	7.	Demo to dēta kakunin hōhō
-
-Slide 1 — Project Overview / プロジェクト概要
-
-English
-
-Project Overview:
-An automated email notification system that triggers when changes occur in Cosmos DB that match business-defined conditions.
-
-Requirements:
-	1.	Send daily summary notifications to agents
-	2.	Monitor and report processing results
-	3.	Implement robust error handling and recovery mechanisms
+It builds a Datadog-friendly JSON log line, automatically fills missing fields with "" (empty string) or "N/A" (if you prefer), and formats the timestamp in your local timezone.
 
 ⸻
 
-Japanese（日本語）
+✅ LogHelper.java
 
-プロジェクト概要：
-Cosmos DBで発生した変更が、ビジネスで定義された条件に一致した場合に自動でメール通知を送信するシステムです。
+package com.example.logging;
 
-要件：
-	1.	エージェントへの日次サマリー通知の送信
-	2.	処理結果のモニタリングとレポート
-	3.	強固なエラー処理およびリカバリー機能の実装
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.Map;
+
+public class LogHelper {
+
+    private static final ObjectMapper mapper = new ObjectMapper();
+
+    // Format example: 2025-10-25T21:34:56.789+09:00
+    private static final DateTimeFormatter formatter =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSXXX");
+
+    /**
+     * Creates a Datadog-friendly JSON string for logging.
+     *
+     * @param level      info|warn|error (for Datadog color)
+     * @param message    log message
+     * @param values     optional map of extra fields (component, functionName, etc.)
+     * @return JSON string ready for log.info()
+     */
+    public static String createLog(String level, String message, Map<String, Object> values) {
+        ObjectNode root = mapper.createObjectNode();
+
+        // Standard Datadog fields
+        root.put("timestamp", ZonedDateTime.now().format(formatter));
+        root.put("status", safe(level));   // Datadog color level
+        root.put("message", safe(message));
+        root.put("service", envOrDefault("DD_SERVICE", "notification-platform"));
+        root.put("env", envOrDefault("DD_ENV", "dev"));
+        root.put("version", envOrDefault("DD_VERSION", "local"));
+
+        // Optional fields (your structure)
+        if (values != null) {
+            for (Map.Entry<String, Object> entry : values.entrySet()) {
+                String key = entry.getKey();
+                Object val = entry.getValue();
+                root.put(key, val == null ? "" : val.toString());
+            }
+        }
+
+        return root.toString();
+    }
+
+    private static String safe(String s) {
+        return (s == null) ? "" : s;
+    }
+
+    private static String envOrDefault(String name, String def) {
+        String v = System.getenv(name);
+        return v != null ? v : def;
+    }
+}
+
 
 ⸻
 
-Romaji（ローマ字）
+✅ How to use it in your triggers
 
-Purojekuto gaiyō:
-Cosmos DB de hassei shita henkō ga, bijinesu de teigi sareta jōken ni icchi shita baai ni jidō de mēru tsūchi o sōshin suru shisutemu desu.
+import com.example.logging.LogHelper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import java.util.Map;
 
-Yōken:
-	1.	ējento e no nichiji samarii tsūchi no sōshin
-	2.	shori kekka no monitaringu to repōto
-	3.	kyōko na erā shori oyobi rikabarī kinō no jissō
+public class MyFunctions {
+    private static final Logger log = LoggerFactory.getLogger(MyFunctions.class);
+
+    public void cosmosTriggerHandler() {
+        Map<String, Object> data = Map.of(
+            "component", "cosmosTrigger",
+            "functionName", "CosmosChangeFeedFn",
+            "execution_status", "success",
+            "agentId", "A123",
+            "docId", "D456",
+            "correlationId", "corr-001"
+        );
+
+        log.info(LogHelper.createLog("info", "Processed change feed successfully", data));
+    }
+
+    public void serviceBusHandler() {
+        Map<String, Object> data = Map.of(
+            "component", "serviceBusTrigger",
+            "functionName", "ServiceBusFn",
+            "execution_status", "failed",
+            "errorMessage", "Timeout while sending email"
+        );
+
+        log.error(LogHelper.createLog("error", "Service Bus message failed", data));
+    }
+}
 
 
+⸻
+
+🧩 Output example (local time, Datadog-friendly)
+
+{
+  "timestamp": "2025-10-25T21:34:56.789+09:00",
+  "status": "info",
+  "message": "Processed change feed successfully",
+  "service": "notification-platform",
+  "env": "dev",
+  "version": "local",
+  "component": "cosmosTrigger",
+  "functionName": "CosmosChangeFeedFn",
+  "execution_status": "success",
+  "agentId": "A123",
+  "docId": "D456",
+  "correlationId": "corr-001"
+}
+
+
+⸻
+
+💡 Notes
+	•	If any field is null or missing → it becomes "" (empty string).
+	•	You can change the default behavior easily ("N/A" instead of empty string).
+	•	Datadog will auto-parse timestamp, status, message, service, etc.
+	•	You can safely call this helper from any trigger (Cosmos DB, Service Bus, Queue, HTTP).
+
+⸻
+
+Would you like me to modify it so that it automatically detects which trigger it came from (e.g., reads ExecutionContext.getFunctionName() to fill functionName and component automatically)?
