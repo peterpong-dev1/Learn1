@@ -133,4 +133,135 @@ public class MyFunctions {
 
 ⸻
 
+Perfect 👍 — here’s a clean, self-contained Java helper that builds your Datadog-friendly JSON log and uses only the maskMiddle logic for the policyId.
+
+This version keeps everything simple and practical for your Azure Functions.
+
+⸻
+
+✅ JsonLog.java
+
+package com.example.logging;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+
+public final class JsonLog {
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ZoneId JAPAN_ZONE = ZoneId.of("Asia/Tokyo");
+    private static final DateTimeFormatter TS_FORMAT =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSXXX");
+
+    private JsonLog() {}
+
+    /**
+     * Build a Datadog-friendly JSON log.
+     *
+     * @param status   e.g. "info", "error", "warn"
+     * @param message  message text
+     * @param policyId sensitive ID to mask
+     * @param agentId  agent ID
+     * @return JSON string ready to log
+     */
+    public static String build(String status, String message, String policyId, String agentId) {
+        ObjectNode root = MAPPER.createObjectNode();
+
+        // timestamp in local Japan time
+        root.put("timestamp", ZonedDateTime.now(JAPAN_ZONE).format(TS_FORMAT));
+
+        // standard fields
+        root.put("status", safe(status));
+        root.put("message", safe(message));
+        root.put("agentId", safe(agentId));
+
+        // mask policy ID
+        String pid = safe(policyId);
+        root.put("policyId", pid.isEmpty() ? "" : maskMiddle(pid, 3, 3));
+
+        return root.toString();
+    }
+
+    // ============ helper methods ============
+
+    private static String safe(String s) {
+        return s == null ? "" : s;
+    }
+
+    /**
+     * Keep first `keepStart` and last `keepEnd` characters, mask the rest with '*'.
+     *
+     * Examples:
+     *  maskMiddle("ABCDEFGHIJ", 2, 2) → "AB******IJ"
+     *  maskMiddle("POLICY-ABC123456789", 3, 3) → "POL*************789"
+     */
+    public static String maskMiddle(String value, int keepStart, int keepEnd) {
+        if (value == null || value.isEmpty()) {
+            return "";
+        }
+        if (value.length() <= keepStart + keepEnd) {
+            return "*".repeat(Math.max(4, value.length()));
+        }
+
+        String start = value.substring(0, keepStart);
+        String end = value.substring(value.length() - keepEnd);
+        int stars = Math.max(4, value.length() - keepStart - keepEnd);
+        return start + "*".repeat(stars) + end;
+    }
+}
+
+
+⸻
+
+🧩 Example usage inside your Azure Function
+
+import com.example.logging.JsonLog;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class ServiceBusFn {
+    private static final Logger log = LoggerFactory.getLogger(ServiceBusFn.class);
+
+    public void run(String body) {
+        String json = JsonLog.build(
+                "info",
+                "Policy processed successfully",
+                "POLICY-ABC123456789",
+                "AGENT-42"
+        );
+        log.info(json);
+    }
+}
+
+
+⸻
+
+🧠 Example output (local Japan time)
+
+{
+  "timestamp": "2025-10-27T21:45:56.302+09:00",
+  "status": "info",
+  "message": "Policy processed successfully",
+  "agentId": "AGENT-42",
+  "policyId": "POL*************789"
+}
+
+
+⸻
+
+✅ Summary
+	•	Logs JSON structured lines ready for Datadog.
+	•	Timestamp = Japan local time (+09:00).
+	•	maskMiddle keeps the first 3 and last 3 characters visible for easy searching.
+	•	Safe for missing/null values.
+	•	Works directly with your existing logger: log.info(JsonLog.build(...)).
+
+⸻
+
+Would you like me to extend this helper slightly so it automatically adds your service, env, and version fields from environment variables (DD_SERVICE, DD_ENV, DD_VERSION) too?
+
+
 Would you like me to modify it so that it automatically detects which trigger it came from (e.g., reads ExecutionContext.getFunctionName() to fill functionName and component automatically)?
