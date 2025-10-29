@@ -1,60 +1,107 @@
-Short answer: Yes.
-If you switch to the JSON encoder and put your key/values into MDC, Datadog will show them like your screenshot—clean JSON fields under Attributes / JSON Attributes, not one long text line.
+Got it. You want both in Datadog:
+	•	a JSON log line (for dashboards; with fields from MDC), and
+	•	a plain log line (for eyeballing/debugging; no policyId or other fields).
 
-What you’ll see in Datadog
-	•	Message: your log message (e.g., “Email delivered”)
-	•	level / timestamp / logger / thread: from providers
-	•	Your fields (from MDC): event, execution_status, agentId, policyId (masked), requestId, etc., each as separate attributes you can facet and use in dashboards.
+Here’s a clean setup that does exactly that.
 
-Minimal setup
+⸻
 
-pom.xml
-
-<dependency>
-  <groupId>net.logstash.logback</groupId>
-  <artifactId>logstash-logback-encoder</artifactId>
-  <version>7.4</version>
-</dependency>
-
-logback-spring.xml
+Logback config (copy-paste)
 
 <configuration>
+
+  <!-- JSON to stdout (for dashboards) -->
   <appender name="JSON_OUT" class="ch.qos.logback.core.ConsoleAppender">
     <target>System.out</target>
     <encoder class="net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder">
       <providers>
-        <timestamp/><logLevel/><loggerName/><threadName/>
-        <message/>
-        <mdc/>          <!-- <- this lifts MDC keys to top-level JSON -->
-        <stackTrace/>
+        <timestamp/><logLevel/><loggerName/><threadName/><message/>
+        <mdc/>          <!-- pulls your MDC keys into top-level JSON -->
+        <stackTrace/>   <!-- include stack traces for errors -->
+        <!-- tag so dashboards can filter only JSON rows -->
+        <provider class="net.logstash.logback.composite.GlobalCustomFieldsJsonProvider">
+          <customFields>{"format":"json"}</customFields>
+        </provider>
       </providers>
     </encoder>
   </appender>
 
-  <root level="INFO"><appender-ref ref="JSON_OUT"/></root>
+  <!-- Plain text to stdout too (for debugging) -->
+  <appender name="PLAIN_OUT" class="ch.qos.logback.core.ConsoleAppender">
+    <target>System.out</target>
+    <encoder>
+      <!-- IMPORTANT: no %X{...} here, so NO MDC fields appear -->
+      <pattern>format=plain %d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%nopex%n</pattern>
+      <!-- %nopex avoids printing the exception twice; if you want the stacktrace in plain too, use %ex{full} instead -->
+    </encoder>
+  </appender>
+
+  <root level="INFO">
+    <appender-ref ref="JSON_OUT"/>
+    <appender-ref ref="PLAIN_OUT"/>
+  </root>
 </configuration>
 
-Code
+Why this works
+	•	The JSON appender includes <mdc/> → your structured fields (e.g., execution_status, agentId, masked policyId) are available for dashboards.
+	•	The plain appender’s pattern does not use %X{...} → it prints only timestamp/level/thread/logger/message. No MDC fields, no policyId.
+	•	Both lines go to stdout → both appear in Datadog.
+Dashboards should filter to @format:json.
 
-MDC.put("event", "email_delivery");
-MDC.put("execution_status", "success");         // or "failed"
+⸻
+
+How to log in code
+
+// build your context JUST for the JSON line
+MDC.put("event", "notification_delivery");
+MDC.put("phase", "end");                    // or "start"
+MDC.put("execution_status", "success");     // or "failed"
+MDC.put("requestId", reqId);
 MDC.put("agentId", agentId);
-MDC.put("policyId", maskMiddle(policyId, 3, 3)); // your mask helper
+MDC.put("policyId", maskMiddle(policyId, 3, 3));
 
-log.info("Email delivered");                     // or log.error("...", ex)
+// one call -> emits TWO lines:
+//   • JSON line (with MDC fields) for dashboards
+//   • Plain line (message only) for debugging
+log.info("Notification processed");
+
+// errors:
+log.error("Notification failed", ex);
+
 MDC.clear();
 
-Datadog log (top-level JSON)
+	•	Your dashboard queries should add: @format:json
+	•	Your teammates can still read the plain line (starts with format=plain) without any sensitive fields.
+
+⸻
+
+Example of what you’ll see
+
+JSON (for dashboards):
 
 {
-  "timestamp":"2025-10-29T12:34:56+09:00",
-  "level":"INFO",
-  "message":"Email delivered",
-  "event":"email_delivery",
-  "execution_status":"success",
-  "agentId":"AGENT-42",
-  "policyId":"POL*********789"
+  "format": "json",
+  "level": "INFO",
+  "message": "Notification processed",
+  "event": "notification_delivery",
+  "phase": "end",
+  "execution_status": "success",
+  "requestId": "abc-123",
+  "agentId": "AGENT-42",
+  "policyId": "POL*********789",
+  "logger": "jp.co.neo.notification.Service"
 }
 
-Don’t embed your own JSON string in message; let the encoder + <mdc/> produce the JSON. That’s what makes Datadog show fields like your screenshot.
-Optional: add static fields too (so dashboards are easier): service, env, version via a custom fields provider or MDC.
+Plain (for debugging; no fields):
+
+format=plain 2025-10-30 10:12:33.456 INFO  [http-nio-8080-exec-1] jp.co.neo.notification.Service - Notification processed
+
+
+⸻
+
+Notes / tips
+	•	Cost: you ingest 2 lines per event. Make sure that’s acceptable.
+	•	If you ever want the plain log to include the stacktrace too, change %nopex to %ex{full} in the plain pattern.
+	•	If you run profiles, keep the same setup for dev/test/prod so behavior is consistent. Dashboards rely on @format:json.
+
+This gives you exactly what you asked for: JSON for dashboards and a clean plain message (no policyId/fields) for robust debugging—both visible in Datadog.
