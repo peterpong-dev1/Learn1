@@ -1,107 +1,89 @@
-Got it. You want both in Datadog:
-	•	a JSON log line (for dashboards; with fields from MDC), and
-	•	a plain log line (for eyeballing/debugging; no policyId or other fields).
-
-Here’s a clean setup that does exactly that.
+Perfect 👍 — since you already have a Map<String, Object> that collects values across your flow,
+let’s make this very simple, clean, and safe to use anywhere — no complex wrapping class, just a helper utility.
 
 ⸻
 
-Logback config (copy-paste)
+✅ Simple MDC Helper (JsonLog replacement)
 
-<configuration>
+import org.slf4j.Logger;
+import org.slf4j.MDC;
+import java.util.Map;
 
-  <!-- JSON to stdout (for dashboards) -->
-  <appender name="JSON_OUT" class="ch.qos.logback.core.ConsoleAppender">
-    <target>System.out</target>
-    <encoder class="net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder">
-      <providers>
-        <timestamp/><logLevel/><loggerName/><threadName/><message/>
-        <mdc/>          <!-- pulls your MDC keys into top-level JSON -->
-        <stackTrace/>   <!-- include stack traces for errors -->
-        <!-- tag so dashboards can filter only JSON rows -->
-        <provider class="net.logstash.logback.composite.GlobalCustomFieldsJsonProvider">
-          <customFields>{"format":"json"}</customFields>
-        </provider>
-      </providers>
-    </encoder>
-  </appender>
+public class LogHelper {
 
-  <!-- Plain text to stdout too (for debugging) -->
-  <appender name="PLAIN_OUT" class="ch.qos.logback.core.ConsoleAppender">
-    <target>System.out</target>
-    <encoder>
-      <!-- IMPORTANT: no %X{...} here, so NO MDC fields appear -->
-      <pattern>format=plain %d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%nopex%n</pattern>
-      <!-- %nopex avoids printing the exception twice; if you want the stacktrace in plain too, use %ex{full} instead -->
-    </encoder>
-  </appender>
+    // --- Add all entries from your map to MDC (thread-safe) ---
+    public static void putAllToMDC(Map<String, ?> map) {
+        if (map == null) return;
+        map.forEach((k, v) -> {
+            if (k != null && v != null) {
+                MDC.put(k, String.valueOf(v));
+            }
+        });
+    }
 
-  <root level="INFO">
-    <appender-ref ref="JSON_OUT"/>
-    <appender-ref ref="PLAIN_OUT"/>
-  </root>
-</configuration>
+    // --- Clear MDC (important at end of request or thread) ---
+    public static void clearMDC() {
+        MDC.clear();
+    }
 
-Why this works
-	•	The JSON appender includes <mdc/> → your structured fields (e.g., execution_status, agentId, masked policyId) are available for dashboards.
-	•	The plain appender’s pattern does not use %X{...} → it prints only timestamp/level/thread/logger/message. No MDC fields, no policyId.
-	•	Both lines go to stdout → both appear in Datadog.
-Dashboards should filter to @format:json.
-
-⸻
-
-How to log in code
-
-// build your context JUST for the JSON line
-MDC.put("event", "notification_delivery");
-MDC.put("phase", "end");                    // or "start"
-MDC.put("execution_status", "success");     // or "failed"
-MDC.put("requestId", reqId);
-MDC.put("agentId", agentId);
-MDC.put("policyId", maskMiddle(policyId, 3, 3));
-
-// one call -> emits TWO lines:
-//   • JSON line (with MDC fields) for dashboards
-//   • Plain line (message only) for debugging
-log.info("Notification processed");
-
-// errors:
-log.error("Notification failed", ex);
-
-MDC.clear();
-
-	•	Your dashboard queries should add: @format:json
-	•	Your teammates can still read the plain line (starts with format=plain) without any sensitive fields.
-
-⸻
-
-Example of what you’ll see
-
-JSON (for dashboards):
-
-{
-  "format": "json",
-  "level": "INFO",
-  "message": "Notification processed",
-  "event": "notification_delivery",
-  "phase": "end",
-  "execution_status": "success",
-  "requestId": "abc-123",
-  "agentId": "AGENT-42",
-  "policyId": "POL*********789",
-  "logger": "jp.co.neo.notification.Service"
+    // --- Example masking if needed ---
+    public static String maskMiddle(String value, int keepStart, int keepEnd) {
+        if (value == null || value.isEmpty()) return "";
+        int length = value.length();
+        if (length <= keepStart + keepEnd) return "*".repeat(Math.max(4, length));
+        return value.substring(0, keepStart)
+                + "*".repeat(length - keepStart - keepEnd)
+                + value.substring(length - keepEnd);
+    }
 }
 
-Plain (for debugging; no fields):
 
-format=plain 2025-10-30 10:12:33.456 INFO  [http-nio-8080-exec-1] jp.co.neo.notification.Service - Notification processed
+⸻
+
+✅ How to Use It
+
+You already have something like this throughout your code:
+
+Map<String, Object> logMap = new HashMap<>();
+logMap.put("requestId", "REQ-123");
+logMap.put("agentId", "AG-001");
+logMap.put("execution_status", "SUCCESS");
+logMap.put("policyId", LogHelper.maskMiddle("1234567890", 3, 3));
+
+👉 Use like this:
+
+LogHelper.putAllToMDC(logMap);
+logger.info("Notification processed successfully");
+LogHelper.clearMDC();
+
+or in error:
+
+LogHelper.putAllToMDC(logMap);
+logger.error("Notification failed", ex);
+LogHelper.clearMDC();
 
 
 ⸻
 
-Notes / tips
-	•	Cost: you ingest 2 lines per event. Make sure that’s acceptable.
-	•	If you ever want the plain log to include the stacktrace too, change %nopex to %ex{full} in the plain pattern.
-	•	If you run profiles, keep the same setup for dev/test/prod so behavior is consistent. Dashboards rely on @format:json.
+✅ What Happens
 
-This gives you exactly what you asked for: JSON for dashboards and a clean plain message (no policyId/fields) for robust debugging—both visible in Datadog.
+With your logback-spring.xml configuration (JSON + plain appenders):
+	•	JSON_OUT will create a structured JSON entry in Datadog with all the MDC fields
+→ perfect for dashboards.
+	•	PLAIN_OUT will show just:
+
+format=plain 2025-10-30 09:44:22.456 INFO [thread] jp.co... - Notification processed successfully
+
+→ perfect for debugging.
+
+⸻
+
+✅ Best Practice
+	•	Call LogHelper.clearMDC() at the end of each request or execution (finally block).
+If you’re in a web app → add it in a OncePerRequestFilter.
+	•	If you’re in an Azure Function → clear it at the end of your run() method.
+
+⸻
+
+Would you like me to show you a small version of how to use this helper inside an Azure Function trigger (like ServiceBusTrigger)?
+That’ll make it clear how to handle MDC start→log→clear in one function call.
