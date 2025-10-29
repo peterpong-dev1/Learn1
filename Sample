@@ -1,267 +1,60 @@
-Absolutely 👍 — here’s a clean, reusable Java helper class you can drop straight into your Azure Function project.
+Short answer: Yes.
+If you switch to the JSON encoder and put your key/values into MDC, Datadog will show them like your screenshot—clean JSON fields under Attributes / JSON Attributes, not one long text line.
 
-It builds a Datadog-friendly JSON log line, automatically fills missing fields with "" (empty string) or "N/A" (if you prefer), and formats the timestamp in your local timezone.
+What you’ll see in Datadog
+	•	Message: your log message (e.g., “Email delivered”)
+	•	level / timestamp / logger / thread: from providers
+	•	Your fields (from MDC): event, execution_status, agentId, policyId (masked), requestId, etc., each as separate attributes you can facet and use in dashboards.
 
-⸻
+Minimal setup
 
-✅ LogHelper.java
+pom.xml
 
-package com.example.logging;
+<dependency>
+  <groupId>net.logstash.logback</groupId>
+  <artifactId>logstash-logback-encoder</artifactId>
+  <version>7.4</version>
+</dependency>
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+logback-spring.xml
 
-import java.time.ZonedDateTime;
-import java.time.format.DateTimeFormatter;
-import java.util.Map;
+<configuration>
+  <appender name="JSON_OUT" class="ch.qos.logback.core.ConsoleAppender">
+    <target>System.out</target>
+    <encoder class="net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder">
+      <providers>
+        <timestamp/><logLevel/><loggerName/><threadName/>
+        <message/>
+        <mdc/>          <!-- <- this lifts MDC keys to top-level JSON -->
+        <stackTrace/>
+      </providers>
+    </encoder>
+  </appender>
 
-public class LogHelper {
+  <root level="INFO"><appender-ref ref="JSON_OUT"/></root>
+</configuration>
 
-    private static final ObjectMapper mapper = new ObjectMapper();
+Code
 
-    // Format example: 2025-10-25T21:34:56.789+09:00
-    private static final DateTimeFormatter formatter =
-            DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSXXX");
+MDC.put("event", "email_delivery");
+MDC.put("execution_status", "success");         // or "failed"
+MDC.put("agentId", agentId);
+MDC.put("policyId", maskMiddle(policyId, 3, 3)); // your mask helper
 
-    /**
-     * Creates a Datadog-friendly JSON string for logging.
-     *
-     * @param level      info|warn|error (for Datadog color)
-     * @param message    log message
-     * @param values     optional map of extra fields (component, functionName, etc.)
-     * @return JSON string ready for log.info()
-     */
-    public static String createLog(String level, String message, Map<String, Object> values) {
-        ObjectNode root = mapper.createObjectNode();
+log.info("Email delivered");                     // or log.error("...", ex)
+MDC.clear();
 
-        // Standard Datadog fields
-        root.put("timestamp", ZonedDateTime.now().format(formatter));
-        root.put("status", safe(level));   // Datadog color level
-        root.put("message", safe(message));
-        root.put("service", envOrDefault("DD_SERVICE", "notification-platform"));
-        root.put("env", envOrDefault("DD_ENV", "dev"));
-        root.put("version", envOrDefault("DD_VERSION", "local"));
-
-        // Optional fields (your structure)
-        if (values != null) {
-            for (Map.Entry<String, Object> entry : values.entrySet()) {
-                String key = entry.getKey();
-                Object val = entry.getValue();
-                root.put(key, val == null ? "" : val.toString());
-            }
-        }
-
-        return root.toString();
-    }
-
-    private static String safe(String s) {
-        return (s == null) ? "" : s;
-    }
-
-    private static String envOrDefault(String name, String def) {
-        String v = System.getenv(name);
-        return v != null ? v : def;
-    }
-}
-
-
-⸻
-
-✅ How to use it in your triggers
-
-import com.example.logging.LogHelper;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import java.util.Map;
-
-public class MyFunctions {
-    private static final Logger log = LoggerFactory.getLogger(MyFunctions.class);
-
-    public void cosmosTriggerHandler() {
-        Map<String, Object> data = Map.of(
-            "component", "cosmosTrigger",
-            "functionName", "CosmosChangeFeedFn",
-            "execution_status", "success",
-            "agentId", "A123",
-            "docId", "D456",
-            "correlationId", "corr-001"
-        );
-
-        log.info(LogHelper.createLog("info", "Processed change feed successfully", data));
-    }
-
-    public void serviceBusHandler() {
-        Map<String, Object> data = Map.of(
-            "component", "serviceBusTrigger",
-            "functionName", "ServiceBusFn",
-            "execution_status", "failed",
-            "errorMessage", "Timeout while sending email"
-        );
-
-        log.error(LogHelper.createLog("error", "Service Bus message failed", data));
-    }
-}
-
-
-⸻
-
-🧩 Output example (local time, Datadog-friendly)
+Datadog log (top-level JSON)
 
 {
-  "timestamp": "2025-10-25T21:34:56.789+09:00",
-  "status": "info",
-  "message": "Processed change feed successfully",
-  "service": "notification-platform",
-  "env": "dev",
-  "version": "local",
-  "component": "cosmosTrigger",
-  "functionName": "CosmosChangeFeedFn",
-  "execution_status": "success",
-  "agentId": "A123",
-  "docId": "D456",
-  "correlationId": "corr-001"
+  "timestamp":"2025-10-29T12:34:56+09:00",
+  "level":"INFO",
+  "message":"Email delivered",
+  "event":"email_delivery",
+  "execution_status":"success",
+  "agentId":"AGENT-42",
+  "policyId":"POL*********789"
 }
 
-
-⸻
-
-💡 Notes
-	•	If any field is null or missing → it becomes "" (empty string).
-	•	You can change the default behavior easily ("N/A" instead of empty string).
-	•	Datadog will auto-parse timestamp, status, message, service, etc.
-	•	You can safely call this helper from any trigger (Cosmos DB, Service Bus, Queue, HTTP).
-
-⸻
-
-Perfect 👍 — here’s a clean, self-contained Java helper that builds your Datadog-friendly JSON log and uses only the maskMiddle logic for the policyId.
-
-This version keeps everything simple and practical for your Azure Functions.
-
-⸻
-
-✅ JsonLog.java
-
-package com.example.logging;
-
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-import java.time.ZoneId;
-import java.time.ZonedDateTime;
-import java.time.format.DateTimeFormatter;
-
-public final class JsonLog {
-
-    private static final ObjectMapper MAPPER = new ObjectMapper();
-    private static final ZoneId JAPAN_ZONE = ZoneId.of("Asia/Tokyo");
-    private static final DateTimeFormatter TS_FORMAT =
-            DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSXXX");
-
-    private JsonLog() {}
-
-    /**
-     * Build a Datadog-friendly JSON log.
-     *
-     * @param status   e.g. "info", "error", "warn"
-     * @param message  message text
-     * @param policyId sensitive ID to mask
-     * @param agentId  agent ID
-     * @return JSON string ready to log
-     */
-    public static String build(String status, String message, String policyId, String agentId) {
-        ObjectNode root = MAPPER.createObjectNode();
-
-        // timestamp in local Japan time
-        root.put("timestamp", ZonedDateTime.now(JAPAN_ZONE).format(TS_FORMAT));
-
-        // standard fields
-        root.put("status", safe(status));
-        root.put("message", safe(message));
-        root.put("agentId", safe(agentId));
-
-        // mask policy ID
-        String pid = safe(policyId);
-        root.put("policyId", pid.isEmpty() ? "" : maskMiddle(pid, 3, 3));
-
-        return root.toString();
-    }
-
-    // ============ helper methods ============
-
-    private static String safe(String s) {
-        return s == null ? "" : s;
-    }
-
-    /**
-     * Keep first `keepStart` and last `keepEnd` characters, mask the rest with '*'.
-     *
-     * Examples:
-     *  maskMiddle("ABCDEFGHIJ", 2, 2) → "AB******IJ"
-     *  maskMiddle("POLICY-ABC123456789", 3, 3) → "POL*************789"
-     */
-    public static String maskMiddle(String value, int keepStart, int keepEnd) {
-        if (value == null || value.isEmpty()) {
-            return "";
-        }
-        if (value.length() <= keepStart + keepEnd) {
-            return "*".repeat(Math.max(4, value.length()));
-        }
-
-        String start = value.substring(0, keepStart);
-        String end = value.substring(value.length() - keepEnd);
-        int stars = Math.max(4, value.length() - keepStart - keepEnd);
-        return start + "*".repeat(stars) + end;
-    }
-}
-
-
-⸻
-
-🧩 Example usage inside your Azure Function
-
-import com.example.logging.JsonLog;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-public class ServiceBusFn {
-    private static final Logger log = LoggerFactory.getLogger(ServiceBusFn.class);
-
-    public void run(String body) {
-        String json = JsonLog.build(
-                "info",
-                "Policy processed successfully",
-                "POLICY-ABC123456789",
-                "AGENT-42"
-        );
-        log.info(json);
-    }
-}
-
-
-⸻
-
-🧠 Example output (local Japan time)
-
-{
-  "timestamp": "2025-10-27T21:45:56.302+09:00",
-  "status": "info",
-  "message": "Policy processed successfully",
-  "agentId": "AGENT-42",
-  "policyId": "POL*************789"
-}
-
-
-⸻
-
-✅ Summary
-	•	Logs JSON structured lines ready for Datadog.
-	•	Timestamp = Japan local time (+09:00).
-	•	maskMiddle keeps the first 3 and last 3 characters visible for easy searching.
-	•	Safe for missing/null values.
-	•	Works directly with your existing logger: log.info(JsonLog.build(...)).
-
-⸻
-
-Would you like me to extend this helper slightly so it automatically adds your service, env, and version fields from environment variables (DD_SERVICE, DD_ENV, DD_VERSION) too?
-
-
-Would you like me to modify it so that it automatically detects which trigger it came from (e.g., reads ExecutionContext.getFunctionName() to fill functionName and component automatically)?
+Don’t embed your own JSON string in message; let the encoder + <mdc/> produce the JSON. That’s what makes Datadog show fields like your screenshot.
+Optional: add static fields too (so dashboards are easier): service, env, version via a custom fields provider or MDC.
