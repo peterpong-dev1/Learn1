@@ -1,89 +1,175 @@
-Perfect 👍 — since you already have a Map<String, Object> that collects values across your flow,
-let’s make this very simple, clean, and safe to use anywhere — no complex wrapping class, just a helper utility.
+Great—here’s a compact, copy-paste setup to get the exact same JSON logging behavior in Azure Functions (Java) as in your Spring API.
 
 ⸻
 
-✅ Simple MDC Helper (JsonLog replacement)
+1) pom.xml — add logging deps
 
-import org.slf4j.Logger;
-import org.slf4j.MDC;
-import java.util.Map;
+<!-- SLF4J API + Logback -->
+<dependency>
+  <groupId>org.slf4j</groupId><artifactId>slf4j-api</artifactId><version>2.0.13</version>
+</dependency>
+<dependency>
+  <groupId>ch.qos.logback</groupId><artifactId>logback-classic</artifactId><version>1.4.14</version>
+</dependency>
 
-public class LogHelper {
+<!-- JSON encoder so Datadog parses fields -->
+<dependency>
+  <groupId>net.logstash.logback</groupId>
+  <artifactId>logstash-logback-encoder</artifactId>
+  <version>7.4</version>
+</dependency>
 
-    // --- Add all entries from your map to MDC (thread-safe) ---
-    public static void putAllToMDC(Map<String, ?> map) {
-        if (map == null) return;
-        map.forEach((k, v) -> {
-            if (k != null && v != null) {
-                MDC.put(k, String.valueOf(v));
-            }
-        });
-    }
 
-    // --- Clear MDC (important at end of request or thread) ---
-    public static void clearMDC() {
-        MDC.clear();
-    }
+⸻
 
-    // --- Example masking if needed ---
-    public static String maskMiddle(String value, int keepStart, int keepEnd) {
-        if (value == null || value.isEmpty()) return "";
-        int length = value.length();
-        if (length <= keepStart + keepEnd) return "*".repeat(Math.max(4, length));
-        return value.substring(0, keepStart)
-                + "*".repeat(length - keepStart - keepEnd)
-                + value.substring(length - keepEnd);
-    }
+2) src/main/resources/logback.xml
+
+(Emit JSON to stdout; Datadog will parse. If you also want a plain line, add the optional appender.)
+
+<configuration>
+
+  <!-- JSON to stdout (Datadog dashboards) -->
+  <appender name="JSON_OUT" class="ch.qos.logback.core.ConsoleAppender">
+    <target>System.out</target>
+    <encoder class="net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder">
+      <providers>
+        <timestamp/><logLevel/><threadName/><loggerName/><message/>
+        <mdc/><!-- lifts MDC fields to top-level -->
+        <stackTrace/>
+        <!-- tag so you can filter in Datadog if needed -->
+        <provider class="net.logstash.logback.composite.GlobalCustomFieldsJsonProvider">
+          <customFields>{"format":"json"}</customFields>
+        </provider>
+      </providers>
+    </encoder>
+  </appender>
+
+  <!-- OPTIONAL: also print a human plain line to stdout (will also go to Datadog) -->
+  <!-- If you don't want plain in Datadog, omit this block. -->
+  <!--
+  <appender name="PLAIN_OUT" class="ch.qos.logback.core.ConsoleAppender">
+    <target>System.out</target>
+    <encoder>
+      <pattern>format=plain %d{HH:mm:ss.SSS} %-5level %logger{36} - %msg%nopex%n</pattern>
+    </encoder>
+  </appender>
+  -->
+
+  <root level="INFO">
+    <appender-ref ref="JSON_OUT"/>
+    <!-- <appender-ref ref="PLAIN_OUT"/> -->
+  </root>
+</configuration>
+
+If you want dashboards from only the first log (e.g., the one that has emailDeliveryStatus), you’ll filter in Datadog with @has:emailDeliveryStatus or @phase:end, same as Spring.
+
+⸻
+
+3) Minimal helper (reuse your Spring style)
+
+public final class LogHelper {
+  private LogHelper(){}
+  public static void putAllToMDC(Map<String, ?> m){
+    if (m==null) return;
+    m.forEach((k,v) -> { if (k!=null && v!=null) org.slf4j.MDC.put(k, String.valueOf(v)); });
+  }
+  public static void clearMDC(){ org.slf4j.MDC.clear(); }
+
+  public static String maskMiddle(String v, int keepStart, int keepEnd){
+    if (v==null || v.isEmpty()) return "";
+    if (v.length() <= keepStart + keepEnd) return "*".repeat(Math.max(4, v.length()));
+    return v.substring(0, keepStart)
+         + "*".repeat(Math.max(4, v.length()-keepStart-keepEnd))
+         + v.substring(v.length()-keepEnd);
+  }
 }
 
 
 ⸻
 
-✅ How to Use It
+4) Function example (Service Bus trigger)
 
-You already have something like this throughout your code:
+import com.microsoft.azure.functions.*;
+import com.microsoft.azure.functions.annotation.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
+import java.util.*;
 
-Map<String, Object> logMap = new HashMap<>();
-logMap.put("requestId", "REQ-123");
-logMap.put("agentId", "AG-001");
-logMap.put("execution_status", "SUCCESS");
-logMap.put("policyId", LogHelper.maskMiddle("1234567890", 3, 3));
+public class EmailDeliveryFn {
+  private static final Logger log = LoggerFactory.getLogger(EmailDeliveryFn.class);
 
-👉 Use like this:
+  @FunctionName("EmailDeliveryFn")
+  public void run(
+      @ServiceBusQueueTrigger(
+        name = "msg",
+        queueName = "email-delivery",
+        connection = "ServiceBusConnection")
+      String body,
+      final ExecutionContext ctx) {
 
-LogHelper.putAllToMDC(logMap);
-logger.info("Notification processed successfully");
-LogHelper.clearMDC();
+    long t0 = System.currentTimeMillis();
+    String requestId = UUID.randomUUID().toString();
 
-or in error:
+    // ---- START log (if you want two logs per execution) ----
+    Map<String,Object> start = new HashMap<>();
+    start.put("event", "notification_delivery");
+    start.put("phase", "start");
+    start.put("function", ctx.getFunctionName());
+    start.put("invocationId", ctx.getInvocationId());
+    start.put("requestId", requestId);
+    LogHelper.putAllToMDC(start);
+    log.info("notification start");         // JSON line #1 (for timeline)
+    MDC.clear();
 
-LogHelper.putAllToMDC(logMap);
-logger.error("Notification failed", ex);
-LogHelper.clearMDC();
+    try {
+      // ---- do your work ----
+      String agentId = "AGENT-42";        // extract from body
+      String policyId = "POLICY-ABC123";  // extract from body
 
+      // ---- END log (the one dashboards will use) ----
+      Map<String,Object> end = new HashMap<>();
+      end.put("event", "notification_delivery");
+      end.put("phase", "end");
+      end.put("requestId", requestId);
+      end.put("agentId", agentId);
+      end.put("policyId", LogHelper.maskMiddle(policyId, 3, 3));
+      end.put("emailDeliveryStatus", "OK");          // <-- dashboard field
+      end.put("latency_ms", System.currentTimeMillis() - t0);
+
+      LogHelper.putAllToMDC(end);
+      log.info("notification end");                  // JSON line #2 (dashboard)
+    } catch (Exception e) {
+      Map<String,Object> end = new HashMap<>();
+      end.put("event", "notification_delivery");
+      end.put("phase", "end");
+      end.put("requestId", requestId);
+      end.put("emailDeliveryStatus", "NG");          // <-- dashboard field
+      end.put("error_message", e.getMessage());
+      end.put("latency_ms", System.currentTimeMillis() - t0);
+
+      LogHelper.putAllToMDC(end);
+      log.error("notification end", e);              // JSON line #2 (failed)
+      // throw to let Functions retry if desired
+      throw new RuntimeException(e);
+    } finally {
+      LogHelper.clearMDC();
+    }
+  }
+}
+
+Dashboards: filter on the “end” log (the one that has the KPI field):
+
+@event:notification_delivery @phase:end @has:emailDeliveryStatus
+
+Success rate, failures, latency, etc., all come from that single line.
 
 ⸻
 
-✅ What Happens
+Notes / gotchas (Functions)
+	•	Prefer SLF4J log.info/error (JSON), not context.getLogger() (plain text).
+	•	MDC is thread-local. We clear it in finally. If you create new threads, copy MDC yourself.
+	•	Retries: throw in catch to let Service Bus Functions retry / DLQ.
+	•	Batches: if your trigger batches multiple messages in one invocation, either log once per message or set batch size to 1 in host.json if you truly want one execution per message.
 
-With your logback-spring.xml configuration (JSON + plain appenders):
-	•	JSON_OUT will create a structured JSON entry in Datadog with all the MDC fields
-→ perfect for dashboards.
-	•	PLAIN_OUT will show just:
-
-format=plain 2025-10-30 09:44:22.456 INFO [thread] jp.co... - Notification processed successfully
-
-→ perfect for debugging.
-
-⸻
-
-✅ Best Practice
-	•	Call LogHelper.clearMDC() at the end of each request or execution (finally block).
-If you’re in a web app → add it in a OncePerRequestFilter.
-	•	If you’re in an Azure Function → clear it at the end of your run() method.
-
-⸻
-
-Would you like me to show you a small version of how to use this helper inside an Azure Function trigger (like ServiceBusTrigger)?
-That’ll make it clear how to handle MDC start→log→clear in one function call.
+That’s it — same behavior as Spring, now in Azure Functions.
