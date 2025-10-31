@@ -1,11 +1,84 @@
-<encoder class="net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder">
-  <providers>
-    <timestamp fieldName="日時" timeZone="Asia/Tokyo"/>
-    <logLevel fieldName="レベル"/>
-    <threadName fieldName="スレッド"/>
-    <loggerName fieldName="ロガー名"/>
-    <message fieldName="メッセージ"/>
-    <mdc fieldName="詳細"/> <!-- ✅ you can rename this block -->
-    <stackTrace fieldName="例外"/>
-  </providers>
-</encoder>
+trigger: none
+
+variables:
+  azureSubscription: 'YOUR-SERVICE-CONNECTION'   # Azure DevOps Service Connection name
+  functionAppName: 'YOUR-FUNCTION-APP-NAME'      # e.g. func-data-dev-002-kzs
+  resourceGroupName: 'YOUR-RESOURCE-GROUP'       # e.g. rg-dataplatform-dev-001
+  projectPath: '$(System.DefaultWorkingDirectory)'
+  zipPath: '$(Build.ArtifactStagingDirectory)/$(functionAppName).zip'
+
+pool:
+  vmImage: 'windows-latest'
+
+stages:
+- stage: BuildAndDeploy
+  jobs:
+  - job: BuildDeploy
+    steps:
+    - checkout: self
+      clean: true
+
+    - task: JavaToolInstaller@1
+      displayName: 'Use Java 21'
+      inputs:
+        versionSpec: '21'
+        jdkArchitectureOption: 'x64'
+        jdkSourceOption: 'PreInstalled'
+
+    - powershell: |
+        Remove-Item -Recurse -Force "$(Build.ArtifactStagingDirectory)" -ErrorAction SilentlyContinue
+        Remove-Item -Recurse -Force "$(projectPath)\target" -ErrorAction SilentlyContinue
+      displayName: 'Clean output folders'
+      failOnStderr: true
+
+    - task: Maven@3
+      displayName: 'Build (mvn clean package azure-functions:package)'
+      inputs:
+        mavenPomFile: '$(projectPath)/pom.xml'
+        goals: 'clean package azure-functions:package'
+        options: '-B -ntp -Dmaven.test.failure.ignore=false'
+
+    - powershell: |
+        $pkgRoot = "$(projectPath)\target\azure-functions"
+        if (!(Test-Path $pkgRoot)) {
+          Write-Error "Package folder not found: $pkgRoot"
+        }
+        $dirs = Get-ChildItem -Path $pkgRoot -Directory
+        if ($dirs.Count -eq 0) {
+          Write-Error "No packaged function directory found under $pkgRoot"
+        }
+      displayName: 'Verify packaged output'
+      failOnStderr: true
+      condition: succeeded()
+
+    - task: ArchiveFiles@2
+      displayName: 'Zip packaged output'
+      condition: succeeded()
+      inputs:
+        rootFolderOrFile: '$(projectPath)/target/azure-functions/*'
+        includeRootFolder: false
+        archiveType: 'zip'
+        archiveFile: '$(zipPath)'
+        replaceExistingArchive: true
+
+    - task: AzureCLI@2
+      displayName: 'Check Function App exists'
+      condition: succeeded()
+      inputs:
+        azureSubscription: '$(azureSubscription)'
+        scriptType: pscore
+        scriptLocation: inlineScript
+        inlineScript: |
+          $name='$(functionAppName)'; $rg='$(resourceGroupName)';
+          $app = az functionapp show --name $name --resource-group $rg --query name -o tsv 2>$null
+          if (-not $app) { Write-Error "Function App '$name' not found in resource group '$rg'."; exit 1 }
+          Write-Host "Found Function App: $app"
+      failOnStandardError: true
+
+    - task: AzureFunctionApp@2
+      displayName: 'Deploy'
+      condition: succeeded()
+      inputs:
+        azureSubscription: '$(azureSubscription)'
+        appName: '$(functionAppName)'
+        package: '$(zipPath)'
